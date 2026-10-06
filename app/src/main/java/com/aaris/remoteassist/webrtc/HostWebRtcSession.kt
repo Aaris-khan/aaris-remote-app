@@ -61,8 +61,8 @@ class HostWebRtcSession(
         )
     private val cadenceGovernor =
         VideoCadenceGovernor(
-            maxFps = profile.motionFps,
-            initialCap = minOf(profile.motionFps, STARTUP_VIDEO_FPS_CAP)
+            maxFps = minOf(profile.motionFps, MAX_SESSION_VIDEO_FPS),
+            initialCap = minOf(profile.motionFps, MAX_SESSION_VIDEO_FPS)
         )
     private val passiveMotionPriority = PassiveMotionPriority()
     private val motionVideoBudget = MotionVideoBudget()
@@ -93,7 +93,7 @@ class HostWebRtcSession(
                 if (freshnessPriorityActive()) {
                     "Remote interaction idle • visible screen motion remains freshness-first"
                 } else {
-                    "Remote interaction idle • restoring clarity-first video policy"
+                    "Remote interaction idle • native motion adaptation remains enabled"
                 }
             )
         }
@@ -125,7 +125,12 @@ class HostWebRtcSession(
     private val capture = ScreenCaptureTrack(
         context = appContext,
         grant = projectionGrant,
-        onProjectionStopped = listener::onProjectionStopped
+        onProjectionStopped = listener::onProjectionStopped,
+        onSourceMotion = {
+            // Capture-thread signal only posts tiny work. Policy evaluation and
+            // sender mutation remain serialized on the main/session thread.
+            displayHandler.post { handleSourceMotionPulse() }
+        }
     )
 
     private val fallbackStreamer =
@@ -290,7 +295,9 @@ class HostWebRtcSession(
 
         val initialEffective = effectiveCaptureProfile(profile)
         listener.onDiagnostic(
-            "Starting MediaProjection capture • " +
+            "Starting MediaProjection capture • app=" +
+                com.aaris.remoteassist.BuildConfig.VERSION_NAME +
+                " (" + com.aaris.remoteassist.BuildConfig.VERSION_CODE + ") • encoder=realtime • " +
                 initialEffective.captureWidthPx +
                 "x" +
                 initialEffective.captureHeightPx +
@@ -310,7 +317,8 @@ class HostWebRtcSession(
             maxBitrateBps = profile.maxVideoBitrateBps,
             maxFramerate = initialEffective.fps,
             preserveResolution =
-                initialVideoPolicy.preserveResolution
+                initialVideoPolicy.preserveResolution,
+            motionPriority = initialVideoPolicy.motionPriority
         )
         capture.start(initialEffective)
 
@@ -718,7 +726,7 @@ class HostWebRtcSession(
                     if (freshnessPriorityActive(now)) {
                         "Visible screen motion → freshness-first video policy"
                     } else {
-                        "Visible screen motion settled → clarity-first video policy"
+                        "Visible screen motion settled → gradual detail recovery"
                     }
                 )
             }
@@ -792,6 +800,20 @@ class HostWebRtcSession(
 
         if (interactionActive != active) {
             interactionActive = active
+            if (active) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (motionVideoBudget.primeForMotion(profile, now)) {
+                    val effective = effectiveCaptureProfile(profile)
+                    listener.onDiagnostic(
+                        "Remote interaction warm-start → " +
+                            effective.captureWidthPx +
+                            "x" +
+                            effective.captureHeightPx +
+                            "@" +
+                            effective.fps
+                    )
+                }
+            }
             applyVideoPolicy(profile)
             val freshnessActive = freshnessPriorityActive()
             val policy =
@@ -804,7 +826,7 @@ class HostWebRtcSession(
                     !active && freshnessActive ->
                         "Remote interaction ended • visible motion remains freshness-first"
                     !active ->
-                        "Remote interaction ended • restoring clarity-first video policy"
+                        "Remote interaction ended • native motion adaptation remains enabled"
                     policy.motionPriority ->
                         "Remote interaction active • prioritizing fresh motion frames"
                     else ->
@@ -833,6 +855,35 @@ class HostWebRtcSession(
     ): Boolean =
         interactionActive ||
             passiveMotionPriority.isActive(nowMs)
+
+    private fun handleSourceMotionPulse() {
+        if (closed.get()) return
+
+        val now = android.os.SystemClock.elapsedRealtime()
+        val motionChanged = passiveMotionPriority.pulse(now)
+        val budgetChanged = motionVideoBudget.primeForMotion(profile, now)
+
+        if (motionChanged || budgetChanged) {
+            applyVideoPolicy(profile)
+        }
+
+        if (budgetChanged) {
+            val effective = effectiveCaptureProfile(profile)
+            listener.onDiagnostic(
+                "Source motion warm-start → " +
+                    effective.captureWidthPx +
+                    "x" +
+                    effective.captureHeightPx +
+                    "@" +
+                    effective.fps +
+                    " • newest frames first"
+            )
+        } else if (motionChanged) {
+            listener.onDiagnostic(
+                "Source motion → freshness-first video policy before stats"
+            )
+        }
+    }
 
     private fun effectiveCaptureProfile(
         target: CaptureProfile
@@ -991,6 +1042,6 @@ class HostWebRtcSession(
         private const val MAX_CAPTURE_RECOVERY_ATTEMPTS = 3
         private const val LEASE_WATCHDOG_MS = 3_000L
         private const val INTERACTION_PRIORITY_TIMEOUT_MS = 3_000L
-        private const val STARTUP_VIDEO_FPS_CAP = 30
+        private const val MAX_SESSION_VIDEO_FPS = 30
     }
 }
