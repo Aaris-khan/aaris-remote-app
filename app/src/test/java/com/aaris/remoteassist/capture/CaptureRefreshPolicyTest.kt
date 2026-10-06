@@ -15,6 +15,21 @@ class CaptureRefreshPolicyTest {
         assertTrue(policy.shouldRefresh(12_000))
     }
 
+    @Test fun interactionRefreshOnlyPullsWhenNaturalProducerIsLate() {
+        val policy = CaptureRefreshPolicy()
+        assertFalse(policy.shouldRefreshForInteraction(1_000))
+
+        policy.onSample(1_000)
+        assertFalse(policy.shouldRefreshForInteraction(1_044))
+        assertTrue(policy.shouldRefreshForInteraction(1_045))
+        assertFalse(policy.shouldRefreshForInteraction(1_046))
+
+        // A natural producer frame wins and defers the synthetic pull.
+        policy.onSample(1_080)
+        assertFalse(policy.shouldRefreshForInteraction(1_124))
+        assertTrue(policy.shouldRefreshForInteraction(1_125))
+    }
+
     @Test fun movingScreenGetsNoDuplicateWorkAndLatestSampleDefersIdleProbe() {
         val policy = CaptureRefreshPolicy()
         for (time in 0L..10_000L step 33L) {

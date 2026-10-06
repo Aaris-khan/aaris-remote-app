@@ -120,6 +120,8 @@ class InlineRemoteControllerView(
         ArrayList<LocalTouchPoint>(MAX_LOCAL_GESTURE_POINTS)
     private val gestureStreamPacer = GestureStreamPacer()
     private val presentationCadence = PresentationCadenceTracker()
+    private val lastPresentationHeartbeatAtMs =
+        AtomicLong(Long.MIN_VALUE / 2)
     private val surfaceFrameRateHints = SurfaceFrameRateHintGovernor()
     private val primaryConfirmation = PrimaryVideoConfirmation()
 
@@ -341,6 +343,7 @@ class InlineRemoteControllerView(
                         renderedFrameSeen.set(false)
                         primaryConfirmation.reset()
                         presentationCadence.reset()
+                        lastPresentationHeartbeatAtMs.set(Long.MIN_VALUE / 2)
                         clearSurfaceFrameRateHintIfNeeded()
                         frameWidth = 0
                         frameHeight = 0
@@ -382,6 +385,7 @@ class InlineRemoteControllerView(
                         recoveryGeneration.incrementAndGet()
                         renderedFrameSeen.set(false)
                         presentationCadence.reset()
+                        lastPresentationHeartbeatAtMs.set(Long.MIN_VALUE / 2)
                         primaryConfirmation.reset()
                         clearSurfaceFrameRateHintIfNeeded()
                         mainHandler.removeCallbacks(mediaWatchdog)
@@ -1205,6 +1209,35 @@ class InlineRemoteControllerView(
                 val generation = recoveryGeneration.get()
                 val presentedAtMs =
                     android.os.SystemClock.elapsedRealtime()
+
+                /*
+                 * Cadence windows need multiple swaps and can be reset during
+                 * recovery. A tiny proof-of-glass heartbeat is independent:
+                 * one real EGL swap is enough to prove that pixels reached the
+                 * controller display. Throttle it so it never competes with
+                 * authoritative touch traffic.
+                 */
+                val previousHeartbeat =
+                    lastPresentationHeartbeatAtMs.get()
+                if (
+                    presentedAtMs - previousHeartbeat >=
+                        PRESENTATION_HEARTBEAT_INTERVAL_MS &&
+                    lastPresentationHeartbeatAtMs.compareAndSet(
+                        previousHeartbeat,
+                        presentedAtMs
+                    )
+                ) {
+                    mainHandler.post {
+                        if (
+                            attached &&
+                            eglRenderer === renderer &&
+                            generation == recoveryGeneration.get()
+                        ) {
+                            session()?.sendPresentationHeartbeat()
+                        }
+                    }
+                }
+
                 presentationCadence
                     .onPresented(presentedAtMs)
                     ?.let { window ->
@@ -2588,6 +2621,7 @@ class InlineRemoteControllerView(
         private const val HANDLE_PEEK_DP = 8
         private const val HANDLE_PEEK_ALPHA = 0.38f
         private const val REMOTE_MOTION_TAIL_MS = 1_500L
+        private const val PRESENTATION_HEARTBEAT_INTERVAL_MS = 500L
 
         private const val MIN_STREAM_SEGMENT_MS = 16
         private const val MAX_STREAM_SEGMENT_MS = 56

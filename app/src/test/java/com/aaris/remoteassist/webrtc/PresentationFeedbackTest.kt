@@ -49,6 +49,23 @@ class PresentationFeedbackTest {
         }
     }
 
+    @Test fun presentationHeartbeatRoundTripsAndProvesGlassWithoutInventingFps() {
+        val packet = ControlPacket.PresentationHeartbeat(42, 3, 9)
+        val bytes = ControlProtocol.encode(packet)
+        assertEquals(22, bytes.size)
+        assertEquals(packet, ControlProtocol.decode(bytes))
+        assertNull(ControlProtocol.toRemoteCommand("session", packet, 1080, 2400))
+        assertNull(ControlProtocol.decode(bytes.copyOf(bytes.size - 1)))
+
+        val feedback = ReceiverVideoFeedback()
+        assertTrue(feedback.accept(packet, 42, 3, 1_000))
+        val liveness = checkNotNull(feedback.consume(42, 3, 1_240))
+        assertEquals(240, liveness.presentationAgeMs)
+        assertNull(liveness.presentedFps)
+        assertFalse(feedback.accept(packet, 42, 3, 1_300))
+        assertFalse(feedback.accept(packet.copy(sequence = 10), 42, 4, 1_300))
+    }
+
     @Test fun leaseBoundAggregatorMergesDecoderAndActualPresentationWindows() {
         val feedback = ReceiverVideoFeedback()
         val video = ControlPacket.VideoFeedback(42, 2, 1, 1000, 60, 5f, 12f, 0, 0)
@@ -60,7 +77,9 @@ class PresentationFeedbackTest {
         assertEquals(38, merged.presentedFrames)
         assertEquals(38.0, merged.presentedFps!!, 0.001)
         assertEquals(72, merged.maxRenderGapMs)
-        assertNull(feedback.consume(42, 2, 201))
+        val liveness = checkNotNull(feedback.consume(42, 2, 201))
+        assertEquals(81, liveness.presentationAgeMs)
+        assertNull(liveness.presentedFps)
         assertFalse(feedback.accept(display, 42, 3, 300))
     }
 

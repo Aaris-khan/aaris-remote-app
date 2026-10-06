@@ -167,6 +167,24 @@ class ControllerWebRtcSession(
         )
     }
 
+    fun sendPresentationHeartbeat(): Boolean {
+        if (closed.get()) return false
+        val lease = leaseSecret ?: return false
+        val display = geometry ?: return false
+        return peer.sendControl(
+            bytes = ControlProtocol.encode(
+                ControlPacket.PresentationHeartbeat(
+                    leaseSecret = lease,
+                    generation = display.generation,
+                    sequence = feedbackSequence.incrementAndGet()
+                )
+            ),
+            // Tiny proof-of-glass packet. Losing an old heartbeat is harmless;
+            // retransmitting it ahead of touch input would be actively harmful.
+            freshnessSensitive = true
+        )
+    }
+
     fun setInteractionActive(active: Boolean): Boolean {
         if (closed.get()) return false
         if (interactionActive == active) return true

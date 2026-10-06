@@ -11,7 +11,9 @@ class ReceiverVideoFeedback {
     private var lastDecodedAtMs: Long? = null
 
     private var lastPresentationSequence = 0L
+    private var lastPresentationHeartbeatSequence = 0L
     private var presentationReceivedAt = 0L
+    private var lastPresentedAtMs: Long? = null
     private var pendingPresentation: PresentationCadenceWindow? = null
 
     private fun bindIdentity(secret: Long, generation: Int) {
@@ -23,7 +25,9 @@ class ReceiverVideoFeedback {
         pending = null
         lastDecodedAtMs = null
         lastPresentationSequence = 0L
+        lastPresentationHeartbeatSequence = 0L
         presentationReceivedAt = 0L
+        lastPresentedAtMs = null
         pendingPresentation = null
     }
 
@@ -90,6 +94,21 @@ class ReceiverVideoFeedback {
             }
         } ?: incoming
         presentationReceivedAt = nowMs
+        lastPresentedAtMs = nowMs
+        return true
+    }
+
+    fun accept(
+        packet: ControlPacket.PresentationHeartbeat,
+        secret: Long,
+        generation: Int,
+        nowMs: Long
+    ): Boolean {
+        if (!packet.valid() || packet.leaseSecret != secret || packet.generation != generation) return false
+        bindIdentity(secret, generation)
+        if (packet.sequence <= lastPresentationHeartbeatSequence) return false
+        lastPresentationHeartbeatSequence = packet.sequence
+        lastPresentedAtMs = nowMs
         return true
     }
 
@@ -102,23 +121,29 @@ class ReceiverVideoFeedback {
             nowMs - presentationReceivedAt in 0..MAX_AGE_MS
         }
         pendingPresentation = null
+        val presentationAgeMs = lastPresentedAtMs
+            ?.let { nowMs - it }
+            ?.takeIf { it in 0L..MAX_PRESENTATION_LIVENESS_AGE_MS }
+            ?.toInt()
 
-        if (video == null && presentation == null) return null
+        if (video == null && presentation == null && presentationAgeMs == null) return null
         val base = video ?: VideoHealthWindow(
-            intervalMs = presentation!!.intervalMs,
+            intervalMs = presentation?.intervalMs ?: 1_000,
             frames = 0,
             processingMs = null,
             jitterMs = null,
             dropped = null,
-            freezes = null
+            freezes = null,
+            presentationAgeMs = presentationAgeMs
         )
         return if (presentation == null) {
-            base
+            base.copy(presentationAgeMs = presentationAgeMs)
         } else {
             base.copy(
                 presentationIntervalMs = presentation.intervalMs,
                 presentedFrames = presentation.renderedFrames,
-                maxRenderGapMs = presentation.maxGapMs
+                maxRenderGapMs = presentation.maxGapMs,
+                presentationAgeMs = presentationAgeMs
             )
         }
     }
@@ -127,5 +152,6 @@ class ReceiverVideoFeedback {
         const val MAX_AGE_MS = 3_000L
         const val MAX_PRESENTATION_INTERVAL_MS = 6_000
         const val MAX_PRESENTED_FRAMES = 2_048
+        const val MAX_PRESENTATION_LIVENESS_AGE_MS = 30_000L
     }
 }

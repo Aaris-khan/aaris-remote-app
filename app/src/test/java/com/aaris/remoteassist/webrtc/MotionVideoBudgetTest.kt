@@ -142,6 +142,89 @@ class MotionVideoBudgetTest {
         assertTrue(cadence.cap < 30)
     }
 
+    @Test fun activeInteractionKeepsSparseProducerFreshInsteadOfCollapsingCadence() {
+        val budget = MotionVideoBudget()
+        val cadence = VideoCadenceGovernor(30, 24)
+        val recorded = sender(
+            fps = 6,
+            encode = 16.0,
+            queue = 120.0,
+            implementation = "c2.mtk.avc.encoder"
+        ).copy(
+            qualityLimitationReason = "bandwidth",
+            roundTripTimeMs = 160
+        )
+
+        // Mirrors the uploaded run: the producer reports only ~3 fps, but a
+        // real remote gesture is actively changing the UI. Interaction is
+        // authoritative motion evidence and must not be vetoed by sourceFps.
+        assertTrue(budget.primeForMotion(profile, 0L))
+        assertTrue(
+            budget.observe(
+                outbound = recorded,
+                receiver = null,
+                sourceFps = 3.0,
+                motionActive = true,
+                targetFps = 24,
+                nowMs = 1_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(240, budget.shortEdge)
+        assertEquals(500_000, budget.bitrateCeiling(profile, true))
+
+        val floor = budget.cadenceFloor(
+            profile = profile,
+            motionActive = true,
+            nowMs = 1_000L,
+            interactionActive = true
+        )
+        assertEquals(24, floor)
+        assertFalse(
+            cadence.observe(
+                outbound = recorded,
+                receiver = null,
+                requestedFps = 24,
+                nowMs = 1_000L,
+                minimumFps = floor,
+                producerFps = 3.0
+            )
+        )
+        assertEquals(24, cadence.cap)
+
+        // A second bad window spends the final pixel rung, not temporal
+        // cadence, while the user is still interacting.
+        assertTrue(
+            budget.observe(
+                outbound = recorded,
+                receiver = null,
+                sourceFps = 3.0,
+                motionActive = true,
+                targetFps = 24,
+                nowMs = 2_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(180, budget.shortEdge)
+        assertEquals(350_000, budget.bitrateCeiling(profile, true))
+        assertFalse(
+            cadence.observe(
+                outbound = recorded,
+                receiver = null,
+                requestedFps = 24,
+                nowMs = 2_000L,
+                minimumFps = budget.cadenceFloor(
+                    profile,
+                    true,
+                    2_000L,
+                    interactionActive = true
+                ),
+                producerFps = 3.0
+            )
+        )
+        assertEquals(24, cadence.cap)
+    }
+
     @Test fun bandwidthLabelWithoutMovingSourceCannotOverBlur() {
         val budget = MotionVideoBudget()
         val limited = sender(2, 5.0, 500.0).copy(

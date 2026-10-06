@@ -91,6 +91,37 @@ class AdaptiveScreenSmoothnessTest {
     }
 
     @Test
+    fun proofOfGlassHeartbeatDistinguishesSparseCadenceFromDisplayStall() {
+        val healthySender =
+            outbound(
+                fps = 30,
+                processingMs = 5.0,
+                queueMs = 5.0
+            )
+
+        val freshGlass =
+            VideoHealthWindow(
+                intervalMs = 1_000,
+                frames = 30,
+                processingMs = 5.0,
+                jitterMs = 5.0,
+                dropped = 0,
+                freezes = 0,
+                presentationAgeMs = 250
+            )
+        val freshGovernor = VideoCadenceGovernor(maxFps = 30, initialCap = 30)
+        assertFalse(freshGovernor.observe(healthySender, freshGlass, 30, 1_000L))
+        assertFalse(freshGovernor.observe(healthySender, freshGlass, 30, 2_000L))
+        assertEquals(30, freshGovernor.cap)
+
+        val staleGlass = freshGlass.copy(presentationAgeMs = 2_000)
+        val stalledGovernor = VideoCadenceGovernor(maxFps = 30, initialCap = 30)
+        assertFalse(stalledGovernor.observe(healthySender, staleGlass, 30, 1_000L))
+        assertTrue(stalledGovernor.observe(healthySender, staleGlass, 30, 2_000L))
+        assertEquals(24, stalledGovernor.cap)
+    }
+
+    @Test
     fun threeFpsEncodeCollapseTriggersCadenceReliefInsteadOfLookingStatic() {
         val governor =
             VideoCadenceGovernor(
