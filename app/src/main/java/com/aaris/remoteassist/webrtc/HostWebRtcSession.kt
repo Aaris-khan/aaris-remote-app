@@ -748,6 +748,9 @@ class HostWebRtcSession(
                 powerManager?.isPowerSaveMode == true -> 30
                 else -> MAX_SESSION_VIDEO_FPS
             }
+            receiver?.displayRefreshRateHz?.takeIf { it.isFinite() && it > 0.0 }?.let {
+                deviceFpsLimit = minOf(deviceFpsLimit, (it + 0.5).toInt().coerceAtLeast(1))
+            }
             if (!motionActive && sourceFps != null &&
                 sourceFps.isFinite() && sourceFps >= 0.0 && sourceFps < 2.5 &&
                 (snapshot.recent?.frames ?: Int.MAX_VALUE) <= 3) {
@@ -787,7 +790,7 @@ class HostWebRtcSession(
                     outbound = snapshot,
                     receiver = receiver,
                     producerFps = sourceFps,
-                    interactionActive = interactionActive,
+                    interactionActive = interactionActive && deviceFpsLimit >= 30,
                     nowMs = now
                 )
             val cadenceChanged =

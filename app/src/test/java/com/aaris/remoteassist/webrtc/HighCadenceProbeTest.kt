@@ -114,6 +114,32 @@ class HighCadenceProbeTest {
         assertTrue(g.ensureInteractionFloor(24, 9000))
     }
 
+    @Test fun thermalAndDisplayCeilingsCanInterruptAnOtherwiseHealthyTrial() {
+        val hot = VideoCadenceGovernor(60, 30)
+        promote45(hot)
+        assertTrue(sample(hot, 6000, maximum = 24))
+        assertEquals(24, hot.cap)
+        val limitedDisplay = VideoCadenceGovernor(60, 30)
+        promote45(limitedDisplay)
+        assertTrue(sample(limitedDisplay, 6000, recv = receiver(45, refresh = 24.0)))
+        assertEquals(24, limitedDisplay.cap)
+    }
+
+    @Test fun pixelRecoveryIsPausedDuringCadenceTrialButPressureReliefRemainsAvailable() {
+        val profile = com.aaris.remoteassist.capture.CaptureProfile(720, 1600, 720, 1600, 30,
+            3_000_000, com.aaris.remoteassist.capture.CaptureTier.STANDARD, 60)
+        val budget = MotionVideoBudget()
+        budget.primeForMotion(profile, 0)
+        repeat(20) {
+            budget.observe(sender(), receiver(), 60.0, true, 30, (it + 1) * 1000L,
+                allowResolutionRecovery = false)
+        }
+        assertEquals(360, budget.shortEdge)
+        budget.observe(sender(5, queue = 300.0).copy(qualityLimitationReason = "bandwidth"),
+            receiver(5), 60.0, true, 30, 21000, allowResolutionRecovery = false)
+        assertEquals(240, budget.shortEdge)
+    }
+
     @Test fun capabilityPacketIsBoundedLeaseBoundReplaySafeAndExpires() {
         val packet = ControlPacket.DisplayCapabilities(42, 3, 1, 59.94f)
         val bytes = ControlProtocol.encode(packet)

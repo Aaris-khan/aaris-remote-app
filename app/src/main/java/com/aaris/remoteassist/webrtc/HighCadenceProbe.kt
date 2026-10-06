@@ -48,8 +48,10 @@ internal class HighCadenceProbe {
         val refresh = receiver?.displayRefreshRateHz.valid()
         val displayLimit = refresh?.let { (it + 0.5).toInt() }
         val limit = minOf(maximumFps, displayLimit ?: 60)
-        if (currentFps > 30 && limit < currentFps) {
-            return rollback(currentFps, nowMs, if (limit >= 45) 45 else 30)
+        if (limit < currentFps) {
+            val bounded = listOf(60, 45, 30, 24, 20, 15).firstOrNull { it <= limit }
+                ?: limit.coerceAtLeast(1)
+            return rollback(currentFps, nowMs, bounded)
         }
 
         val presented = receiver?.presentedFps.valid()
