@@ -5,7 +5,8 @@ import kotlin.math.roundToInt
 
 /**
  * Motion trades pixels before cadence. One-second interval telemetry drives a
- * 720 -> 540 -> 360 short-edge ladder; the MediaProjection surface never changes.
+ * 720 -> 540 -> 360 short-edge ladder, plus 240 for measured codec overload;
+ * the MediaProjection surface never changes.
  * This budget owns motion resolution, while the cadence governor remains the
  * final escape hatch when even the smallest frame cannot be delivered promptly.
  */
@@ -124,7 +125,15 @@ internal class MotionVideoBudget {
             val severe = (queueMs ?: 0.0) >= 150.0 ||
                 (sender.frames >= 2 && sender.fps <= 10.0 && encodePressure)
             if ((severe || pressureSamples >= 2) && nowMs - changedAtMs >= SETTLE_MS) {
-                val next = when (shortEdge) { 720 -> 540; else -> 360 }
+                val next = when {
+                    shortEdge > 540 -> 540
+                    shortEdge > 360 -> 360
+                    // A 360-wide software frame can still cost an entire 30 Hz
+                    // interval. Allow one more pixel step before sacrificing
+                    // cadence, but never blur this far for network delay alone.
+                    shortEdge > 240 && (encodePressure || decodePressure) -> 240
+                    else -> shortEdge
+                }
                 if (next != shortEdge) {
                     shortEdge = next
                     changedAtMs = nowMs
@@ -149,7 +158,7 @@ internal class MotionVideoBudget {
                 (outbound.packetLossRatio ?: 0.0) < 0.025
             healthySamples = if (healthy) healthySamples + 1 else 0
             if (healthySamples >= 12 && nowMs - changedAtMs >= 12_000L && shortEdge < 720) {
-                shortEdge = if (shortEdge == 360) 540 else 720
+                shortEdge = when { shortEdge < 360 -> 360; shortEdge < 540 -> 540; else -> 720 }
                 changedAtMs = nowMs
                 healthySamples = 0
             }

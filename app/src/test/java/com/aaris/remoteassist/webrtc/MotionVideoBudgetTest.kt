@@ -42,9 +42,36 @@ class MotionVideoBudgetTest {
         assertEquals(360, budget.shortEdge)
         assertEquals(800, budget.apply(profile, true).captureHeightPx)
         assertFalse(cadence.observe(collapse, null, 30, 4000, budget.cadenceFloor(profile, true, 4000)))
-        // Once the minimum pixel budget has been tried, freshness still has a safety exit.
-        assertTrue(cadence.observe(collapse, null, 30, 7000, budget.cadenceFloor(profile, true, 7000)))
+        // Try the emergency codec budget before giving up motion cadence.
+        budget.observe(collapse, null, 30.0, true, 30, 7000)
+        assertEquals(240, budget.shortEdge)
+        assertFalse(cadence.observe(collapse, null, 30, 7000, budget.cadenceFloor(profile, true, 7000)))
+        // At the actual minimum, freshness still has a safety exit.
+        assertTrue(cadence.observe(collapse, null, 30, 10000, budget.cadenceFloor(profile, true, 10000)))
         assertTrue(cadence.cap < 30)
+    }
+
+    @Test fun recordedTwelveFpsLibvpxAtThirtyOneMsGetsAnotherPixelStepWithLowNetworkDelay() {
+        val budget = MotionVideoBudget()
+        val recorded = sender(12, 31.0, 16.0, "libvpx").copy(roundTripTimeMs = 11)
+        for (time in 1_000L..8_000L step 1_000L) {
+            budget.observe(recorded, null, 24.0, true, 30, time)
+        }
+        assertEquals(240, budget.shortEdge)
+        val small = budget.apply(profile, true)
+        assertEquals(240, small.captureWidthPx)
+        assertEquals(532, small.captureHeightPx)
+        assertEquals(720, small.displayWidthPx)
+        assertEquals(1600, small.displayHeightPx)
+        // Resolution recovers only one rung after sustained delivered 30 FPS.
+        repeat(12) { budget.observe(sender(), receiver(), 30.0, true, 30, 20_000L + it * 1_000) }
+        assertEquals(360, budget.shortEdge)
+    }
+
+    @Test fun networkDelayAloneCannotUseTheEmergencyCodecResolution() {
+        val budget = MotionVideoBudget()
+        repeat(20) { budget.observe(sender(queue = 160.0), receiver(), 30.0, true, 30, 1_000L + it * 1_000) }
+        assertEquals(360, budget.shortEdge)
     }
 
     @Test fun isolatedSpikeDoesNotBlurButSustainedMotionPressureDoes() {

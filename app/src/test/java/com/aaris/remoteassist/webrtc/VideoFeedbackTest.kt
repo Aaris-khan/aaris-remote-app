@@ -58,6 +58,24 @@ class VideoFeedbackTest {
         assertTrue(feedback.accept(packet.copy(sequence = 3), 42, 2, 400))
         assertNull(feedback.consume(42, 2, 3401))
     }
+
+    @Test fun workingDecoderEvidenceSurvivesConsumptionButExpiresAndCannotCrossLeases() {
+        val feedback = ReceiverVideoFeedback()
+        assertFalse(feedback.hasRecentDecodedFrames(42, 2, 100))
+        assertTrue(feedback.accept(packet, 42, 2, 100))
+        assertNotNull(feedback.consume(42, 2, 200))
+        assertTrue(feedback.hasRecentDecodedFrames(42, 2, 300))
+        assertFalse(feedback.hasRecentDecodedFrames(99, 2, 300))
+        assertFalse(feedback.hasRecentDecodedFrames(42, 3, 300))
+        assertFalse(feedback.hasRecentDecodedFrames(42, 2, 99))
+        // Zero decoded frames and rejected/replayed reports cannot refresh proof.
+        assertTrue(feedback.accept(packet.copy(sequence = 2, decodedFrames = 0), 42, 2, 2_900))
+        assertFalse(feedback.accept(packet, 42, 2, 3_000))
+        assertTrue(feedback.hasRecentDecodedFrames(42, 2, 3_100))
+        assertFalse(feedback.hasRecentDecodedFrames(42, 2, 3_101))
+        assertTrue(feedback.accept(packet.copy(generation = 3, decodedFrames = 0), 42, 3, 3_200))
+        assertFalse(feedback.hasRecentDecodedFrames(42, 3, 3_200))
+    }
     private fun outbound(codecMs: Double = 5.0, reason: String = "none") =
         snapshot(2_000_000, 30, 0.15).copy(direction = "outbound", qualityLimitationReason = reason,
             roundTripTimeMs = 40, packetLossRatio = 0.0, recent = VideoHealthWindow(1000, 30, codecMs, null, null, null))
