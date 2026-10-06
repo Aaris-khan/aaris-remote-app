@@ -154,6 +154,15 @@ sealed interface ControlPacket {
                 maxGapMs in 0..6000
     }
 
+    /** Freshness-only proof that an actual EGL swap reached the controller glass. */
+    data class PresentationHeartbeat(
+        val leaseSecret: Long,
+        val generation: Int,
+        val sequence: Long
+    ) : ControlPacket {
+        fun valid() = sequence > 0
+    }
+
     data object Disconnect : ControlPacket
 }
 
@@ -180,6 +189,7 @@ object ControlProtocol {
     private const val FALLBACK_DELTA_READY: Byte = 18
     private const val VIDEO_FEEDBACK: Byte = 19
     private const val PRESENTATION_FEEDBACK: Byte = 20
+    private const val PRESENTATION_HEARTBEAT: Byte = 21
 
     private const val MAX_TEXT_BYTES = 2048
     private const val MAX_GESTURE_PATH_POINTS = 96
@@ -188,6 +198,7 @@ object ControlProtocol {
     fun encode(packet: ControlPacket): ByteArray {
         if (packet is ControlPacket.VideoFeedback) require(packet.valid())
         if (packet is ControlPacket.PresentationFeedback) require(packet.valid())
+        if (packet is ControlPacket.PresentationHeartbeat) require(packet.valid())
         val textBytes = (packet as? ControlPacket.Text)
             ?.text
             ?.toByteArray(Charsets.UTF_8)
@@ -243,6 +254,7 @@ object ControlProtocol {
             is ControlPacket.InteractionState -> 2 + 8 + 1
             is ControlPacket.VideoFeedback -> 2 + 8 + 4 + 8 + 24
             is ControlPacket.PresentationFeedback -> 2 + 8 + 4 + 8 + 12
+            is ControlPacket.PresentationHeartbeat -> 2 + 8 + 4 + 8
             ControlPacket.Disconnect -> 2
         }
 
@@ -427,6 +439,9 @@ object ControlProtocol {
                 buffer.putInt(packet.intervalMs)
                 buffer.putInt(packet.renderedFrames)
                 buffer.putInt(packet.maxGapMs)
+            }
+            is ControlPacket.PresentationHeartbeat -> {
+                putCommandHeader(buffer, packet.leaseSecret, packet.generation, packet.sequence)
             }
             ControlPacket.Disconnect -> Unit
         }
@@ -678,6 +693,15 @@ object ControlProtocol {
                         buffer.int
                     ).also { require(it.valid()) }
                 }
+                PRESENTATION_HEARTBEAT -> {
+                    require(buffer.remaining() == 20)
+                    val header = readHeader(buffer)
+                    ControlPacket.PresentationHeartbeat(
+                        header.leaseSecret,
+                        header.generation,
+                        header.sequence
+                    ).also { require(it.valid()) }
+                }
                 DISCONNECT -> {
                     require(buffer.remaining() == 0)
                     ControlPacket.Disconnect
@@ -821,6 +845,7 @@ object ControlProtocol {
             is ControlPacket.FallbackDeltaReady,
             is ControlPacket.VideoFeedback,
             is ControlPacket.PresentationFeedback,
+            is ControlPacket.PresentationHeartbeat,
             ControlPacket.Disconnect -> null
         }
     }
@@ -883,6 +908,7 @@ object ControlProtocol {
             FALLBACK_DELTA_READY
         is ControlPacket.VideoFeedback -> VIDEO_FEEDBACK
         is ControlPacket.PresentationFeedback -> PRESENTATION_FEEDBACK
+        is ControlPacket.PresentationHeartbeat -> PRESENTATION_HEARTBEAT
         ControlPacket.Disconnect -> DISCONNECT
     }
 }
