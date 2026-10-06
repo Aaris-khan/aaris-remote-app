@@ -143,8 +143,9 @@ data class CaptureProfile(
 
         /**
          * RAM is only a memory budget; it does not prove realtime video encode
-         * throughput. When the negotiated screen codecs have no hardware path,
-         * keep bootstrap work at BALANCED until live telemetry proves otherwise.
+         * throughput. When the screen codecs have no hardware path, cap the
+         * session quality ceiling at BALANCED; the live governors may still step
+         * below it when encoder, network or presentation pressure requires.
          *
          * LOW/BALANCED devices are never promoted by this helper. Hardware
          * acceleration preserves the device recommendation unchanged.
