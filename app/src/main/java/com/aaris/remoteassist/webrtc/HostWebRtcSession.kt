@@ -748,7 +748,7 @@ class HostWebRtcSession(
                 interactionActive = interactionActive
             )
             val requestedFps = effectiveCaptureProfile(profile).fps
-            val cadenceChanged =
+            val cadencePressureChanged =
                 cadenceGovernor.observe(
                     outbound = snapshot,
                     receiver = receiver,
@@ -762,6 +762,16 @@ class HostWebRtcSession(
                     ),
                     producerFps = sourceFps
                 )
+            val interactionProbeChanged =
+                cadenceGovernor.tryProbeDuringInteraction(
+                    outbound = snapshot,
+                    receiver = receiver,
+                    producerFps = sourceFps,
+                    interactionActive = interactionActive,
+                    nowMs = now
+                )
+            val cadenceChanged =
+                cadencePressureChanged || interactionProbeChanged
             if (motionChanged || cadenceChanged || resolutionChanged) {
                 applyVideoPolicy(profile)
             }
@@ -773,7 +783,11 @@ class HostWebRtcSession(
                         " • source=${sourceFps?.toInt()}fps"
                 )
             }
-            if (cadenceChanged) {
+            if (interactionProbeChanged) {
+                listener.onDiagnostic(
+                    "Interactive path has headroom → ${cadenceGovernor.cap}fps freshness probe"
+                )
+            } else if (cadenceChanged) {
                 listener.onDiagnostic(
                     "Sustainable video cadence → ${cadenceGovernor.cap}fps ceiling • preserving screen geometry"
                 )
@@ -875,6 +889,23 @@ class HostWebRtcSession(
                 if (!wasFreshnessActive) {
                     tryRecoverCadenceOnNewMotion(now)
                 }
+
+                /*
+                 * Interaction is not just a floor against future downshifts:
+                 * it must also recover a governor that was already parked at
+                 * 15/20 fps before the finger came down.
+                 */
+                val interactionCadenceRecovered =
+                    cadenceGovernor.ensureInteractionFloor(
+                        minimumFps = minOf(24, profile.motionFps),
+                        nowMs = now
+                    )
+                if (interactionCadenceRecovered) {
+                    listener.onDiagnostic(
+                        "Remote interaction cadence rescue → ${cadenceGovernor.cap}fps ceiling"
+                    )
+                }
+
                 if (motionVideoBudget.primeForMotion(profile, now)) {
                     val effective = effectiveCaptureProfile(profile)
                     listener.onDiagnostic(
