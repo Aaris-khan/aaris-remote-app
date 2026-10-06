@@ -5,18 +5,32 @@ internal class CaptureRefreshPolicy {
     private var lastSampleAtMs: Long? = null
     private var lastRequestAtMs: Long? = null
     private var interactionAppliedAtMs: Long? = null
+    private var sampleGeneration = 0L
+    private var interactionSampleGeneration: Long? = null
 
     @Synchronized
     fun onSample(nowMs: Long) {
         lastSampleAtMs = nowMs
+        sampleGeneration =
+            if (sampleGeneration == Long.MAX_VALUE) {
+                1L
+            } else {
+                sampleGeneration + 1L
+            }
 
         /*
-         * A natural producer callback after the input is exactly what we want.
-         * Cancel the armed synthetic pull so moving screens remain zero-extra-work.
+         * Generation, not millisecond equality, proves that a new capture
+         * callback happened after the input. This avoids same-ms ambiguity on
+         * fast devices while keeping the hot path allocation-free.
          */
-        val appliedAt = interactionAppliedAtMs
-        if (appliedAt != null && nowMs > appliedAt) {
+        val armedGeneration = interactionSampleGeneration
+        if (
+            interactionAppliedAtMs != null &&
+            armedGeneration != null &&
+            sampleGeneration != armedGeneration
+        ) {
             interactionAppliedAtMs = null
+            interactionSampleGeneration = null
         }
     }
 
@@ -25,6 +39,7 @@ internal class CaptureRefreshPolicy {
     fun onInteractionApplied(nowMs: Long) {
         if (lastSampleAtMs == null) return
         interactionAppliedAtMs = nowMs
+        interactionSampleGeneration = sampleGeneration
     }
 
     /**
@@ -35,11 +50,13 @@ internal class CaptureRefreshPolicy {
     @Synchronized
     fun shouldRefreshForInteraction(nowMs: Long): Boolean {
         val appliedAt = interactionAppliedAtMs ?: return false
-        val sample = lastSampleAtMs ?: return false
+        lastSampleAtMs ?: return false
+        val armedGeneration = interactionSampleGeneration ?: return false
 
         if (nowMs < appliedAt) return false
-        if (sample > appliedAt) {
+        if (sampleGeneration != armedGeneration) {
             interactionAppliedAtMs = null
+            interactionSampleGeneration = null
             return false
         }
         if (nowMs - appliedAt < INTERACTION_GRACE_MS) return false
@@ -47,11 +64,13 @@ internal class CaptureRefreshPolicy {
         val previousRequest = lastRequestAtMs
         if (previousRequest != null && previousRequest >= appliedAt) {
             interactionAppliedAtMs = null
+            interactionSampleGeneration = null
             return false
         }
 
         lastRequestAtMs = nowMs
         interactionAppliedAtMs = null
+        interactionSampleGeneration = null
         return true
     }
 
