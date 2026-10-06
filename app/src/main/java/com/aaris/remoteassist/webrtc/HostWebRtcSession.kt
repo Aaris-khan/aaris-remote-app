@@ -720,7 +720,8 @@ class HostWebRtcSession(
                 sourceFps = sourceFps,
                 motionActive = motionActive,
                 targetFps = minOf(30, profile.motionFps),
-                nowMs = now
+                nowMs = now,
+                interactionActive = interactionActive
             )
             val requestedFps = effectiveCaptureProfile(profile).fps
             val cadenceChanged =
@@ -729,7 +730,12 @@ class HostWebRtcSession(
                     receiver = receiver,
                     requestedFps = requestedFps,
                     nowMs = now,
-                    minimumFps = motionVideoBudget.cadenceFloor(profile, motionActive, now),
+                    minimumFps = motionVideoBudget.cadenceFloor(
+                        profile = profile,
+                        motionActive = motionActive,
+                        nowMs = now,
+                        interactionActive = interactionActive
+                    ),
                     producerFps = sourceFps
                 )
             if (motionChanged || cadenceChanged || resolutionChanged) {
