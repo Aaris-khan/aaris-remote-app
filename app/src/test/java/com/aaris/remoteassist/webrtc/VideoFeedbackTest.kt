@@ -80,7 +80,7 @@ class VideoFeedbackTest {
         snapshot(2_000_000, 30, 0.15).copy(direction = "outbound", qualityLimitationReason = reason,
             roundTripTimeMs = 40, packetLossRatio = 0.0, recent = VideoHealthWindow(1000, 30, codecMs, null, null, null))
     private fun receiver(ms: Double = 5.0, dropped: Int = 0) = VideoHealthWindow(1000, 30, ms, 20.0, dropped, 0)
-    @Test fun slowReceiverReducesFpsBeforeResolutionAndHealthyRecoveryIsGradual() {
+    @Test fun slowReceiverReducesFpsAndDecoderAloneCannotAuthorizeHighCadence() {
         val governor = VideoCadenceGovernor(60)
         val sending60 = outbound().let { it.copy(recent = it.recent!!.copy(frames = 60)) }
         assertFalse(governor.observe(sending60, receiver(25.0), 60, 1000))
@@ -88,7 +88,7 @@ class VideoFeedbackTest {
         assertEquals(45, governor.cap); assertFalse(governor.mayReduceResolution(3000))
         repeat(11) { governor.observe(outbound(), receiver(), 45, 3000L + it * 1000) }
         assertEquals(45, governor.cap)
-        assertTrue(governor.observe(outbound(), receiver(), 45, 14_000)); assertEquals(60, governor.cap)
+        assertFalse(governor.observe(outbound(), receiver(), 45, 14_000)); assertEquals(45, governor.cap)
     }
     @Test fun measuredSenderQueueResidenceGetsFastFortyFiveFpsRelief() {
         val governor = VideoCadenceGovernor(60)
@@ -159,13 +159,13 @@ class VideoFeedbackTest {
         assertEquals(reduced, governor.cap)
         assertTrue(governor.mayReduceResolution(50_000))
     }
-    @Test fun olderControllerCanRecoverUsingSustainedMeasuredSenderHeadroom() {
+    @Test fun olderControllerCannotAuthorizeHighCadenceFromSenderHeadroomAlone() {
         val governor = VideoCadenceGovernor(60)
         governor.observe(outbound(40.0), null, 60, 1000)
         governor.observe(outbound(40.0), null, 60, 2000)
         assertEquals(45, governor.cap)
         repeat(16) { governor.observe(outbound(), null, 45, 3000L + it * 1000) }
-        assertEquals(60, governor.cap)
+        assertEquals(45, governor.cap)
     }
     @Test fun healthyPipelinedHardwareIsNotCappedJustBecauseCodecTimeExceedsFrameInterval() {
         val governor = VideoCadenceGovernor(60)

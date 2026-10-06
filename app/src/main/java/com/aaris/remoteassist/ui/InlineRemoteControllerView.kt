@@ -1250,7 +1250,16 @@ class InlineRemoteControllerView(
                                 surfaceFrameRateHints
                                     .observe(window, presentedAtMs)
                                     ?.let(::applySurfaceFrameRateHint)
-                                session()?.sendPresentationFeedback(window)
+                                // Advertise same-resolution display capability,
+                                // not the temporary idle refresh selected for a
+                                // 30 fps Surface hint (which would lock probes out).
+                                val display = surfaceView.display
+                                val mode = display?.mode
+                                val refresh = display?.supportedModes
+                                    ?.filter { it.physicalWidth == mode?.physicalWidth && it.physicalHeight == mode?.physicalHeight }
+                                    ?.maxOfOrNull { it.refreshRate }
+                                    ?.coerceAtMost(240f)
+                                session()?.sendPresentationFeedback(window, refresh)
                                 if (renderedFrameSeen.get()) {
                                     primaryConfirmation.onPresented(presentedAtMs) {
                                         session()?.confirmPrimaryVideoRendered() == true

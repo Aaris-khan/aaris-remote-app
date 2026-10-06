@@ -163,6 +163,16 @@ sealed interface ControlPacket {
         fun valid() = sequence > 0
     }
 
+    /** Separate optional packet: old peers keep decoding the original feedback. */
+    data class DisplayCapabilities(
+        val leaseSecret: Long,
+        val generation: Int,
+        val sequence: Long,
+        val refreshRateHz: Float
+    ) : ControlPacket {
+        fun valid() = sequence > 0 && refreshRateHz.isFinite() && refreshRateHz in 1f..240f
+    }
+
     data object Disconnect : ControlPacket
 }
 
@@ -190,6 +200,7 @@ object ControlProtocol {
     private const val VIDEO_FEEDBACK: Byte = 19
     private const val PRESENTATION_FEEDBACK: Byte = 20
     private const val PRESENTATION_HEARTBEAT: Byte = 21
+    private const val DISPLAY_CAPABILITIES: Byte = 22
 
     private const val MAX_TEXT_BYTES = 2048
     private const val MAX_GESTURE_PATH_POINTS = 96
@@ -199,6 +210,7 @@ object ControlProtocol {
         if (packet is ControlPacket.VideoFeedback) require(packet.valid())
         if (packet is ControlPacket.PresentationFeedback) require(packet.valid())
         if (packet is ControlPacket.PresentationHeartbeat) require(packet.valid())
+        if (packet is ControlPacket.DisplayCapabilities) require(packet.valid())
         val textBytes = (packet as? ControlPacket.Text)
             ?.text
             ?.toByteArray(Charsets.UTF_8)
@@ -255,6 +267,7 @@ object ControlProtocol {
             is ControlPacket.VideoFeedback -> 2 + 8 + 4 + 8 + 24
             is ControlPacket.PresentationFeedback -> 2 + 8 + 4 + 8 + 12
             is ControlPacket.PresentationHeartbeat -> 2 + 8 + 4 + 8
+            is ControlPacket.DisplayCapabilities -> 2 + 8 + 4 + 8 + 4
             ControlPacket.Disconnect -> 2
         }
 
@@ -442,6 +455,10 @@ object ControlProtocol {
             }
             is ControlPacket.PresentationHeartbeat -> {
                 putCommandHeader(buffer, packet.leaseSecret, packet.generation, packet.sequence)
+            }
+            is ControlPacket.DisplayCapabilities -> {
+                putCommandHeader(buffer, packet.leaseSecret, packet.generation, packet.sequence)
+                buffer.putFloat(packet.refreshRateHz)
             }
             ControlPacket.Disconnect -> Unit
         }
@@ -702,6 +719,13 @@ object ControlProtocol {
                         header.sequence
                     ).also { require(it.valid()) }
                 }
+                DISPLAY_CAPABILITIES -> {
+                    require(buffer.remaining() == 24)
+                    val header = readHeader(buffer)
+                    ControlPacket.DisplayCapabilities(
+                        header.leaseSecret, header.generation, header.sequence, buffer.float
+                    ).also { require(it.valid()) }
+                }
                 DISCONNECT -> {
                     require(buffer.remaining() == 0)
                     ControlPacket.Disconnect
@@ -846,6 +870,7 @@ object ControlProtocol {
             is ControlPacket.VideoFeedback,
             is ControlPacket.PresentationFeedback,
             is ControlPacket.PresentationHeartbeat,
+            is ControlPacket.DisplayCapabilities,
             ControlPacket.Disconnect -> null
         }
     }
@@ -909,6 +934,7 @@ object ControlProtocol {
         is ControlPacket.VideoFeedback -> VIDEO_FEEDBACK
         is ControlPacket.PresentationFeedback -> PRESENTATION_FEEDBACK
         is ControlPacket.PresentationHeartbeat -> PRESENTATION_HEARTBEAT
+        is ControlPacket.DisplayCapabilities -> DISPLAY_CAPABILITIES
         ControlPacket.Disconnect -> DISCONNECT
     }
 }

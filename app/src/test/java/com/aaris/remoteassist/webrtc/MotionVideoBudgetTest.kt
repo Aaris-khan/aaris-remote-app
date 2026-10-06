@@ -31,25 +31,25 @@ class MotionVideoBudgetTest {
         assertEquals(360, budget.shortEdge)
     }
 
-    @Test fun recordedSoftwareCollapseReducesPixelsBeforeThirtyFps() {
+    @Test fun recordedSoftwareCollapseGetsPixelAndUrgentCadenceRelief() {
         val budget = MotionVideoBudget()
         val cadence = VideoCadenceGovernor(60, 30)
         val collapse = sender(6, 53.0, 585.0, "libvpx")
         assertTrue(budget.observe(collapse, null, 30.0, true, 30, 1000))
         assertEquals(540, budget.shortEdge)
         assertEquals(540, budget.apply(profile, true).captureWidthPx)
-        assertFalse(cadence.observe(collapse, null, 30, 1000, budget.cadenceFloor(profile, true, 1000)))
-        assertEquals(30, cadence.cap)
+        assertTrue(cadence.observe(collapse, null, 30, 1000, budget.cadenceFloor(profile, true, 1000)))
+        assertEquals(24, cadence.cap)
         budget.observe(collapse, null, 30.0, true, 30, 4000)
         assertEquals(360, budget.shortEdge)
         assertEquals(800, budget.apply(profile, true).captureHeightPx)
-        assertFalse(cadence.observe(collapse, null, 30, 4000, budget.cadenceFloor(profile, true, 4000)))
-        // Try the emergency codec budget before giving up motion cadence.
+        assertTrue(cadence.observe(collapse, null, 30, 4000, budget.cadenceFloor(profile, true, 4000)))
+        // Pixel relief continues while the severe stale queue drains.
         budget.observe(collapse, null, 30.0, true, 30, 7000)
         assertEquals(240, budget.shortEdge)
-        assertFalse(cadence.observe(collapse, null, 30, 7000, budget.cadenceFloor(profile, true, 7000)))
-        // At the actual minimum, freshness still has a safety exit.
-        assertTrue(cadence.observe(collapse, null, 30, 10000, budget.cadenceFloor(profile, true, 10000)))
+        assertTrue(cadence.observe(collapse, null, 30, 7000, budget.cadenceFloor(profile, true, 7000)))
+        // The emergency cadence floor has now been reached.
+        assertFalse(cadence.observe(collapse, null, 30, 10000, budget.cadenceFloor(profile, true, 10000)))
         assertTrue(cadence.cap < 30)
     }
 
@@ -115,7 +115,7 @@ class MotionVideoBudgetTest {
         assertTrue(budget.observe(worse, null, 31.0, true, 30, 2_000L))
         assertEquals(180, budget.shortEdge)
         assertEquals(350_000, budget.bitrateCeiling(profile, true))
-        assertFalse(
+        assertTrue(
             cadence.observe(
                 worse,
                 null,
@@ -125,7 +125,7 @@ class MotionVideoBudgetTest {
                 producerFps = 31.0
             )
         )
-        assertEquals(24, cadence.cap)
+        assertEquals(20, cadence.cap)
 
         // Once the smallest pixel rung has had time to drain the old queue,
         // cadence remains the final safety valve if the link is still bad.

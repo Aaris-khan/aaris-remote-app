@@ -15,6 +15,9 @@ class ReceiverVideoFeedback {
     private var presentationReceivedAt = 0L
     private var lastPresentedAtMs: Long? = null
     private var pendingPresentation: PresentationCadenceWindow? = null
+    private var lastCapabilitiesSequence = 0L
+    private var capabilitiesAtMs = 0L
+    private var displayRefreshRateHz: Double? = null
 
     private fun bindIdentity(secret: Long, generation: Int) {
         val key = secret to generation
@@ -29,6 +32,19 @@ class ReceiverVideoFeedback {
         presentationReceivedAt = 0L
         lastPresentedAtMs = null
         pendingPresentation = null
+        lastCapabilitiesSequence = 0L
+        capabilitiesAtMs = 0L
+        displayRefreshRateHz = null
+    }
+
+    fun accept(packet: ControlPacket.DisplayCapabilities, secret: Long, generation: Int, nowMs: Long): Boolean {
+        if (!packet.valid() || packet.leaseSecret != secret || packet.generation != generation) return false
+        bindIdentity(secret, generation)
+        if (packet.sequence <= lastCapabilitiesSequence) return false
+        lastCapabilitiesSequence = packet.sequence
+        capabilitiesAtMs = nowMs
+        displayRefreshRateHz = packet.refreshRateHz.toDouble()
+        return true
     }
 
     fun accept(packet: ControlPacket.VideoFeedback, secret: Long, generation: Int, nowMs: Long): Boolean {
@@ -136,14 +152,16 @@ class ReceiverVideoFeedback {
             freezes = null,
             presentationAgeMs = presentationAgeMs
         )
+        val refreshRate = displayRefreshRateHz?.takeIf { nowMs - capabilitiesAtMs in 0L..MAX_AGE_MS }
         return if (presentation == null) {
-            base.copy(presentationAgeMs = presentationAgeMs)
+            base.copy(presentationAgeMs = presentationAgeMs, displayRefreshRateHz = refreshRate)
         } else {
             base.copy(
                 presentationIntervalMs = presentation.intervalMs,
                 presentedFrames = presentation.renderedFrames,
                 maxRenderGapMs = presentation.maxGapMs,
-                presentationAgeMs = presentationAgeMs
+                presentationAgeMs = presentationAgeMs,
+                displayRefreshRateHz = refreshRate
             )
         }
     }

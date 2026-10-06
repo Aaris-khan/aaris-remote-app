@@ -69,7 +69,8 @@ internal class MotionVideoBudget {
         motionActive: Boolean,
         targetFps: Int,
         nowMs: Long,
-        interactionActive: Boolean = false
+        interactionActive: Boolean = false,
+        allowResolutionRecovery: Boolean = true
     ): Boolean {
         val before = shortEdge to holdingResolution
         val enteringMotion = !holdingResolution
@@ -211,7 +212,9 @@ internal class MotionVideoBudget {
             val healthy = sender.fps >= goal * 0.9 && encodeMs != null && encodeMs < frameMs * 0.5 &&
                 queueMs != null && queueMs < 20.0 && receiverHealthy &&
                 (outbound.packetLossRatio ?: 0.0) < 0.025
-            healthySamples = if (healthy) healthySamples + 1 else 0
+            // A cadence trial must measure one variable at a time. Pressure
+            // relief stays enabled, but do not also enlarge trial frames.
+            healthySamples = if (healthy && allowResolutionRecovery) healthySamples + 1 else 0
             if (healthySamples >= 12 && nowMs - changedAtMs >= 12_000L && shortEdge < 720) {
                 shortEdge = when { shortEdge < 360 -> 360; shortEdge < 540 -> 540; else -> 720 }
                 changedAtMs = nowMs

@@ -146,10 +146,18 @@ class ControllerWebRtcSession(
         return sent
     }
 
-    fun sendPresentationFeedback(window: PresentationCadenceWindow): Boolean {
+    fun sendPresentationFeedback(window: PresentationCadenceWindow, displayRefreshRateHz: Float? = null): Boolean {
         if (closed.get()) return false
         val lease = leaseSecret ?: return false
         val display = geometry ?: return false
+        if (displayRefreshRateHz != null && displayRefreshRateHz.isFinite() && displayRefreshRateHz in 1f..240f) {
+            peer.sendControl(
+                ControlProtocol.encode(ControlPacket.DisplayCapabilities(
+                    lease, display.generation, feedbackSequence.incrementAndGet(), displayRefreshRateHz
+                )),
+                freshnessSensitive = true
+            )
+        }
         return peer.sendControl(
             bytes = ControlProtocol.encode(
                 ControlPacket.PresentationFeedback(

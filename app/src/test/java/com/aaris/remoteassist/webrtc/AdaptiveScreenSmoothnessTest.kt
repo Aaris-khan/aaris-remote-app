@@ -65,7 +65,9 @@ class AdaptiveScreenSmoothnessTest {
                 freezes = 0,
                 presentationIntervalMs = 1_000,
                 presentedFrames = 30,
-                maxRenderGapMs = 34
+                maxRenderGapMs = 34,
+                presentationAgeMs = 100,
+                displayRefreshRateHz = 60.0
             )
 
         repeat(4) { index ->
@@ -74,7 +76,8 @@ class AdaptiveScreenSmoothnessTest {
                     healthySender,
                     healthyReceiver,
                     30,
-                    1_000L + index * 1_000L
+                    1_000L + index * 1_000L,
+                    producerFps = 60.0
                 )
             )
         }
@@ -84,7 +87,8 @@ class AdaptiveScreenSmoothnessTest {
                 healthySender,
                 healthyReceiver,
                 30,
-                5_000L
+                5_000L,
+                producerFps = 60.0
             )
         )
         assertEquals(45, governor.cap)

@@ -15,7 +15,8 @@ data class VideoHealthWindow(
     val presentationIntervalMs: Int? = null,
     val presentedFrames: Int? = null,
     val maxRenderGapMs: Int? = null,
-    val presentationAgeMs: Int? = null
+    val presentationAgeMs: Int? = null,
+    val displayRefreshRateHz: Double? = null
 ) {
     val fps: Double get() = frames * 1000.0 / intervalMs
     val presentedFps: Double?

@@ -45,11 +45,13 @@ class PresentationProvenRecoveryTest {
         freezes = 0,
         presentationIntervalMs = if (presentedFrames > 0) 1000 else null,
         presentedFrames = presentedFrames,
-        maxRenderGapMs = maxRenderGapMs
+        maxRenderGapMs = maxRenderGapMs,
+        presentationAgeMs = 100,
+        displayRefreshRateHz = 60.0
     )
 
     @Test
-    fun verifiedPresentationRecoversFrom45FpsWithoutStickyLag() {
+    fun verifiedPresentationRecoversAfterFailedCadenceCooldown() {
         val governor = VideoCadenceGovernor(60)
         val sending60 = outbound(frames = 60, processingMs = 5.0)
         val overloadedReceiver = receiver(frames = 30, processingMs = 25.0)
@@ -66,17 +68,18 @@ class PresentationProvenRecoveryTest {
             maxRenderGapMs = 30
         )
 
-        repeat(4) { index ->
+        repeat(22) { index ->
             assertFalse(
                 governor.observe(
                     healthySender,
                     healthyDisplay,
                     45,
-                    3_000L + index * 1_000L
+                    3_000L + index * 1_000L,
+                    producerFps = 60.0
                 )
             )
         }
-        assertTrue(governor.observe(healthySender, healthyDisplay, 45, 7_000))
+        assertTrue(governor.observe(healthySender, healthyDisplay, 45, 25_000, producerFps = 60.0))
         assertEquals(60, governor.cap)
     }
 
