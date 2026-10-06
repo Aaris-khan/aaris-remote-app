@@ -34,10 +34,23 @@ internal class CaptureRefreshPolicy {
         }
     }
 
-    /** Arms one bounded post-input freshness pull. */
+    /**
+     * Arms one bounded post-input freshness pull.
+     *
+     * While the current capture generation is still waiting for its probe, keep
+     * the first applied-input timestamp. Replacing it with every CONTINUE sample
+     * turns a display-tick probe into a debounce and can postpone freshness for
+     * the entire duration of a fast swipe.
+     */
     @Synchronized
     fun onInteractionApplied(nowMs: Long) {
         if (lastSampleAtMs == null) return
+        if (
+            interactionAppliedAtMs != null &&
+            interactionSampleGeneration == sampleGeneration
+        ) {
+            return
+        }
         interactionAppliedAtMs = nowMs
         interactionSampleGeneration = sampleGeneration
     }

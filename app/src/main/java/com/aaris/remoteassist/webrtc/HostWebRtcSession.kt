@@ -127,10 +127,19 @@ class HostWebRtcSession(
     }
 
     /*
-     * Coalesced post-input capture probe. Rapid gesture samples only move this
-     * single deadline forward; they never enqueue a train of synthetic frames.
+     * Single-flight post-input capture probe. The first applied command owns the
+     * next display-tick deadline; later samples must never push that deadline
+     * forward. This is a throttle, not a debounce: a long 60/120 Hz gesture
+     * cannot starve forced freshness on OEMs whose MediaProjection producer is
+     * temporarily sparse.
+     *
+     * CaptureRefreshPolicy still cancels the pull when a natural frame arrived,
+     * so this adds no duplicate encoder path and keeps at most one scheduled
+     * probe on the main looper.
      */
+    private val interactionRefreshProbeScheduled = AtomicBoolean(false)
     private val interactionRefreshProbe = Runnable {
+        interactionRefreshProbeScheduled.set(false)
         if (!closed.get()) {
             capture.requestInteractionRefresh()
         }
@@ -584,13 +593,15 @@ class HostWebRtcSession(
                         val appliedAtMs =
                             android.os.SystemClock.elapsedRealtime()
                         capture.armInteractionRefresh(appliedAtMs)
-                        displayHandler.removeCallbacks(
-                            interactionRefreshProbe
-                        )
-                        displayHandler.postDelayed(
-                            interactionRefreshProbe,
-                            interactionRefreshDelayMs()
-                        )
+                        if (
+                            interactionRefreshProbeScheduled
+                                .compareAndSet(false, true)
+                        ) {
+                            displayHandler.postDelayed(
+                                interactionRefreshProbe,
+                                interactionRefreshDelayMs()
+                            )
+                        }
                     }
 
                     /*
@@ -1164,6 +1175,7 @@ class HostWebRtcSession(
         displayHandler.removeCallbacks(startupControlRecovery)
         displayHandler.removeCallbacks(captureFrameWatchdog)
         displayHandler.removeCallbacks(interactionRefreshProbe)
+        interactionRefreshProbeScheduled.set(false)
         displayHandler.removeCallbacks(
             leaseWatchdog
         )
