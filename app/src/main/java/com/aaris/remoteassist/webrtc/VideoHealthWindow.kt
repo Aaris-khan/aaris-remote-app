@@ -14,7 +14,8 @@ data class VideoHealthWindow(
     val sendQueueMs: Double? = null,
     val presentationIntervalMs: Int? = null,
     val presentedFrames: Int? = null,
-    val maxRenderGapMs: Int? = null
+    val maxRenderGapMs: Int? = null,
+    val presentationAgeMs: Int? = null
 ) {
     val fps: Double get() = frames * 1000.0 / intervalMs
     val presentedFps: Double?
@@ -26,7 +27,11 @@ data class VideoHealthWindow(
         }
 
     fun compact(): String {
-        val presentation = presentedFps?.roundToInt()?.let { " present=${it}fps gap=${maxRenderGapMs}ms" }.orEmpty()
+        val presentation = presentedFps?.roundToInt()?.let {
+            " present=${it}fps gap=${maxRenderGapMs}ms"
+        } ?: presentationAgeMs?.let {
+            " present=alive age=${it}ms"
+        }.orEmpty()
         return "${fps.roundToInt()}fps ${bitrateBps / 1000}kbps codec=${processingMs?.roundToInt()}ms jitter=${jitterMs?.roundToInt()}ms drop=$dropped freeze=$freezes queue=${sendQueueMs?.roundToInt()}ms$presentation"
     }
 }
