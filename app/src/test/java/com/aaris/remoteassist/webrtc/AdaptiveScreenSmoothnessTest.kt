@@ -91,6 +91,106 @@ class AdaptiveScreenSmoothnessTest {
     }
 
     @Test
+    fun remoteInteractionImmediatelyEscapesAStaleFifteenFpsCap() {
+        val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
+
+        assertTrue(
+            governor.ensureInteractionFloor(
+                minimumFps = 24,
+                nowMs = 1_000L
+            )
+        )
+        assertEquals(24, governor.cap)
+        assertFalse(
+            governor.ensureInteractionFloor(
+                minimumFps = 24,
+                nowMs = 1_001L
+            )
+        )
+    }
+
+    @Test
+    fun cleanRecordedHardwarePathQuicklyProbesThirtyFpsDuringInteraction() {
+        val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
+        assertTrue(governor.ensureInteractionFloor(24, 0L))
+
+        // Mirrors the uploaded recording: source is ~45-50 fps, hardware H.264
+        // work is ~20-23 ms/frame, RTT is tiny and sender queue is essentially
+        // empty, yet the old governor stayed target=15fps.
+        val clean = outbound(
+            fps = 16,
+            processingMs = 22.0,
+            queueMs = 0.0
+        ).copy(
+            roundTripTimeMs = 14,
+            packetLossRatio = 0.0,
+            codecImplementation = "c2.mtk.avc.encoder"
+        )
+
+        assertFalse(
+            governor.tryProbeDuringInteraction(
+                outbound = clean,
+                receiver = null,
+                producerFps = 45.0,
+                interactionActive = true,
+                nowMs = 1_000L
+            )
+        )
+        assertTrue(
+            governor.tryProbeDuringInteraction(
+                outbound = clean,
+                receiver = null,
+                producerFps = 50.0,
+                interactionActive = true,
+                nowMs = 2_000L
+            )
+        )
+        assertEquals(30, governor.cap)
+    }
+
+    @Test
+    fun interactiveThirtyFpsProbeRejectsQueueOrSlowCodecPressure() {
+        val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
+        assertTrue(governor.ensureInteractionFloor(24, 0L))
+
+        val queued = outbound(
+            fps = 16,
+            processingMs = 22.0,
+            queueMs = 120.0
+        )
+        repeat(4) { index ->
+            assertFalse(
+                governor.tryProbeDuringInteraction(
+                    outbound = queued,
+                    receiver = null,
+                    producerFps = 50.0,
+                    interactionActive = true,
+                    nowMs = 1_000L + index * 1_000L
+                )
+            )
+        }
+        assertEquals(24, governor.cap)
+
+        val slowCodec = outbound(
+            fps = 16,
+            processingMs = 31.0,
+            queueMs = 0.0
+        )
+        repeat(3) { index ->
+            assertFalse(
+                governor.tryProbeDuringInteraction(
+                    outbound = slowCodec,
+                    receiver = null,
+                    producerFps = 50.0,
+                    interactionActive = true,
+                    nowMs = 6_000L + index * 1_000L
+                )
+            )
+        }
+        assertEquals(24, governor.cap)
+    }
+
+    @Test
     fun proofOfGlassHeartbeatDistinguishesSparseCadenceFromDisplayStall() {
         val healthySender =
             outbound(
