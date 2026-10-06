@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
@@ -32,6 +33,7 @@ import com.aaris.remoteassist.webrtc.FallbackDeltaPatch
 import com.aaris.remoteassist.webrtc.FallbackVideoFrame
 import com.aaris.remoteassist.webrtc.RemoteGeometry
 import com.aaris.remoteassist.webrtc.PresentationCadenceTracker
+import com.aaris.remoteassist.webrtc.RealtimeMediaPolicy
 import com.aaris.remoteassist.webrtc.WebRtcRuntime
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -96,6 +98,8 @@ class InlineRemoteControllerView(
         }
 
     private var eglRenderer: EglRenderer? = null
+    private var renderEglThread: EglThread? = null
+    private var renderInteractionPriorityActive = false
     private var rendererSurfaceAttached = false
     private var remoteTrack: VideoTrack? = null
     private var sinkTrack: VideoTrack? = null
@@ -1198,6 +1202,8 @@ class InlineRemoteControllerView(
                         .eglBaseContext,
                     EglBase.CONFIG_PLAIN
                 )
+            renderEglThread = renderThread
+            applyRenderThreadPriority(renderThread)
             /*
              * Remote-control rendering is freshness-first, not A/V-sync-first.
              * Keep presentation timestamps disabled and ask EglRenderer's
@@ -1399,6 +1405,7 @@ class InlineRemoteControllerView(
     private fun releaseRenderer() {
         val renderer = eglRenderer ?: return
         eglRenderer = null
+        renderEglThread = null
         rendererSurfaceAttached = false
         runCatching {
             renderer.releaseEglSurface {}
@@ -2311,6 +2318,7 @@ class InlineRemoteControllerView(
 
     private fun beginRemoteMotion() {
         mainHandler.removeCallbacks(interactionIdle)
+        setRenderInteractionPriority(true)
 
         /*
          * Android may have down-clocked this Surface while the remote image was
@@ -2328,6 +2336,8 @@ class InlineRemoteControllerView(
     }
 
     private fun endRemoteMotion() {
+        setRenderInteractionPriority(false)
+
         /*
          * Restore the newest cadence learned from real EGL swaps. If no stable
          * cadence was learned during the burst, 0 clears Android's temporary
@@ -2338,6 +2348,33 @@ class InlineRemoteControllerView(
             ?.let(::applySurfaceFrameRateHint)
 
         session()?.setInteractionActive(false)
+    }
+
+    /**
+     * The EglRenderer already keeps a one-frame queue and overwrites stale
+     * pending renders. During active control, give that tiny render lane a
+     * temporary scheduling advantage so swapBuffers is less likely to miss a
+     * display opportunity because unrelated app work happened first.
+     *
+     * Priority changes do not increase requested FPS or create additional GPU
+     * work, and are removed as soon as the interaction tail expires.
+     */
+    private fun setRenderInteractionPriority(active: Boolean) {
+        if (renderInteractionPriorityActive == active) return
+        renderInteractionPriorityActive = active
+        applyRenderThreadPriority()
+    }
+
+    private fun applyRenderThreadPriority(
+        thread: EglThread? = renderEglThread
+    ) {
+        thread?.handler?.post {
+            Process.setThreadPriority(
+                RealtimeMediaPolicy.threadPriority(
+                    renderInteractionPriorityActive
+                )
+            )
+        }
     }
 
     private fun scheduleRemoteMotionIdle() {
