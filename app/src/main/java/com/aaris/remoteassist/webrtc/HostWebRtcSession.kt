@@ -737,7 +737,11 @@ class HostWebRtcSession(
             }
             if (resolutionChanged) {
                 val effective = effectiveCaptureProfile(profile)
-                listener.onDiagnostic("Motion video budget → ${effective.captureWidthPx}x${effective.captureHeightPx}@${effective.fps} • source=${sourceFps?.toInt()}fps")
+                listener.onDiagnostic(
+                    "Motion video budget → ${effective.captureWidthPx}x${effective.captureHeightPx}@${effective.fps}" +
+                        " • max=${motionVideoBudget.bitrateCeiling(profile, motionActive) / 1000}kbps" +
+                        " • source=${sourceFps?.toInt()}fps"
+                )
             }
             if (cadenceChanged) {
                 listener.onDiagnostic(
@@ -969,7 +973,11 @@ class HostWebRtcSession(
         // Android capture surface stable; only display geometry may resize it.
         capture.update(effective)
         peer.updateInteractiveVideoPolicy(
-            maxBitrateBps = target.maxVideoBitrateBps,
+            maxBitrateBps =
+                motionVideoBudget.bitrateCeiling(
+                    profile = target,
+                    motionActive = freshnessActive
+                ),
             maxFramerate = effective.fps,
             preserveResolution = policy.preserveResolution,
             motionPriority = policy.motionPriority
