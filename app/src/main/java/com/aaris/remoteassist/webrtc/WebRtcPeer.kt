@@ -142,6 +142,7 @@ class WebRtcPeer(
     private val videoHealthWindows = VideoHealthWindowTracker()
     private val videoStatsInFlight = AtomicBoolean(false)
     private val videoStatsEpoch = AtomicLong(0L)
+    private var videoStatsNextAtMs = Long.MAX_VALUE
 
     @Volatile
     private var realtimeVideoTelemetry = false
@@ -157,6 +158,9 @@ class WebRtcPeer(
      */
     private val videoStatsProbe = object : Runnable {
         override fun run() {
+            // Every schedule/cancel mutation is serialized onto this Handler,
+            // so the due-time state cannot race a policy-thread upshift.
+            videoStatsNextAtMs = Long.MAX_VALUE
             if (closed.get() || !videoStatsEnabled) return
 
             if (videoStatsInFlight.compareAndSet(false, true)) {
@@ -191,13 +195,66 @@ class WebRtcPeer(
                 }
             }
 
-            handler.postDelayed(
-                this,
-                RealtimeMediaPolicy.videoStatsIntervalMs(
-                    realtimeVideoTelemetry
-                )
+            /*
+             * A transition-triggered probe may have been scheduled while this
+             * runnable/getStats request was executing. Keep the earliest
+             * deadline instead of letting the ordinary periodic cadence push a
+             * more urgent sample later.
+             */
+            scheduleVideoStatsProbe(
+                delayMs =
+                    RealtimeMediaPolicy.videoStatsIntervalMs(
+                        realtimeVideoTelemetry
+                    ),
+                onlyIfEarlier = true
             )
         }
+    }
+
+    private fun scheduleVideoStatsProbe(
+        delayMs: Long,
+        onlyIfEarlier: Boolean = false
+    ) {
+        /*
+         * Host policy runs on AarisRemotePolicy while WebRTC transport callbacks
+         * may arrive on native signaling threads. Serialize deadline ownership
+         * onto one Android Handler before comparing/removing callbacks; otherwise
+         * an already-dequeued periodic probe could race a new urgent deadline.
+         */
+        if (Looper.myLooper() != handler.looper) {
+            handler.post {
+                scheduleVideoStatsProbe(
+                    delayMs = delayMs,
+                    onlyIfEarlier = onlyIfEarlier
+                )
+            }
+            return
+        }
+
+        if (closed.get() || !videoStatsEnabled) return
+
+        val boundedDelay = delayMs.coerceAtLeast(0L)
+        val dueAtMs = monotonicNowMs() + boundedDelay
+        if (
+            onlyIfEarlier &&
+            videoStatsNextAtMs <= dueAtMs
+        ) {
+            return
+        }
+
+        handler.removeCallbacks(videoStatsProbe)
+        videoStatsNextAtMs = dueAtMs
+        handler.postDelayed(videoStatsProbe, boundedDelay)
+    }
+
+    private fun cancelVideoStatsProbe() {
+        if (Looper.myLooper() != handler.looper) {
+            handler.post { cancelVideoStatsProbe() }
+            return
+        }
+
+        handler.removeCallbacks(videoStatsProbe)
+        videoStatsNextAtMs = Long.MAX_VALUE
     }
 
     private val bootstrapRecovery = object : Runnable {
@@ -1096,9 +1153,7 @@ class WebRtcPeer(
         reconcileRemoteVideoTrack()
         videoStatsEpoch.incrementAndGet()
         videoStatsEnabled = true
-        handler.removeCallbacks(videoStatsProbe)
-        handler.postDelayed(
-            videoStatsProbe,
+        scheduleVideoStatsProbe(
             RealtimeMediaPolicy.VIDEO_STATS_INITIAL_DELAY_MS
         )
         publishPeerConnected()
@@ -1107,7 +1162,7 @@ class WebRtcPeer(
     private fun handleTransportDisconnected() {
         videoStatsEpoch.incrementAndGet()
         videoStatsEnabled = false
-        handler.removeCallbacks(videoStatsProbe)
+        cancelVideoStatsProbe()
         preLiveDisconnected =
             !connectivity.hasEverConnected()
 
@@ -1129,7 +1184,7 @@ class WebRtcPeer(
     private fun handleTransportFailed() {
         videoStatsEpoch.incrementAndGet()
         videoStatsEnabled = false
-        handler.removeCallbacks(videoStatsProbe)
+        cancelVideoStatsProbe()
         preLiveDisconnected = false
         handler.removeCallbacks(initialIceRestart)
 
@@ -1732,14 +1787,46 @@ class WebRtcPeer(
         realtimeVideoTelemetry = active
         if (!changed || !videoStatsEnabled) return
 
-        handler.removeCallbacks(videoStatsProbe)
-        handler.postDelayed(
-            videoStatsProbe,
-            if (active) {
-                RealtimeMediaPolicy.VIDEO_STATS_FAST_KICK_MS
-            } else {
-                RealtimeMediaPolicy.VIDEO_STATS_IDLE_INTERVAL_MS
-            }
+        scheduleVideoStatsProbe(
+            delayMs =
+                if (active) {
+                    RealtimeMediaPolicy.VIDEO_STATS_FAST_KICK_MS
+                } else {
+                    RealtimeMediaPolicy.VIDEO_STATS_IDLE_INTERVAL_MS
+                },
+            // Entering realtime mode may only pull health feedback forward.
+            // Leaving realtime mode intentionally replaces the fast deadline
+            // with the lower-overhead idle cadence.
+            onlyIfEarlier = active
+        )
+    }
+
+    /**
+     * Pull the existing single-flight stats loop forward once after a risky
+     * source/sender upshift. No second polling loop is created and no media
+     * frame is retained. If transport is not live yet, startup telemetry remains
+     * the sole owner.
+     */
+    fun requestVideoHealthProbe(
+        delayMs: Long =
+            RealtimeMediaPolicy.VIDEO_STATS_RECONFIGURE_KICK_MS
+    ) {
+        if (closed.get() || !videoStatsEnabled) return
+
+        val boundedDelay =
+            delayMs.coerceIn(
+                0L,
+                RealtimeMediaPolicy.videoStatsIntervalMs(
+                    realtimeVideoTelemetry
+                )
+            )
+        /*
+         * Never postpone a probe that was already due sooner. This makes the
+         * transition kick an earliest-deadline signal rather than a debounce.
+         */
+        scheduleVideoStatsProbe(
+            delayMs = boundedDelay,
+            onlyIfEarlier = true
         )
     }
 
