@@ -162,6 +162,18 @@ class ScreenCaptureTrack(
     fun addSnapshotSink(sink: VideoSink) { snapshotSinks += sink }
     fun sampleSourceFps(nowMs: Long): Double? = activityTracker.sampleFps(nowMs)
     fun removeSnapshotSink(sink: VideoSink) { snapshotSinks -= sink }
+
+    fun requestInteractionRefresh(
+        nowMs: Long = android.os.SystemClock.elapsedRealtime()
+    ): Boolean {
+        if (closed.get() || !started) return false
+        if (!refreshPolicy.shouldRefreshForInteraction(nowMs)) return false
+        // forceFrame runs on SurfaceTextureHelper's owner thread and feeds the
+        // same zero-copy RTP source; it does not create a second projection.
+        surfaceTextureHelper.forceFrame()
+        return true
+    }
+
     fun requestSnapshot() {
         check(started && !closed.get()) { "CAPTURE_STOPPED" }
         // Static Android screens may emit no new frames. forceFrame reads the
