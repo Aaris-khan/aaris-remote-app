@@ -94,12 +94,27 @@ class ScreenCaptureTrack(
                     // forceFrame reuses the SurfaceTexture timestamp on a static
                     // screen. Give that new sample a monotonic timestamp so the
                     // native FPS adapter does not discard recovery requests.
-                    val sampled = VideoFrame(
-                        frame.buffer,
-                        frame.rotation,
-                        sampleClock.timestamp(frame.timestampNs, System.nanoTime())
-                    )
-                    videoSource.capturerObserver.onFrameCaptured(sampled)
+                    val sampledTimestampNs =
+                        sampleClock.timestamp(
+                            frame.timestampNs,
+                            System.nanoTime()
+                        )
+                    if (sampledTimestampNs == frame.timestampNs) {
+                        // Natural frames already carry a valid monotonic
+                        // timestamp. Forward the producer-owned frame directly
+                        // so the 30/45/60 fps hot path allocates no wrapper.
+                        videoSource.capturerObserver.onFrameCaptured(frame)
+                    } else {
+                        // forceFrame may repeat the SurfaceTexture timestamp.
+                        // Only that recovery path needs a timestamp wrapper.
+                        videoSource.capturerObserver.onFrameCaptured(
+                            VideoFrame(
+                                frame.buffer,
+                                frame.rotation,
+                                sampledTimestampNs
+                            )
+                        )
+                    }
                     if (activityTracker.onFrame(frame.timestampNs)) {
                         // The callback is throttled by CaptureActivityTracker.
                         // Keep it best-effort and never let policy work block
