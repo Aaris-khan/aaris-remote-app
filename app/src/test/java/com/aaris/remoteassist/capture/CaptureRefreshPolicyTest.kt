@@ -24,8 +24,10 @@ class CaptureRefreshPolicyTest {
         assertTrue(policy.shouldRefreshForInteraction(1_016))
         assertFalse(policy.shouldRefreshForInteraction(1_017))
 
+        // Even a frame in the same millisecond is distinguishable by
+        // capture generation and cancels the pull deterministically.
         policy.onInteractionApplied(2_000)
-        policy.onSample(2_004)
+        policy.onSample(2_000)
         assertFalse(policy.shouldRefreshForInteraction(2_020))
     }
 
