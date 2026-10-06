@@ -68,7 +68,8 @@ internal class MotionVideoBudget {
         sourceFps: Double?,
         motionActive: Boolean,
         targetFps: Int,
-        nowMs: Long
+        nowMs: Long,
+        interactionActive: Boolean = false
     ): Boolean {
         val before = shortEdge to holdingResolution
         val enteringMotion = !holdingResolution
@@ -122,16 +123,31 @@ internal class MotionVideoBudget {
             it < expectedPresentation * 0.8 || (received.maxRenderGapMs ?: 0) >= 150
         } == true
         val measuredSourceFps = sourceFps.valid()
-        val movingSource =
+
+        /*
+         * A real controller gesture is authoritative motion evidence. Do not
+         * let a temporarily sparse MediaProjection producer (for example
+         * source=3fps during a tap-driven transition) veto freshness policy.
+         *
+         * Passive/background motion still needs producer evidence so a static
+         * screen cannot blur itself merely because the path reports bandwidth
+         * limitation.
+         */
+        val sourceProvesMotion =
             measuredSourceFps?.let { it >= MIN_MOVING_SOURCE_FPS } == true
-        val senderLagsMovingSource =
-            measuredSourceFps?.let {
-                sender.fps < minOf(goal.toDouble(), it) * 0.75
-            } == true
+        val motionEvidence = interactionActive || sourceProvesMotion
+        val senderLagsMotion =
+            if (interactionActive) {
+                sender.fps < goal * INTERACTION_DELIVERY_RATIO
+            } else {
+                measuredSourceFps?.let {
+                    sender.fps < minOf(goal.toDouble(), it) * PASSIVE_DELIVERY_RATIO
+                } == true
+            }
         val bandwidthLimited =
             outbound.qualityLimitationReason.equals("bandwidth", ignoreCase = true)
         val bandwidthUnderDelivery =
-            movingSource && senderLagsMovingSource && bandwidthLimited
+            motionEvidence && senderLagsMotion && bandwidthLimited
         val bandwidthFreshnessPressure =
             bandwidthUnderDelivery &&
                 (
@@ -214,8 +230,25 @@ internal class MotionVideoBudget {
         return profile.copy(captureWidthPx = even(profile.captureWidthPx), captureHeightPx = even(profile.captureHeightPx))
     }
 
-    fun cadenceFloor(profile: CaptureProfile, motionActive: Boolean, nowMs: Long): Int {
+    fun cadenceFloor(
+        profile: CaptureProfile,
+        motionActive: Boolean,
+        nowMs: Long,
+        interactionActive: Boolean = false
+    ): Int {
         if (!motionActive) return 1
+
+        /*
+         * Finger/control activity is the strongest motion signal in a remote
+         * control session. Keep the source ceiling at >=24 fps while the
+         * controller is actively interacting; libwebrtc may still drop/adapt
+         * frames under congestion, and truly severe loss/RTT can bypass this
+         * floor in VideoCadenceGovernor. This prevents the 24 -> 20 -> 15
+         * collapse seen while commands are visibly changing the remote UI.
+         */
+        if (interactionActive) {
+            return minOf(BANDWIDTH_CADENCE_FLOOR_FPS, profile.motionFps)
+        }
 
         // Keep at least 24 fps while a recent bandwidth-limited moving source
         // still has a cheaper pixel rung available. This is the Java-side
@@ -254,6 +287,8 @@ internal class MotionVideoBudget {
         const val BANDWIDTH_FAST_SETTLE_MS = 1_000L
         const val BANDWIDTH_PRESSURE_HOLD_MS = 2_500L
         const val MIN_MOVING_SOURCE_FPS = 8.0
+        const val INTERACTION_DELIVERY_RATIO = 0.75
+        const val PASSIVE_DELIVERY_RATIO = 0.75
         const val NETWORK_QUEUE_PRESSURE_MS = 90.0
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val MIN_BANDWIDTH_SHORT_EDGE = 180
