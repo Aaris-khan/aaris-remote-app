@@ -47,6 +47,14 @@ object WebRtcRuntime {
             PeerConnectionFactory.initialize(
                 PeerConnectionFactory.InitializationOptions
                     .builder(appContext)
+                    /*
+                     * Remote-control video is interactive streaming, not movie
+                     * playback. Ask libwebrtc to advertise a 0..100 ms playout
+                     * window so the receiver takes its low-latency scheduling
+                     * path while retaining a small jitter budget instead of
+                     * building a stale-frame playback queue.
+                     */
+                    .setFieldTrials(RealtimeMediaPolicy.FIELD_TRIALS)
                     .setEnableInternalTracer(false)
                     .createInitializationOptions()
             )

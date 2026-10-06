@@ -132,16 +132,9 @@ class HostWebRtcSession(
 
     private val interactionPriorityTimeout = Runnable {
         if (!closed.get() && interactionActive) {
-            interactionActive = false
-            fallbackStreamer.setInteractionActive(false)
-            applyVideoPolicy(profile)
-            listener.onDiagnostic(
-                if (freshnessPriorityActive()) {
-                    "Remote interaction idle • visible screen motion remains freshness-first"
-                } else {
-                    "Remote interaction idle • native motion adaptation remains enabled"
-                }
-            )
+            // Route every transition through one state owner so capture-thread
+            // scheduling, fallback policy and RTP policy cannot drift apart.
+            updateInteractionPriority(false)
         }
     }
 
@@ -1015,6 +1008,14 @@ class HostWebRtcSession(
         if (interactionActive != active) {
             val wasFreshnessActive = freshnessPriorityActive()
             interactionActive = active
+
+            /*
+             * Remote input is the strongest latency signal in the product.
+             * Boost only the lightweight SurfaceTexture delivery lane for the
+             * interaction window; no extra capture/encode work is created.
+             */
+            capture.setInteractionPriority(active)
+
             if (active) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 // Capture quiet-path proof before cadence recovery consumes it.
