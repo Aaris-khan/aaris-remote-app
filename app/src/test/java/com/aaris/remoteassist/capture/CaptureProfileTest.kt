@@ -68,6 +68,51 @@ class CaptureProfileTest {
     }
 
     @Test
+    fun softwareOnlyRealtimeEncodingCapsAmbitiousBootstrapToBalanced() {
+        assertEquals(
+            CaptureTier.BALANCED,
+            CaptureProfile.capForEncoderAcceleration(
+                recommendedTier = CaptureTier.STANDARD,
+                hardwareRealtimeEncoderAvailable = false
+            )
+        )
+        assertEquals(
+            CaptureTier.BALANCED,
+            CaptureProfile.capForEncoderAcceleration(
+                recommendedTier = CaptureTier.HIGH,
+                hardwareRealtimeEncoderAvailable = false
+            )
+        )
+        assertEquals(
+            CaptureTier.BALANCED,
+            CaptureProfile.capForEncoderAcceleration(
+                recommendedTier = CaptureTier.BALANCED,
+                hardwareRealtimeEncoderAvailable = false
+            )
+        )
+        assertEquals(
+            CaptureTier.LOW,
+            CaptureProfile.capForEncoderAcceleration(
+                recommendedTier = CaptureTier.LOW,
+                hardwareRealtimeEncoderAvailable = false
+            )
+        )
+    }
+
+    @Test
+    fun hardwareRealtimeEncoderPreservesDeviceRecommendation() {
+        CaptureTier.entries.forEach { tier ->
+            assertEquals(
+                tier,
+                CaptureProfile.capForEncoderAcceleration(
+                    recommendedTier = tier,
+                    hardwareRealtimeEncoderAvailable = true
+                )
+            )
+        }
+    }
+
+    @Test
     fun standardKeepsNative1600pLongSide() {
         val profile =
             CaptureProfile.forDisplay(
