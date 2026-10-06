@@ -175,9 +175,16 @@ class VideoCadenceGovernor(
         val renderGapPressureMs = maxOf(MIN_RENDER_GAP_PRESSURE_MS, budgetMs * RENDER_GAP_BUDGET_MULTIPLIER)
         val presentationMeasured =
             presentedFrames >= MIN_PRESENTED_FRAMES && expectedPresentationFps >= MIN_PRESENTATION_EXPECTED_FPS
+        val presentationAgeMs = receiver?.presentationAgeMs
+        val presentationHeartbeatStalled =
+            receiverMeasured &&
+                presentationAgeMs != null &&
+                presentationAgeMs >= PRESENTATION_HEARTBEAT_STALL_MS
         val presentationPressure =
-            presentationMeasured &&
-                (presentationRatio < PRESENTATION_DELIVERY_RATIO || renderGapMs > renderGapPressureMs)
+            (
+                presentationMeasured &&
+                    (presentationRatio < PRESENTATION_DELIVERY_RATIO || renderGapMs > renderGapPressureMs)
+                ) || presentationHeartbeatStalled
 
         val congestion =
             loss >= PACKET_LOSS_PRESSURE_RATIO ||
@@ -185,8 +192,15 @@ class VideoCadenceGovernor(
                 queuePressure || receiverDelay || pipelineResidencePressure
 
         val severePresentationPressure =
-            presentationMeasured &&
-                (presentationRatio < SEVERE_PRESENTATION_DELIVERY_RATIO || renderGapMs >= SEVERE_RENDER_GAP_MS)
+            (
+                presentationMeasured &&
+                    (presentationRatio < SEVERE_PRESENTATION_DELIVERY_RATIO || renderGapMs >= SEVERE_RENDER_GAP_MS)
+                ) ||
+                (
+                    receiverMeasured &&
+                        presentationAgeMs != null &&
+                        presentationAgeMs >= SEVERE_PRESENTATION_HEARTBEAT_STALL_MS
+                    )
         /*
          * A software encoder can collapse to only a handful of frames per
          * second without exposing qualityLimitationReason="cpu". Treat 3-6 fps
@@ -327,9 +341,12 @@ class VideoCadenceGovernor(
         pressure = 0
 
         val presentationHealthy =
-            !presentationMeasured ||
-                (presentationRatio >= HEALTHY_PRESENTATION_RATIO &&
-                    renderGapMs < maxOf(HEALTHY_RENDER_GAP_MS, budgetMs * HEALTHY_RENDER_GAP_BUDGET_MULTIPLIER))
+            !presentationHeartbeatStalled &&
+                (
+                    !presentationMeasured ||
+                        (presentationRatio >= HEALTHY_PRESENTATION_RATIO &&
+                            renderGapMs < maxOf(HEALTHY_RENDER_GAP_MS, budgetMs * HEALTHY_RENDER_GAP_BUDGET_MULTIPLIER))
+                    )
         val receiverHealthy =
             if (receiver == null) {
                 outbound.qualityLimitationReason == "none" &&
@@ -401,6 +418,8 @@ class VideoCadenceGovernor(
         const val MIN_RECEIVER_SAMPLES_FOR_DROP_RATIO = 8
         const val MIN_PRESENTED_FRAMES = 5
         const val MIN_PRESENTATION_EXPECTED_FPS = 10.0
+        const val PRESENTATION_HEARTBEAT_STALL_MS = 1_500
+        const val SEVERE_PRESENTATION_HEARTBEAT_STALL_MS = 3_000
 
         const val CODEC_PRESSURE_BUDGET_RATIO = 0.85
         const val CODEC_HEADROOM_BUDGET_RATIO = 0.55
