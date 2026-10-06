@@ -527,6 +527,24 @@ class HostWebRtcSession(
                 noteRemoteInteraction()
 
                 AssistAccessibilityService.dispatch(command) { applied ->
+                    if (applied) {
+                        /*
+                         * A sparse MediaProjection producer must not make a
+                         * successfully applied touch wait hundreds of ms for
+                         * the next natural callback. Give Android one display
+                         * tick, then ask for the current texture only if no
+                         * fresh source sample arrived meanwhile.
+                         */
+                        displayHandler.postDelayed(
+                            {
+                                if (!closed.get()) {
+                                    capture.requestInteractionRefresh()
+                                }
+                            },
+                            INTERACTION_REFRESH_DELAY_MS
+                        )
+                    }
+
                     /*
                      * CONTINUE is a freshness-only motion sample. It is never
                      * acknowledged, whether applied or dropped, because a late
@@ -1123,6 +1141,7 @@ class HostWebRtcSession(
         private const val MAX_CAPTURE_RECOVERY_ATTEMPTS = 3
         private const val LEASE_WATCHDOG_MS = 3_000L
         private const val INTERACTION_PRIORITY_TIMEOUT_MS = 3_000L
+        private const val INTERACTION_REFRESH_DELAY_MS = 32L
         private const val MAX_SESSION_VIDEO_FPS = 30
         private const val PRESENTATION_HEARTBEAT_FRESH_MS = 1_500
     }
