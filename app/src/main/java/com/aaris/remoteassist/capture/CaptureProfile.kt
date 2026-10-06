@@ -141,6 +141,27 @@ data class CaptureProfile(
             }
         }
 
+        /**
+         * RAM is only a memory budget; it does not prove realtime video encode
+         * throughput. When the negotiated screen codecs have no hardware path,
+         * keep bootstrap work at BALANCED until live telemetry proves otherwise.
+         *
+         * LOW/BALANCED devices are never promoted by this helper. Hardware
+         * acceleration preserves the device recommendation unchanged.
+         */
+        internal fun capForEncoderAcceleration(
+            recommendedTier: CaptureTier,
+            hardwareRealtimeEncoderAvailable: Boolean
+        ): CaptureTier {
+            if (
+                hardwareRealtimeEncoderAvailable ||
+                recommendedTier.ordinal <= CaptureTier.BALANCED.ordinal
+            ) {
+                return recommendedTier
+            }
+            return CaptureTier.BALANCED
+        }
+
         @Suppress("DEPRECATION")
         fun current(
             context: Context,
