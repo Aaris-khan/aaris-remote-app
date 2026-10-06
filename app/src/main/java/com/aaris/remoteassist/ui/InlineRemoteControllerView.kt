@@ -42,6 +42,7 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 import org.webrtc.EglBase
 import org.webrtc.EglRenderer
+import org.webrtc.EglThread
 import org.webrtc.GlRectDrawer
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
@@ -1190,11 +1191,25 @@ class InlineRemoteControllerView(
 
         return runCatching {
             val renderer = EglRenderer("AarisInlineRemote")
+            val renderThread =
+                EglThread.create(
+                    null,
+                    WebRtcRuntime.eglBase(activity)
+                        .eglBaseContext,
+                    EglBase.CONFIG_PLAIN
+                )
+            /*
+             * Remote-control rendering is freshness-first, not A/V-sync-first.
+             * Keep presentation timestamps disabled and ask EglRenderer's
+             * scheduler to overwrite pending render updates. The renderer also
+             * keeps only one pending VideoFrame, so a slow swap drops obsolete
+             * work instead of turning smooth motion into a stale playback queue.
+             */
             renderer.init(
-                WebRtcRuntime.eglBase(activity)
-                    .eglBaseContext,
-                EglBase.CONFIG_PLAIN,
-                GlRectDrawer()
+                renderThread,
+                GlRectDrawer(),
+                false,
+                true
             )
             renderer.setMirror(false)
             renderer.disableFpsReduction()

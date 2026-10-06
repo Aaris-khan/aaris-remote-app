@@ -163,6 +163,13 @@ class ScreenCaptureTrack(
     fun sampleSourceFps(nowMs: Long): Double? = activityTracker.sampleFps(nowMs)
     fun removeSnapshotSink(sink: VideoSink) { snapshotSinks -= sink }
 
+    fun armInteractionRefresh(
+        nowMs: Long = android.os.SystemClock.elapsedRealtime()
+    ) {
+        if (closed.get() || !started) return
+        refreshPolicy.onInteractionApplied(nowMs)
+    }
+
     fun requestInteractionRefresh(
         nowMs: Long = android.os.SystemClock.elapsedRealtime()
     ): Boolean {
