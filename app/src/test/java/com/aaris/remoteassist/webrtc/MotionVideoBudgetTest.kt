@@ -70,6 +70,51 @@ class MotionVideoBudgetTest {
         assertEquals(360, budget.shortEdge)
     }
 
+    @Test fun sixtyFpsTargetUsesSixtyFpsFrameBudgetForPixelRelief() {
+        val budget = MotionVideoBudget()
+
+        assertTrue(budget.primeForMotion(profile, 0L))
+        assertEquals(360, budget.shortEdge)
+
+        /*
+         * A hardware path delivering 30 fps with ~16 ms encode residence is
+         * acceptable for a 30 fps goal, but it is temporal under-delivery for
+         * a proven 60 fps target. The pixel governor must see the 16.7 ms frame
+         * budget and spend resolution before cadence is sacrificed.
+         */
+        val halfCadence = sender(
+            fps = 30,
+            encode = 16.0,
+            queue = 5.0,
+            implementation = "c2.qti.avc.encoder"
+        )
+
+        assertFalse(
+            budget.observe(
+                outbound = halfCadence,
+                receiver = receiver(fps = 30, decode = 5.0, presented = 30),
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 1_000L,
+                interactionActive = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                outbound = halfCadence,
+                receiver = receiver(fps = 30, decode = 5.0, presented = 30),
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 3_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(240, budget.shortEdge)
+        assertEquals(500_000, budget.bitrateCeiling(profile, true))
+    }
+
     @Test fun networkDelayAloneCannotUseTheEmergencyCodecResolution() {
         val budget = MotionVideoBudget()
         repeat(20) { budget.observe(sender(queue = 160.0), receiver(), 30.0, true, 30, 1_000L + it * 1_000) }

@@ -107,7 +107,17 @@ internal class MotionVideoBudget {
             }
         }
 
-        val goal = targetFps.coerceIn(1, 30)
+        /*
+         * Keep the pixel budget aligned with the cadence governor. The host
+         * already passes the effective 15/20/24/30/45/60 fps target here.
+         * Clamping this layer to 30 fps made 30 fps delivery look healthy
+         * during a 45/60 fps trial, so the cheaper pixel lever could fail to
+         * react while temporal freshness was still under-delivering.
+         *
+         * Resolution adapts before cadence: at high cadence we use the real
+         * frame budget so pixels are shed early enough to avoid stale queues.
+         */
+        val goal = targetFps.coerceIn(1, MAX_MOTION_TARGET_FPS)
         val frameMs = 1000.0 / goal
         val encodeMs = sender.processingMs.valid()
         val queueMs = sender.sendQueueMs.valid()
@@ -285,6 +295,7 @@ internal class MotionVideoBudget {
     private fun Double?.valid(): Double? = this?.takeIf { it.isFinite() && it >= 0.0 }
 
     private companion object {
+        const val MAX_MOTION_TARGET_FPS = 60
         const val MOTION_WARM_START_SHORT_EDGE = 360
         const val SETTLE_MS = 3_000L
         const val BANDWIDTH_FAST_SETTLE_MS = 1_000L
