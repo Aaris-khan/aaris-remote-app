@@ -97,7 +97,7 @@ class MotionVideoBudgetTest {
         assertTrue(budget.observe(recorded, null, 14.0, true, 30, 1_000L))
         assertEquals(240, budget.shortEdge)
         assertEquals(500_000, budget.bitrateCeiling(profile, true))
-        assertFalse(
+        assertTrue(
             cadence.observe(
                 recorded,
                 null,
@@ -107,7 +107,7 @@ class MotionVideoBudgetTest {
                 producerFps = 14.0
             )
         )
-        assertEquals(30, cadence.cap)
+        assertEquals(24, cadence.cap)
 
         val worse = recorded.copy(
             recent = recorded.recent!!.copy(frames = 2, sendQueueMs = 1_669.0)
@@ -119,13 +119,13 @@ class MotionVideoBudgetTest {
             cadence.observe(
                 worse,
                 null,
-                30,
+                24,
                 2_000L,
                 budget.cadenceFloor(profile, true, 2_000L),
                 producerFps = 31.0
             )
         )
-        assertEquals(30, cadence.cap)
+        assertEquals(24, cadence.cap)
 
         // Once the smallest pixel rung has had time to drain the old queue,
         // cadence remains the final safety valve if the link is still bad.
@@ -133,7 +133,7 @@ class MotionVideoBudgetTest {
             cadence.observe(
                 worse,
                 null,
-                30,
+                24,
                 5_100L,
                 budget.cadenceFloor(profile, true, 5_100L),
                 producerFps = 31.0
@@ -188,7 +188,7 @@ class MotionVideoBudgetTest {
         assertEquals(720, budget.shortEdge)
         budget.observe(limited, null, 30.0, true, 30, 6000)
         budget.observe(limited, null, 30.0, true, 30, 7000)
-        assertEquals(540, budget.shortEdge)
+        assertEquals(360, budget.shortEdge)
     }
 
     @Test fun healthyTransportAtFifteenFpsDoesNotUpgradeResolution() {
