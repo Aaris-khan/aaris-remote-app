@@ -634,6 +634,12 @@ class HostWebRtcSession(
                     receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
                 }
             }
+            is ControlPacket.PresentationHeartbeat -> displayHandler.post {
+                val current = lease
+                if (!closed.get() && current != null && SessionRuntime.isAuthorized(sessionId, current.leaseSecret, current.displayGeneration)) {
+                    receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
+                }
+            }
             is ControlPacket.CommandResult,
             is ControlPacket.Hello -> Unit
         }
@@ -768,7 +774,19 @@ class HostWebRtcSession(
             if (now - lastSlowVideoCheckMs < 3000) return@post
             lastSlowVideoCheckMs = now
             listener.onDiagnostic(snapshot.compact())
-            listener.onDiagnostic("Video delivery • source=${sourceFps?.toInt()}fps target=${effectiveCaptureProfile(profile).fps}fps decode=${receiver?.fps?.toInt()}fps present=${receiver?.presentedFps?.toInt()}fps gap=${receiver?.maxRenderGapMs}ms")
+            val presentationState = receiver?.presentedFps?.let {
+                "${it.toInt()}fps"
+            } ?: receiver?.presentationAgeMs?.let {
+                if (it <= PRESENTATION_HEARTBEAT_FRESH_MS) {
+                    "alive(${it}ms)"
+                } else {
+                    "stale(${it}ms)"
+                }
+            } ?: "null"
+            listener.onDiagnostic(
+                "Video delivery • source=${sourceFps?.toInt()}fps target=${effectiveCaptureProfile(profile).fps}fps " +
+                    "decode=${receiver?.fps?.toInt()}fps present=$presentationState gap=${receiver?.maxRenderGapMs}ms"
+            )
 
             // One resolution owner during motion: do not simultaneously lower
             // the legacy quality tier and the motion pixel budget.
@@ -1106,5 +1124,6 @@ class HostWebRtcSession(
         private const val LEASE_WATCHDOG_MS = 3_000L
         private const val INTERACTION_PRIORITY_TIMEOUT_MS = 3_000L
         private const val MAX_SESSION_VIDEO_FPS = 30
+        private const val PRESENTATION_HEARTBEAT_FRESH_MS = 1_500
     }
 }
