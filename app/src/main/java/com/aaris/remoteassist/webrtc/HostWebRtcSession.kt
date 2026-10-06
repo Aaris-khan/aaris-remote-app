@@ -66,8 +66,27 @@ class HostWebRtcSession(
     private val powerManager = appContext.getSystemService(PowerManager::class.java)
     private var deviceFpsLimit = MAX_SESSION_VIDEO_FPS
 
-    private val maxCaptureTier =
+    private val recommendedCaptureTier =
         CaptureProfile.recommendedTier(appContext)
+
+    /*
+     * Memory size does not guarantee realtime codec throughput. Only count
+     * hardware codecs that ScreenCodecPolicy can actually negotiate as the
+     * primary screen format; unrelated hardware codecs must not unlock an
+     * aggressive capture bootstrap.
+     */
+    private val hardwareRealtimeEncoderAvailable =
+        WebRtcRuntime.hardwareScreenEncoders(appContext).any { codec ->
+            codec.equals("H264", ignoreCase = true) ||
+                codec.equals("VP8", ignoreCase = true)
+        }
+
+    private val maxCaptureTier =
+        CaptureProfile.capForEncoderAcceleration(
+            recommendedTier = recommendedCaptureTier,
+            hardwareRealtimeEncoderAvailable =
+                hardwareRealtimeEncoderAvailable
+        )
 
     @Volatile
     private var captureTier = maxCaptureTier
@@ -342,6 +361,13 @@ class HostWebRtcSession(
         localCaptureFrameSeen.set(false)
 
         val initialEffective = effectiveCaptureProfile(profile)
+        if (maxCaptureTier != recommendedCaptureTier) {
+            listener.onDiagnostic(
+                "Realtime video bootstrap → " +
+                    maxCaptureTier.name +
+                    " • no H264/VP8 hardware encoder"
+            )
+        }
         listener.onDiagnostic(
             "Starting MediaProjection capture • app=" +
                 com.aaris.remoteassist.BuildConfig.VERSION_NAME +
