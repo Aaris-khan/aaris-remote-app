@@ -4,24 +4,54 @@ package com.aaris.remoteassist.capture
 internal class CaptureRefreshPolicy {
     private var lastSampleAtMs: Long? = null
     private var lastRequestAtMs: Long? = null
+    private var interactionAppliedAtMs: Long? = null
 
     @Synchronized
     fun onSample(nowMs: Long) {
         lastSampleAtMs = nowMs
+
+        /*
+         * A natural producer callback after the input is exactly what we want.
+         * Cancel the armed synthetic pull so moving screens remain zero-extra-work.
+         */
+        val appliedAt = interactionAppliedAtMs
+        if (appliedAt != null && nowMs > appliedAt) {
+            interactionAppliedAtMs = null
+        }
+    }
+
+    /** Arms one bounded post-input freshness pull. */
+    @Synchronized
+    fun onInteractionApplied(nowMs: Long) {
+        if (lastSampleAtMs == null) return
+        interactionAppliedAtMs = nowMs
     }
 
     /**
-     * During remote control, an applied input is stronger evidence that fresh
-     * pixels are useful than the producer's sampled FPS. If MediaProjection has
-     * not naturally delivered a frame within roughly one 24-fps period, request
-     * the current SurfaceTexture. Natural motion remains zero-extra-work.
+     * After one display tick, pull the current SurfaceTexture only if no natural
+     * MediaProjection frame arrived after the applied input. Each interaction
+     * arms at most one synthetic sample, so rapid touches cannot build a queue.
      */
     @Synchronized
     fun shouldRefreshForInteraction(nowMs: Long): Boolean {
+        val appliedAt = interactionAppliedAtMs ?: return false
         val sample = lastSampleAtMs ?: return false
-        val previous = maxOf(sample, lastRequestAtMs ?: sample)
-        if (nowMs - previous < INTERACTION_STALE_MS) return false
+
+        if (nowMs < appliedAt) return false
+        if (sample > appliedAt) {
+            interactionAppliedAtMs = null
+            return false
+        }
+        if (nowMs - appliedAt < INTERACTION_GRACE_MS) return false
+
+        val previousRequest = lastRequestAtMs
+        if (previousRequest != null && previousRequest >= appliedAt) {
+            interactionAppliedAtMs = null
+            return false
+        }
+
         lastRequestAtMs = nowMs
+        interactionAppliedAtMs = null
         return true
     }
 
@@ -37,6 +67,9 @@ internal class CaptureRefreshPolicy {
 
     companion object {
         const val INTERVAL_MS = 1_000L
-        const val INTERACTION_STALE_MS = 45L
+
+        // The caller normally waits one actual display tick. This tiny lower
+        // bound only prevents same-timestamp scheduling from duplicating work.
+        const val INTERACTION_GRACE_MS = 6L
     }
 }
