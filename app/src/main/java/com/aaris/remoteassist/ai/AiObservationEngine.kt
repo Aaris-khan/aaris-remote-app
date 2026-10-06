@@ -36,6 +36,7 @@ class AiObservationEngine internal constructor(
     val ledger = AiScreenLedger()
     private var lastFingerprint: ByteArray? = null
     private var issuedUi: AiUiSnapshot? = null
+    private var issuedMode = AiInteractionMode.INTERACTIVE
     private var width = 0
     private var height = 0
     private var rotation = 0
@@ -86,12 +87,14 @@ class AiObservationEngine internal constructor(
                 return error("SCREEN_CHANGING")
             }
             val stable = revision == ledger.eventRevision
+            val mode = AiInteractionClassifier.classify(ui, stable)
             val id = UUID.randomUUID().toString()
             width = geometry.displayWidthPx; height = geometry.displayHeightPx; rotation = frame.rotation
-            issuedUi = ui; lastFingerprint = fingerprint
+            issuedUi = ui; issuedMode = mode; lastFingerprint = fingerprint
             ledger.issue(id, now())
             return JSONObject().put("observationId", id).put("screenVersion", ledger.version)
                 .put("capturedAtElapsedMs", frame.receivedAtMs).put("settled", stable)
+                .put("interactionMode", mode.wireName)
                 .put("currentPackage", ui.packageName).put("uiHints", if (hideAll) JSONArray() else publishedHints(ui))
                 .put("treeTruncated", ui.truncated).put("redacted", hideAll || ui.masks.isNotEmpty())
                 .put("display", JSONObject().put("width", width).put("height", height)
@@ -191,11 +194,24 @@ class AiObservationEngine internal constructor(
         if (!navigation) {
             val fresh = freshFrame()
             if (fresh.rotation != rotation || !geometryMatches(fresh, geometry)) return refused("CAPTURE_GEOMETRY_CHANGED")
-            val changed = withContext(Dispatchers.Default) {
-                AiVisualFingerprint.materiallyDifferent(lastFingerprint ?: byteArrayOf(),
-                    AiVisualFingerprint.sample(fresh.nv21, fresh.width, fresh.height, fresh.rotation), checkNotNull(scope))
+            val (localChanged, globalChangeRatio) = withContext(Dispatchers.Default) {
+                val before = lastFingerprint ?: byteArrayOf()
+                val after = AiVisualFingerprint.sample(fresh.nv21, fresh.width, fresh.height, fresh.rotation)
+                AiVisualFingerprint.materiallyDifferent(before, after, checkNotNull(scope)) to
+                    AiVisualFingerprint.differenceRatio(before, after)
             }
-            if (changed) return refused("TARGET_CHANGED")
+            val semanticTargetPresent = targetAtScope(observed, checkNotNull(scope)) != null || args.has("targetId")
+            val dynamicCanvasCoordinateTap =
+                issuedMode == AiInteractionMode.DYNAMIC_CANVAS && !semanticTargetPresent
+            if (dynamicCanvasCoordinateTap) {
+                // Permit local animation around canvas/game targets, but never
+                // carry a coordinate across a major scene transition in the same window.
+                if (globalChangeRatio == null || globalChangeRatio > DYNAMIC_SCENE_CHANGE_LIMIT) {
+                    return refused("TARGET_CHANGED")
+                }
+            } else if (localChanged) {
+                return refused("TARGET_CHANGED")
+            }
         }
         if (!ticketValid() || epoch != ledger.invalidationGeneration) return refused("OBSERVATION_EXPIRED_OR_USED")
         // Re-read window/target at execution, including after STOP relocation.
@@ -355,14 +371,55 @@ class AiObservationEngine internal constructor(
             }.toSet()
             return relevant(a) == relevant(b)
         }
-        fun target(ui: AiUiSnapshot) = ui.nodes.filter {
-            it.area < width.toLong() * height / 3 && it.contains(scope.x * width, scope.y * height)
-        }.minByOrNull { it.area }
-        val target = target(a)
-        return target == target(b) && target?.enabled != false
+        val target = targetAtScope(a, scope)
+        return target == targetAtScope(b, scope) && target?.enabled != false
     }
 
     fun geometry(): Pair<Int, Int> = width to height
+
+    fun fingerprintCopy(): ByteArray? = lastFingerprint?.clone()
+
+    fun createReflexTemplate(id: String, args: JSONObject, ttlMs: Long = 180_000L): AiLocalReflex? {
+        if (args.optString("action") != "tap") return null
+        val ui = issuedUi ?: return null
+        val fingerprint = lastFingerprint?.clone() ?: return null
+        if (ui.sensitiveFocus || ui.packageName == ownPackage || width <= 0 || height <= 0) return null
+        val x = args.optDouble("x", Double.NaN)
+        val y = args.optDouble("y", Double.NaN)
+        if (!x.isFinite() || !y.isFinite() || x !in 0.0..1.0 || y !in 0.0..1.0) return null
+        val targetId = args.optString("targetId", "").trim().takeIf { it.isNotEmpty() }
+        val created = now()
+        return AiLocalReflex(
+            id = id,
+            packageName = ui.packageName,
+            windowId = ui.windowId,
+            displayWidthPx = width,
+            displayHeightPx = height,
+            rotation = rotation,
+            x = x,
+            y = y,
+            targetId = targetId,
+            referenceFingerprint = fingerprint,
+            createdAtMs = created,
+            expiresAtMs = created + ttlMs.coerceIn(15_000L, 300_000L)
+        )
+    }
+
+    fun visualChangeRatioFrom(reference: ByteArray?): Double? {
+        val current = lastFingerprint ?: return null
+        val before = reference ?: return null
+        return AiVisualFingerprint.differenceRatio(before, current)
+    }
+
+    fun currentInteractionMode(): AiInteractionMode = issuedMode
+
+    fun currentPackageName(): String? = issuedUi?.packageName
+
+    private fun targetAtScope(ui: AiUiSnapshot, scope: AiActionScope): AiUiNode? =
+        ui.nodes.filter {
+            it.area < width.toLong() * height / 3 && it.contains(scope.x * width, scope.y * height)
+        }.minByOrNull { it.area }
+
     private fun sameWindow(a: AiUiSnapshot, b: AiUiSnapshot) = a.packageName == b.packageName && a.windowId == b.windowId
     private fun samePrivacyContext(a: AiUiSnapshot, b: AiUiSnapshot) = sameWindow(a, b) && a.sensitiveFocus == b.sensitiveFocus && a.masks == b.masks
     private fun geometryMatches(frame: AiRawFrame, profile: CaptureProfile): Boolean {
@@ -378,6 +435,7 @@ class AiObservationEngine internal constructor(
         private const val QUIET_WINDOW_MS = 100L
         private const val MAX_ANIMATED_SETTLE_MS = 220L
         private const val SETTLE_POLL_MS = 40L
+        private const val DYNAMIC_SCENE_CHANGE_LIMIT = 0.42
         private const val TAP_NEAR_MISS_RADIUS = 0.035
         private const val TAP_NEAR_MISS_RADIUS_SQ = TAP_NEAR_MISS_RADIUS * TAP_NEAR_MISS_RADIUS
     }
