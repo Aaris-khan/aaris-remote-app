@@ -156,7 +156,11 @@ class HighCadenceProbeTest {
         assertFalse(feedback.accept(packet, 42, 3, 1001))
         feedback.accept(ControlPacket.PresentationHeartbeat(42, 3, 1), 42, 3, 1000)
         assertEquals(59.94, feedback.consume(42, 3, 1200)!!.displayRefreshRateHz!!, 0.001)
-        assertNull(feedback.consume(42, 3, 4001)!!.displayRefreshRateHz)
+        // Display capability is control-plane metadata. It intentionally
+        // outlives sparse/no EGL presentation windows, but still expires if
+        // the controller stops refreshing it.
+        assertEquals(59.94, feedback.consume(42, 3, 6000)!!.displayRefreshRateHz!!, 0.001)
+        assertNull(feedback.consume(42, 3, 16001)!!.displayRefreshRateHz)
         feedback.accept(ControlPacket.PresentationHeartbeat(42, 4, 1), 42, 4, 4100)
         assertNull(feedback.consume(42, 4, 4200)!!.displayRefreshRateHz)
     }
