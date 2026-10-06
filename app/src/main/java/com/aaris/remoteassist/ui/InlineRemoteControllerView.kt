@@ -1250,16 +1250,10 @@ class InlineRemoteControllerView(
                                 surfaceFrameRateHints
                                     .observe(window, presentedAtMs)
                                     ?.let(::applySurfaceFrameRateHint)
-                                // Advertise same-resolution display capability,
-                                // not the temporary idle refresh selected for a
-                                // 30 fps Surface hint (which would lock probes out).
-                                val display = surfaceView.display
-                                val mode = display?.mode
-                                val refresh = display?.supportedModes
-                                    ?.filter { it.physicalWidth == mode?.physicalWidth && it.physicalHeight == mode?.physicalHeight }
-                                    ?.maxOfOrNull { it.refreshRate }
-                                    ?.coerceAtMost(240f)
-                                session()?.sendPresentationFeedback(window, refresh)
+                                // Display capability is published by
+                                // ControllerWebRtcSession independently of EGL
+                                // cadence. This window reports only proof-of-glass.
+                                session()?.sendPresentationFeedback(window)
                                 if (renderedFrameSeen.get()) {
                                     primaryConfirmation.onPresented(presentedAtMs) {
                                         session()?.confirmPrimaryVideoRendered() == true

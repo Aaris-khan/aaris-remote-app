@@ -55,6 +55,7 @@ class WebRtcPeer(
     private val started = AtomicBoolean(false)
     private val codecRepairAttempted = AtomicBoolean(false)
     @Volatile private var latestOutboundCodec: String? = null
+    @Volatile private var latestOutboundCodecImplementation: String? = null
     private val initialIceRestartAttempted = AtomicBoolean(false)
     private val offerPreparationInFlight = AtomicBoolean(false)
     private val handler = Handler(Looper.getMainLooper())
@@ -148,7 +149,10 @@ class WebRtcPeer(
                 VideoHealthSnapshot
                     .from(report, role)
                     ?.let { snapshot ->
-                        if (role == PeerRole.HOST) latestOutboundCodec = snapshot.codec?.substringAfterLast('/')
+                        if (role == PeerRole.HOST) {
+                            latestOutboundCodec = snapshot.codec?.substringAfterLast('/')
+                            latestOutboundCodecImplementation = snapshot.codecImplementation
+                        }
                         listener.onVideoHealth(videoHealthWindows.sample(snapshot))
                     }
             }
@@ -1562,31 +1566,112 @@ class WebRtcPeer(
         }.onFailure { listener.onDiagnostic("Video codec preference unavailable (${it.javaClass.simpleName})") }
     }
 
-    /** One codec repair within the existing peer; no ICE/control/session teardown. */
+    /**
+     * One bounded codec repair within the existing peer.
+     *
+     * Recovery is hardware-first. If H264 is currently running on a hardware
+     * encoder and this device has no hardware VP8 encoder, a transient
+     * decoder/display stall reasserts H264 instead of negotiating libvpx. This
+     * prevents a renderer problem from turning into a CPU/queue collapse.
+     */
     fun recoverPrimaryVideoCodec(): Boolean {
-        if (closed.get() || role != PeerRole.HOST || codecRepairAttempted.get() ||
-            peerConnection.signalingState() != PeerConnection.SignalingState.STABLE) return false
+        if (
+            closed.get() ||
+            role != PeerRole.HOST ||
+            codecRepairAttempted.get() ||
+            peerConnection.signalingState() != PeerConnection.SignalingState.STABLE
+        ) {
+            return false
+        }
+
         val transceiver = localScreenTransceiver ?: return false
-        val current = latestOutboundCodec ?: WebRtcRuntime.preferredScreenCodec(appContext, true)
-        val alternate = if (current.equals("H264", true)) "VP8" else "H264"
+        val current =
+            (latestOutboundCodec ?: WebRtcRuntime.preferredScreenCodec(appContext, true))
+                .uppercase()
+        val implementation = latestOutboundCodecImplementation
+        val hardware = WebRtcRuntime.hardwareScreenEncoders(appContext)
+        val normalizedHardware = hardware.map(String::uppercase).toSet()
         val remote = peerConnection.remoteDescription?.description ?: return false
-        if (!ScreenCodecPolicy.remoteSupports(remote, alternate)) return false
-        val codecs = factory.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
-        val selected = ScreenCodecPolicy.order(codecs, alternate, exclusive = true)
-        if (selected.isEmpty() || !offerPreparationInFlight.compareAndSet(false, true)) return false
+        val codecs =
+            factory.getRtpSenderCapabilities(
+                MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO
+            ).codecs
+
+        val candidate =
+            ScreenCodecPolicy
+                .recoveryCandidates(
+                    current = current,
+                    implementation = implementation,
+                    hardwareEncoders = normalizedHardware
+                )
+                .firstOrNull { codec ->
+                    ScreenCodecPolicy.remoteSupports(remote, codec) &&
+                        ScreenCodecPolicy.order(
+                            codecs,
+                            codec,
+                            exclusive = true
+                        ).isNotEmpty()
+                }
+                ?: return false
+
+        val selected =
+            ScreenCodecPolicy.order(
+                codecs,
+                candidate,
+                exclusive = true
+            )
+        if (
+            selected.isEmpty() ||
+            !offerPreparationInFlight.compareAndSet(false, true)
+        ) {
+            return false
+        }
+
         return try {
             transceiver.setCodecPreferences(selected).throwError()
             codecRepairAttempted.set(true)
-            listener.onDiagnostic("Primary video unavailable • negotiating supported $alternate without restarting control")
-            createOffer(onLocalDescriptionSet = { offerPreparationInFlight.set(false) }, onFailure = {
-                offerPreparationInFlight.set(false)
-                preferBaselineScreenCodec(transceiver, true)
-            })
+
+            val stickyHardware =
+                candidate.equals(current, ignoreCase = true) &&
+                    current in normalizedHardware &&
+                    !ScreenCodecPolicy.isSoftwareImplementation(implementation)
+
+            listener.onDiagnostic(
+                if (stickyHardware) {
+                    "Primary video recovery • reasserting hardware " +
+                        candidate +
+                        "; software fallback suppressed"
+                } else {
+                    "Primary video recovery • negotiating hardware-preferred " +
+                        candidate +
+                        " without restarting control"
+                }
+            )
+
+            createOffer(
+                onLocalDescriptionSet = {
+                    offerPreparationInFlight.set(false)
+                },
+                onFailure = {
+                    offerPreparationInFlight.set(false)
+                    preferBaselineScreenCodec(
+                        transceiver,
+                        true
+                    )
+                }
+            )
             true
-        } catch (error: Exception) {
+        } catch (failure: Exception) {
             offerPreparationInFlight.set(false)
-            preferBaselineScreenCodec(transceiver, true)
-            listener.onDiagnostic("Video codec repair unavailable (${error.javaClass.simpleName})")
+            preferBaselineScreenCodec(
+                transceiver,
+                true
+            )
+            listener.onDiagnostic(
+                "Video codec repair unavailable (" +
+                    failure.javaClass.simpleName +
+                    ")"
+            )
             false
         }
     }

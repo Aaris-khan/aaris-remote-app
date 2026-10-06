@@ -1,6 +1,7 @@
 package com.aaris.remoteassist.webrtc
 
 import android.content.Context
+import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
 import com.aaris.remoteassist.control.CommandLatencyTracker
@@ -8,6 +9,7 @@ import android.os.SystemClock
 import com.aaris.remoteassist.control.ControlPacket
 import com.aaris.remoteassist.control.ControlPathPoint
 import com.aaris.remoteassist.control.ControlProtocol
+import android.view.Display
 import org.webrtc.VideoTrack
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
@@ -96,6 +98,10 @@ class ControllerWebRtcSession(
                         ControlPacket.Heartbeat(lease)
                     )
                 )
+                // Display capability is control-plane metadata, not proof that
+                // EGL presented a frame. Publish it independently so a renderer
+                // stall cannot make the host forget the controller's FPS ceiling.
+                publishDisplayCapabilities()
             }
 
             handler.postDelayed(this, HEARTBEAT_MS)
@@ -146,17 +152,15 @@ class ControllerWebRtcSession(
         return sent
     }
 
-    fun sendPresentationFeedback(window: PresentationCadenceWindow, displayRefreshRateHz: Float? = null): Boolean {
+    fun sendPresentationFeedback(
+        window: PresentationCadenceWindow,
+        displayRefreshRateHz: Float? = null
+    ): Boolean {
         if (closed.get()) return false
         val lease = leaseSecret ?: return false
         val display = geometry ?: return false
-        if (displayRefreshRateHz != null && displayRefreshRateHz.isFinite() && displayRefreshRateHz in 1f..240f) {
-            peer.sendControl(
-                ControlProtocol.encode(ControlPacket.DisplayCapabilities(
-                    lease, display.generation, feedbackSequence.incrementAndGet(), displayRefreshRateHz
-                )),
-                freshnessSensitive = true
-            )
+        if (displayRefreshRateHz != null) {
+            publishDisplayCapabilities(displayRefreshRateHz)
         }
         return peer.sendControl(
             bytes = ControlProtocol.encode(
@@ -173,6 +177,57 @@ class ControllerWebRtcSession(
             // never sit ahead of the user's next authoritative control packet.
             freshnessSensitive = true
         )
+    }
+
+    fun sendDisplayCapabilities(
+        refreshRateHz: Float? = currentDisplayRefreshRateHz()
+    ): Boolean = publishDisplayCapabilities(refreshRateHz)
+
+    private fun publishDisplayCapabilities(
+        refreshRateHz: Float? = currentDisplayRefreshRateHz()
+    ): Boolean {
+        if (closed.get()) return false
+        val lease = leaseSecret ?: return false
+        val display = geometry ?: return false
+        val refresh =
+            refreshRateHz
+                ?.takeIf { it.isFinite() && it in 1f..240f }
+                ?: return false
+
+        return peer.sendControl(
+            ControlProtocol.encode(
+                ControlPacket.DisplayCapabilities(
+                    lease,
+                    display.generation,
+                    feedbackSequence.incrementAndGet(),
+                    refresh
+                )
+            ),
+            freshnessSensitive = true
+        )
+    }
+
+    private fun currentDisplayRefreshRateHz(): Float? {
+        val manager =
+            appContext.getSystemService(DisplayManager::class.java)
+                ?: return null
+        val display =
+            manager.getDisplay(Display.DEFAULT_DISPLAY)
+                ?: return null
+        val mode = display.mode
+        return display.supportedModes
+            .asSequence()
+            .filter {
+                it.physicalWidth == mode.physicalWidth &&
+                    it.physicalHeight == mode.physicalHeight
+            }
+            .map { it.refreshRate }
+            .filter { it.isFinite() && it > 0f }
+            .maxOrNull()
+            ?.coerceAtMost(240f)
+            ?: mode.refreshRate.takeIf {
+                it.isFinite() && it > 0f
+            }
     }
 
     fun sendPresentationHeartbeat(): Boolean {
@@ -558,6 +613,9 @@ class ControllerWebRtcSession(
                 handler.post(heartbeat)
 
                 listener.onLive(geometry)
+                // Publish display capability immediately at lease bind; do not
+                // wait for the first rendered frame/presentation window.
+                publishDisplayCapabilities()
                 peer.sendControl(
                     ControlProtocol.encode(
                         ControlPacket.FallbackDeltaReady(

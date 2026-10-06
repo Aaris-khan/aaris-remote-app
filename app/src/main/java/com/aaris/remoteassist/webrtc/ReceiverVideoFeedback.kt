@@ -152,7 +152,10 @@ class ReceiverVideoFeedback {
             freezes = null,
             presentationAgeMs = presentationAgeMs
         )
-        val refreshRate = displayRefreshRateHz?.takeIf { nowMs - capabilitiesAtMs in 0L..MAX_AGE_MS }
+        val refreshRate =
+            displayRefreshRateHz?.takeIf {
+                nowMs - capabilitiesAtMs in 0L..MAX_CAPABILITIES_AGE_MS
+            }
         return if (presentation == null) {
             base.copy(presentationAgeMs = presentationAgeMs, displayRefreshRateHz = refreshRate)
         } else {
@@ -168,6 +171,7 @@ class ReceiverVideoFeedback {
 
     private companion object {
         const val MAX_AGE_MS = 3_000L
+        const val MAX_CAPABILITIES_AGE_MS = 15_000L
         const val MAX_PRESENTATION_INTERVAL_MS = 6_000
         const val MAX_PRESENTED_FRAMES = 2_048
         const val MAX_PRESENTATION_LIVENESS_AGE_MS = 30_000L

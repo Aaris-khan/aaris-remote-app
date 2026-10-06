@@ -66,6 +66,25 @@ class PresentationFeedbackTest {
         assertFalse(feedback.accept(packet.copy(sequence = 10), 42, 4, 1_300))
     }
 
+    @Test fun displayCapabilitySurvivesMissingPresentationWindows() {
+        val feedback = ReceiverVideoFeedback()
+        val capability = ControlPacket.DisplayCapabilities(42, 2, 1, 120f)
+        assertTrue(feedback.accept(capability, 42, 2, 1_000))
+
+        // No EGL presentation or decoder window arrives for several seconds.
+        // The display ceiling is control-plane capability and must remain known.
+        val heartbeat = ControlPacket.PresentationHeartbeat(42, 2, 2)
+        assertTrue(feedback.accept(heartbeat, 42, 2, 6_000))
+        val window = checkNotNull(feedback.consume(42, 2, 6_100))
+        assertEquals(120.0, window.displayRefreshRateHz!!, 0.001)
+
+        // Capability eventually expires if the controller really disappears.
+        val lateHeartbeat = ControlPacket.PresentationHeartbeat(42, 2, 3)
+        assertTrue(feedback.accept(lateHeartbeat, 42, 2, 17_000))
+        val stale = checkNotNull(feedback.consume(42, 2, 17_100))
+        assertNull(stale.displayRefreshRateHz)
+    }
+
     @Test fun leaseBoundAggregatorMergesDecoderAndActualPresentationWindows() {
         val feedback = ReceiverVideoFeedback()
         val video = ControlPacket.VideoFeedback(42, 2, 1, 1000, 60, 5f, 12f, 0, 0)

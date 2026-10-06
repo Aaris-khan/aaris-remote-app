@@ -23,6 +23,44 @@ class ScreenCodecPolicyTest {
         assertSame(baseline, order[0]); assertSame(baselineRtx, order[1])
         assertEquals(all.toSet(), order.toSet())
     }
+    @Test fun hardwareH264RecoveryNeverFallsToSoftwareVp8() {
+        assertEquals(
+            listOf("H264"),
+            ScreenCodecPolicy.recoveryCandidates(
+                current = "H264",
+                implementation = "OMX.qcom.video.encoder.avc",
+                hardwareEncoders = setOf("H264")
+            )
+        )
+        assertFalse(
+            ScreenCodecPolicy.isSoftwareImplementation(
+                "OMX.qcom.video.encoder.avc"
+            )
+        )
+    }
+
+    @Test fun recoveryCanUseHardwareAlternateButSoftwareVp8PrefersHardwareH264() {
+        assertEquals(
+            listOf("VP8", "H264"),
+            ScreenCodecPolicy.recoveryCandidates(
+                current = "H264",
+                implementation = "c2.qti.avc.encoder",
+                hardwareEncoders = setOf("H264", "VP8")
+            )
+        )
+        assertEquals(
+            listOf("H264", "VP8"),
+            ScreenCodecPolicy.recoveryCandidates(
+                current = "VP8",
+                implementation = "libvpx",
+                hardwareEncoders = setOf("H264")
+            )
+        )
+        assertTrue(
+            ScreenCodecPolicy.isSoftwareImplementation("libvpx")
+        )
+    }
+
     @Test fun repairUsesOnlySelectedCodecAndItsRetransmissionPayload() {
         val selected = ScreenCodecPolicy.order(all, "VP8", exclusive = true)
         assertEquals(listOf(vp8, vp8Rtx, fec), selected)

@@ -27,6 +27,16 @@ object WebRtcRuntime {
         return ScreenCodecPolicy.preferred(if (sender) hardwareEncoders else hardwareDecoders)
     }
 
+    fun hardwareScreenEncoders(context: Context): Set<String> {
+        initialize(context)
+        return hardwareEncoders
+    }
+
+    fun hardwareScreenDecoders(context: Context): Set<String> {
+        initialize(context)
+        return hardwareDecoders
+    }
+
     fun initialize(context: Context) {
         if (initialized) return
 
