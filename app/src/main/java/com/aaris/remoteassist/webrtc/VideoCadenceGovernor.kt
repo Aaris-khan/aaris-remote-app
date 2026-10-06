@@ -18,6 +18,8 @@ class VideoCadenceGovernor(
     private var interactiveHeadroom = 0
     private var changedAt = Long.MIN_VALUE / 2
     private var lastOverloadAtMs = Long.MIN_VALUE / 2
+    private val highCadenceProbe = HighCadenceProbe()
+    val probingHighCadence: Boolean get() = highCadenceProbe.probing
 
     /**
      * A downshift may survive a long, completely still screen: neither
@@ -78,6 +80,9 @@ class VideoCadenceGovernor(
         minimumFps: Int,
         nowMs: Long
     ): Boolean {
+        // A finger-down event cannot invalidate measured overload. Otherwise
+        // each new gesture reopens the very queue the pressure path just drained.
+        if (nowMs - lastOverloadAtMs < QUIET_PROBE_COOLDOWN_MS) return false
         val target = minOf(
             maxFps,
             ASCENDING_CAPS.firstOrNull { it >= minimumFps } ?: minimumFps
@@ -108,7 +113,7 @@ class VideoCadenceGovernor(
         interactionActive: Boolean,
         nowMs: Long
     ): Boolean {
-        if (!interactionActive) {
+        if (!interactionActive || nowMs - lastOverloadAtMs < INTERACTION_PROBE_COOLDOWN_MS) {
             interactiveHeadroom = 0
             return false
         }
@@ -191,7 +196,9 @@ class VideoCadenceGovernor(
         requestedFps: Int,
         nowMs: Long,
         minimumFps: Int = 1,
-        producerFps: Double? = null
+        producerFps: Double? = null,
+        maximumFps: Int = maxFps,
+        allowHighCadenceProbe: Boolean = true
     ): Boolean {
         val sender = outbound.recent ?: return false
 
@@ -402,6 +409,19 @@ class VideoCadenceGovernor(
             codecPressure || receiverDrops || congestion || presentationPressure ||
                 cpuPressure || senderDeliveryCollapse
 
+        highCadenceProbe.observe(
+            outbound, receiver, producerFps, cap, minOf(maxFps, maximumFps),
+            allowHighCadenceProbe, overloaded, nowMs
+        )?.let { next ->
+            cap = next
+            changedAt = nowMs
+            pressure = 0
+            healthy = 0
+            interactiveHeadroom = 0
+            if (overloaded) lastOverloadAtMs = nowMs
+            return true
+        }
+
         if (overloaded) {
             lastOverloadAtMs = nowMs
             healthy = 0
@@ -450,8 +470,7 @@ class VideoCadenceGovernor(
 
             // Give motion resolution relief time to work before sacrificing
             // cadence. Severe transport failure still has an immediate escape.
-            val floor = if (loss >= SEVERE_PACKET_LOSS_RATIO ||
-                (outbound.roundTripTimeMs ?: 0) >= SEVERE_RTT_MS) 1
+            val floor = if (severePressure || cpuPressure) 1
                 else minimumFps.coerceIn(1, minOf(cap, requestedFps).coerceAtLeast(1))
             val boundedNext = maxOf(next, floor)
             if (boundedNext >= cap) return false
@@ -463,6 +482,10 @@ class VideoCadenceGovernor(
         }
 
         pressure = 0
+
+        // Above 30 fps only the bounded end-to-end experiment may promote.
+        // Decoder-only or absent feedback must not bypass it via legacy recovery.
+        if (cap >= 30) return false
 
         val presentationHealthy =
             !presentationHeartbeatStalled &&
@@ -512,7 +535,7 @@ class VideoCadenceGovernor(
             else MIN_RECOVERY_INTERVAL_MS
         if (healthy < healthySamplesRequired || nowMs - changedAt < recoveryIntervalMs) return false
 
-        val next = ASCENDING_CAPS.firstOrNull { it > cap && it <= maxFps } ?: return false
+        val next = ASCENDING_CAPS.firstOrNull { it > cap && it <= minOf(maxFps, maximumFps, 30) } ?: return false
         cap = next
         changedAt = nowMs
         healthy = 0

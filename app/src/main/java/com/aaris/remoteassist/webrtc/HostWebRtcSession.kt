@@ -4,6 +4,8 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
+import android.os.PowerManager
 import com.aaris.remoteassist.accessibility.AssistAccessibilityService
 import com.aaris.remoteassist.capture.CaptureProfile
 import com.aaris.remoteassist.capture.CaptureQualityGovernor
@@ -43,6 +45,8 @@ class HostWebRtcSession(
     private val displayManager =
         appContext.getSystemService(DisplayManager::class.java)
     private val displayHandler = Handler(Looper.getMainLooper())
+    private val powerManager = appContext.getSystemService(PowerManager::class.java)
+    private var deviceFpsLimit = MAX_SESSION_VIDEO_FPS
 
     private val maxCaptureTier =
         CaptureProfile.recommendedTier(appContext)
@@ -61,8 +65,8 @@ class HostWebRtcSession(
         )
     private val cadenceGovernor =
         VideoCadenceGovernor(
-            maxFps = minOf(profile.motionFps, MAX_SESSION_VIDEO_FPS),
-            initialCap = minOf(profile.motionFps, MAX_SESSION_VIDEO_FPS)
+            maxFps = MAX_SESSION_VIDEO_FPS,
+            initialCap = minOf(profile.motionFps, 30)
         )
     private val passiveMotionPriority = PassiveMotionPriority()
     private val motionVideoBudget = MotionVideoBudget()
@@ -658,6 +662,12 @@ class HostWebRtcSession(
                     receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
                 }
             }
+            is ControlPacket.DisplayCapabilities -> displayHandler.post {
+                val current = lease
+                if (!closed.get() && current != null && SessionRuntime.isAuthorized(sessionId, current.leaseSecret, current.displayGeneration)) {
+                    receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
+                }
+            }
             is ControlPacket.CommandResult,
             is ControlPacket.Hello -> Unit
         }
@@ -731,6 +741,13 @@ class HostWebRtcSession(
                     sourceFps = sourceFps
                 )
             val motionActive = freshnessPriorityActive(now)
+            val oldDeviceLimit = deviceFpsLimit
+            deviceFpsLimit = when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    (powerManager?.currentThermalStatus ?: 0) >= PowerManager.THERMAL_STATUS_SEVERE -> 24
+                powerManager?.isPowerSaveMode == true -> 30
+                else -> MAX_SESSION_VIDEO_FPS
+            }
             if (!motionActive && sourceFps != null &&
                 sourceFps.isFinite() && sourceFps >= 0.0 && sourceFps < 2.5 &&
                 (snapshot.recent?.frames ?: Int.MAX_VALUE) <= 3) {
@@ -745,7 +762,8 @@ class HostWebRtcSession(
                 motionActive = motionActive,
                 targetFps = minOf(30, profile.motionFps),
                 nowMs = now,
-                interactionActive = interactionActive
+                interactionActive = interactionActive,
+                allowResolutionRecovery = !cadenceGovernor.probingHighCadence
             )
             val requestedFps = effectiveCaptureProfile(profile).fps
             val cadencePressureChanged =
@@ -760,7 +778,9 @@ class HostWebRtcSession(
                         nowMs = now,
                         interactionActive = interactionActive
                     ),
-                    producerFps = sourceFps
+                    producerFps = sourceFps,
+                    maximumFps = deviceFpsLimit,
+                    allowHighCadenceProbe = motionActive && !resolutionChanged
                 )
             val interactionProbeChanged =
                 cadenceGovernor.tryProbeDuringInteraction(
@@ -772,7 +792,7 @@ class HostWebRtcSession(
                 )
             val cadenceChanged =
                 cadencePressureChanged || interactionProbeChanged
-            if (motionChanged || cadenceChanged || resolutionChanged) {
+            if (motionChanged || cadenceChanged || resolutionChanged || oldDeviceLimit != deviceFpsLimit) {
                 applyVideoPolicy(profile)
             }
             if (resolutionChanged) {
@@ -817,7 +837,8 @@ class HostWebRtcSession(
             } ?: "null"
             listener.onDiagnostic(
                 "Video delivery • source=${sourceFps?.toInt()}fps target=${effectiveCaptureProfile(profile).fps}fps " +
-                    "decode=${receiver?.fps?.toInt()}fps present=$presentationState gap=${receiver?.maxRenderGapMs}ms"
+                    "decode=${receiver?.fps?.toInt()}fps present=$presentationState gap=${receiver?.maxRenderGapMs}ms " +
+                    "displayMax=${receiver?.displayRefreshRateHz?.toInt()}Hz trial=${cadenceGovernor.probingHighCadence}"
             )
 
             // One resolution owner during motion: do not simultaneously lower
@@ -1018,8 +1039,9 @@ class HostWebRtcSession(
         val targetFps =
             minOf(
                 cadenceGovernor.cap,
+                deviceFpsLimit,
                 if (freshnessActive) {
-                    target.motionFps
+                    MAX_SESSION_VIDEO_FPS
                 } else {
                     target.fps
                 }
@@ -1173,7 +1195,7 @@ class HostWebRtcSession(
         private const val LEASE_WATCHDOG_MS = 3_000L
         private const val INTERACTION_PRIORITY_TIMEOUT_MS = 3_000L
         private const val INTERACTION_REFRESH_DELAY_MS = 32L
-        private const val MAX_SESSION_VIDEO_FPS = 30
+        private const val MAX_SESSION_VIDEO_FPS = 60
         private const val PRESENTATION_HEARTBEAT_FRESH_MS = 1_500
     }
 }
