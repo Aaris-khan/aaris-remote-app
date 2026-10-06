@@ -661,7 +661,17 @@ class HostWebRtcSession(
             // recover. Request current pixels without disabling capture/video.
             runCatching { capture.requestSnapshot() }
             val now = android.os.SystemClock.elapsedRealtime()
-            if (now - lastPrimaryRepairRequestMs >= 2500L) {
+            val decodedRecently = lease?.let {
+                receiverFeedback.hasRecentDecodedFrames(it.leaseSecret, it.displayGeneration, now)
+            } == true
+            if (decodedRecently) {
+                // A slow/missing Surface is a renderer problem. Renegotiating a
+                // working hardware codec can replace it with expensive libvpx
+                // while the original presentation problem is still unresolved.
+                primaryRecoveryRequests = 0
+                lastPrimaryRepairRequestMs = now
+                listener.onDiagnostic("Primary decoder is progressing • retaining codec during display recovery")
+            } else if (now - lastPrimaryRepairRequestMs >= 2500L) {
                 lastPrimaryRepairRequestMs = now
                 primaryRecoveryRequests++
                 if (primaryRecoveryRequests >= 2) peer.recoverPrimaryVideoCodec()
@@ -748,7 +758,7 @@ class HostWebRtcSession(
             if (now - lastSlowVideoCheckMs < 3000) return@post
             lastSlowVideoCheckMs = now
             listener.onDiagnostic(snapshot.compact())
-            listener.onDiagnostic("Video delivery • source=${sourceFps?.toInt()}fps target=${effectiveCaptureProfile(profile).fps}fps present=${receiver?.presentedFps?.toInt()}fps gap=${receiver?.maxRenderGapMs}ms")
+            listener.onDiagnostic("Video delivery • source=${sourceFps?.toInt()}fps target=${effectiveCaptureProfile(profile).fps}fps decode=${receiver?.fps?.toInt()}fps present=${receiver?.presentedFps?.toInt()}fps gap=${receiver?.maxRenderGapMs}ms")
 
             // One resolution owner during motion: do not simultaneously lower
             // the legacy quality tier and the motion pixel budget.

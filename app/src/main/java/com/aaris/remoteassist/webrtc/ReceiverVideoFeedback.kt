@@ -8,6 +8,7 @@ class ReceiverVideoFeedback {
     private var lastSequence = 0L
     private var receivedAt = 0L
     private var pending: VideoHealthWindow? = null
+    private var lastDecodedAtMs: Long? = null
 
     private var lastPresentationSequence = 0L
     private var presentationReceivedAt = 0L
@@ -20,6 +21,7 @@ class ReceiverVideoFeedback {
         lastSequence = 0L
         receivedAt = 0L
         pending = null
+        lastDecodedAtMs = null
         lastPresentationSequence = 0L
         presentationReceivedAt = 0L
         pendingPresentation = null
@@ -31,6 +33,7 @@ class ReceiverVideoFeedback {
         if (packet.sequence <= lastSequence) return false
         lastSequence = packet.sequence
         receivedAt = nowMs
+        if (packet.decodedFrames > 0) lastDecodedAtMs = nowMs
         pending = VideoHealthWindow(
             packet.intervalMs,
             packet.decodedFrames,
@@ -41,6 +44,11 @@ class ReceiverVideoFeedback {
         )
         return true
     }
+
+    /** Consuming a tuning window must not erase evidence of a working decoder. */
+    fun hasRecentDecodedFrames(secret: Long, generation: Int, nowMs: Long): Boolean =
+        identity == secret to generation &&
+            lastDecodedAtMs?.let { nowMs - it in 0L..MAX_AGE_MS } == true
 
     fun accept(packet: ControlPacket.PresentationFeedback, secret: Long, generation: Int, nowMs: Long): Boolean {
         if (!packet.valid() || packet.leaseSecret != secret || packet.generation != generation) return false

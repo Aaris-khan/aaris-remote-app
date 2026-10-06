@@ -121,6 +121,7 @@ class InlineRemoteControllerView(
     private val gestureStreamPacer = GestureStreamPacer()
     private val presentationCadence = PresentationCadenceTracker()
     private val surfaceFrameRateHints = SurfaceFrameRateHintGovernor()
+    private val primaryConfirmation = PrimaryVideoConfirmation()
 
     private var downX = 0f
     private var downY = 0f
@@ -178,6 +179,7 @@ class InlineRemoteControllerView(
     private val rawFrameSeen = AtomicBoolean(false)
     @Volatile private var lastRawFrameAtMs = 0L
     private val renderedFrameSeen = AtomicBoolean(false)
+    private val renderConfirmationPosted = AtomicBoolean(false)
     private val recoveryGeneration = AtomicLong(0L)
     private var imageDisplayed = false
 
@@ -337,6 +339,7 @@ class InlineRemoteControllerView(
                         track.setEnabled(true)
                         rawFrameSeen.set(false)
                         renderedFrameSeen.set(false)
+                        primaryConfirmation.reset()
                         presentationCadence.reset()
                         clearSurfaceFrameRateHintIfNeeded()
                         frameWidth = 0
@@ -373,11 +376,13 @@ class InlineRemoteControllerView(
             }
 
             override fun onPrimaryVideoRecoveryStarted() {
-                recoveryGeneration.incrementAndGet()
-                renderedFrameSeen.set(false)
-                presentationCadence.reset()
                 mainHandler.post {
                     if (attached) {
+                        // Serialize epoch changes with the presentation commit.
+                        recoveryGeneration.incrementAndGet()
+                        renderedFrameSeen.set(false)
+                        presentationCadence.reset()
+                        primaryConfirmation.reset()
                         clearSurfaceFrameRateHintIfNeeded()
                         mainHandler.removeCallbacks(mediaWatchdog)
                         mainHandler.postDelayed(mediaWatchdog, MEDIA_RECOVERY_RETRY_MS)
@@ -1213,26 +1218,42 @@ class InlineRemoteControllerView(
                                     .observe(window, presentedAtMs)
                                     ?.let(::applySurfaceFrameRateHint)
                                 session()?.sendPresentationFeedback(window)
+                                if (renderedFrameSeen.get()) {
+                                    primaryConfirmation.onPresented(presentedAtMs) {
+                                        session()?.confirmPrimaryVideoRendered() == true
+                                    }
+                                }
                             }
                         }
                     }
-                if (eglRenderer === renderer && renderedFrameSeen.compareAndSet(false, true)) {
+                if (eglRenderer === renderer && !renderedFrameSeen.get() &&
+                    renderConfirmationPosted.compareAndSet(false, true)) {
                     activity.runOnUiThread {
-                        if (attached && eglRenderer === renderer && generation == recoveryGeneration.get()) {
-                            fallbackActive = false
-                            imageDisplayed = true
-                            fallbackImageView.visibility = View.GONE
-                            fallbackImageView.setImageDrawable(null)
-                            fallbackBitmap?.recycle()
-                            fallbackBitmap = null
-                            fallbackScratchBitmap?.recycle()
-                            fallbackScratchBitmap = null
-                            fallbackCompositeFrameId = -1L
-                            showVideoStatus("Live video connected")
-                            session()?.confirmPrimaryVideoRendered()
-                            mediaRecoveryAttempts = 0
-                            rendererRecoveryAttempts = 0
-                            setControlsVisible(false)
+                        try {
+                            if (attached && eglRenderer === renderer && generation == recoveryGeneration.get()) {
+                                // Commit health only after checking the generation on
+                                // the UI thread. An old queued swap must not latch true
+                                // and hide every fresh confirmation after recovery.
+                                renderedFrameSeen.set(true)
+                                fallbackActive = false
+                                imageDisplayed = true
+                                fallbackImageView.visibility = View.GONE
+                                fallbackImageView.setImageDrawable(null)
+                                fallbackBitmap?.recycle()
+                                fallbackBitmap = null
+                                fallbackScratchBitmap?.recycle()
+                                fallbackScratchBitmap = null
+                                fallbackCompositeFrameId = -1L
+                                showVideoStatus("Live video connected")
+                                primaryConfirmation.onPresented(presentedAtMs) {
+                                    session()?.confirmPrimaryVideoRendered() == true
+                                }
+                                mediaRecoveryAttempts = 0
+                                rendererRecoveryAttempts = 0
+                                setControlsVisible(false)
+                            }
+                        } finally {
+                            renderConfirmationPosted.set(false)
                         }
                     }
                 }
@@ -1248,6 +1269,7 @@ class InlineRemoteControllerView(
         detachCurrentTrack()
         releaseRenderer()
         renderedFrameSeen.set(false)
+        primaryConfirmation.reset()
 
         rendererContainer.postDelayed(
             {

@@ -27,6 +27,7 @@ class ScreenCaptureTrack(
     private val snapshotSinks = CopyOnWriteArraySet<VideoSink>()
     private val sampleClock = CaptureSampleClock()
     private val activityTracker = CaptureActivityTracker()
+    private val refreshPolicy = CaptureRefreshPolicy()
 
     private val capturer = ScreenCapturerAndroid(
         grant.data,
@@ -64,6 +65,18 @@ class ScreenCaptureTrack(
     private var sourceGeometry: StableCaptureGeometry? = null
     private var outputFormat: Triple<Int, Int, Int>? = null
 
+    private val idleRefresh = object : Runnable {
+        override fun run() {
+            if (closed.get() || !started) return
+            if (refreshPolicy.shouldRefresh(android.os.SystemClock.elapsedRealtime())) {
+                // forceFrame samples the current texture on its owner thread.
+                // No retained frame, second projection, or CPU readback is needed.
+                surfaceTextureHelper.forceFrame()
+            }
+            surfaceTextureHelper.handler.postDelayed(this, CaptureRefreshPolicy.INTERVAL_MS)
+        }
+    }
+
     init {
         capturer.initialize(
             surfaceTextureHelper,
@@ -72,6 +85,7 @@ class ScreenCaptureTrack(
                 override fun onCapturerStarted(success: Boolean) { videoSource.capturerObserver.onCapturerStarted(success) }
                 override fun onCapturerStopped() { videoSource.capturerObserver.onCapturerStopped() }
                 override fun onFrameCaptured(frame: VideoFrame) {
+                    refreshPolicy.onSample(android.os.SystemClock.elapsedRealtime())
                     // Admit the latency-critical RTP sample first. Auxiliary
                     // sinks are best-effort consumers (fallback recovery / AI
                     // snapshots); a slow conversion or retain must never hold
@@ -118,6 +132,10 @@ class ScreenCaptureTrack(
             profile.fps
         )
         started = true
+        // Realtime encoder mode has no screencast frame repeater. A sparse
+        // sample keeps still screens from looking like a dead RTP/decoder path
+        // to the controller's liveness and first-frame watchdogs.
+        surfaceTextureHelper.handler.postDelayed(idleRefresh, CaptureRefreshPolicy.INTERVAL_MS)
     }
 
     fun update(profile: CaptureProfile) {
@@ -155,6 +173,7 @@ class ScreenCaptureTrack(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        surfaceTextureHelper.handler.removeCallbacks(idleRefresh)
         snapshotSinks.clear()
 
         if (started) {
