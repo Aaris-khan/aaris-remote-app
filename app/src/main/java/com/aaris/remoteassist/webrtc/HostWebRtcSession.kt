@@ -3,13 +3,17 @@ package com.aaris.remoteassist.webrtc
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.Build
 import android.os.PowerManager
+import android.os.Process
+import android.view.Display
 import com.aaris.remoteassist.accessibility.AssistAccessibilityService
 import com.aaris.remoteassist.capture.CaptureProfile
 import com.aaris.remoteassist.capture.CaptureQualityGovernor
 import com.aaris.remoteassist.capture.CaptureTier
+import com.aaris.remoteassist.capture.InteractionRefreshTiming
 import com.aaris.remoteassist.capture.ProjectionGrant
 import com.aaris.remoteassist.capture.ScreenCaptureTrack
 import com.aaris.remoteassist.control.ControlPacket
@@ -45,6 +49,20 @@ class HostWebRtcSession(
     private val displayManager =
         appContext.getSystemService(DisplayManager::class.java)
     private val displayHandler = Handler(Looper.getMainLooper())
+
+    /*
+     * Adaptive policy/recovery is latency-sensitive orchestration, but it must
+     * never compete with Android UI/input callbacks. WebRTC already owns its
+     * native network/worker/signaling queues; this lightweight serial lane owns
+     * only our product policy state and emits tiny actuator updates.
+     */
+    private val policyThread =
+        HandlerThread(
+            "AarisRemotePolicy",
+            Process.THREAD_PRIORITY_MORE_FAVORABLE
+        ).apply { start() }
+    private val policyHandler = Handler(policyThread.looper)
+
     private val powerManager = appContext.getSystemService(PowerManager::class.java)
     private var deviceFpsLimit = MAX_SESSION_VIDEO_FPS
 
@@ -108,6 +126,16 @@ class HostWebRtcSession(
         }
     }
 
+    /*
+     * Coalesced post-input capture probe. Rapid gesture samples only move this
+     * single deadline forward; they never enqueue a train of synthetic frames.
+     */
+    private val interactionRefreshProbe = Runnable {
+        if (!closed.get()) {
+            capture.requestInteractionRefresh()
+        }
+    }
+
     private var startupControlRecoveryAttempts = 0
     private var captureRecoveryAttempts = 0
     private val localCaptureFrameSeen = AtomicBoolean(false)
@@ -136,9 +164,11 @@ class HostWebRtcSession(
         grant = projectionGrant,
         onProjectionStopped = listener::onProjectionStopped,
         onSourceMotion = {
-            // Capture-thread signal only posts tiny work. Policy evaluation and
-            // sender mutation remain serialized on the main/session thread.
-            displayHandler.post { handleSourceMotionPulse() }
+            // Capture stays hot: only enqueue a tiny pulse. Governors and sender
+            // policy run on the independent policy lane, never on capture/UI.
+            policyHandler.post {
+                if (!closed.get()) handleSourceMotionPulse()
+            }
         }
     )
 
@@ -358,7 +388,13 @@ class HostWebRtcSession(
         if (latest == previous) return
 
         profile = latest
-        applyVideoPolicy(latest)
+        policyHandler.post {
+            if (!closed.get()) {
+                // Read the newest profile at execution time so rapid rotation /
+                // display callbacks coalesce instead of replaying stale policy.
+                applyVideoPolicy(profile)
+            }
+        }
 
         /*
          * Capture resolution/FPS may adapt without changing the remote phone's
@@ -439,8 +475,10 @@ class HostWebRtcSession(
     override fun onPeerDisconnected() {
         peerConnected = false
         transportReady = false
-        passiveMotionPriority.reset()
-        updateInteractionPriority(false)
+        policyHandler.post {
+            passiveMotionPriority.reset()
+            updateInteractionPriority(false)
+        }
         displayHandler.removeCallbacks(startupControlRecovery)
         transport.onPeerDisconnected()
             ?.let(listener::onConnectivityChanged)
@@ -466,8 +504,10 @@ class HostWebRtcSession(
     override fun onControlChannelClosed() {
         controlOpen = false
         transportReady = false
-        passiveMotionPriority.reset()
-        updateInteractionPriority(false)
+        policyHandler.post {
+            passiveMotionPriority.reset()
+            updateInteractionPriority(false)
+        }
         transport.onControlChannelClosed()
             ?.let(listener::onConnectivityChanged)
         if (!closed.get()) {
@@ -498,7 +538,9 @@ class HostWebRtcSession(
             }
 
             ControlPacket.Disconnect -> {
-                updateInteractionPriority(false)
+                policyHandler.post {
+                    updateInteractionPriority(false)
+                }
                 listener.onRemoteDisconnect()
             }
 
@@ -533,19 +575,21 @@ class HostWebRtcSession(
                 AssistAccessibilityService.dispatch(command) { applied ->
                     if (applied) {
                         /*
-                         * A sparse MediaProjection producer must not make a
-                         * successfully applied touch wait hundreds of ms for
-                         * the next natural callback. Give Android one display
-                         * tick, then ask for the current texture only if no
-                         * fresh source sample arrived meanwhile.
+                         * Arm a causal refresh at the exact applied-input point.
+                         * A natural MediaProjection frame after this moment
+                         * cancels the pull. Otherwise one display tick later we
+                         * sample the current texture. Rapid gestures coalesce
+                         * into one pending probe instead of creating a queue.
                          */
+                        val appliedAtMs =
+                            android.os.SystemClock.elapsedRealtime()
+                        capture.armInteractionRefresh(appliedAtMs)
+                        displayHandler.removeCallbacks(
+                            interactionRefreshProbe
+                        )
                         displayHandler.postDelayed(
-                            {
-                                if (!closed.get()) {
-                                    capture.requestInteractionRefresh()
-                                }
-                            },
-                            INTERACTION_REFRESH_DELAY_MS
+                            interactionRefreshProbe,
+                            interactionRefreshDelayMs()
                         )
                     }
 
@@ -595,7 +639,7 @@ class HostWebRtcSession(
                     return
                 }
 
-                displayHandler.post {
+                policyHandler.post {
                     if (!closed.get()) {
                         primaryRecoveryRequests = 0
                         fallbackStreamer.disable()
@@ -644,25 +688,25 @@ class HostWebRtcSession(
                 )
             }
 
-            is ControlPacket.VideoFeedback -> displayHandler.post {
+            is ControlPacket.VideoFeedback -> policyHandler.post {
                 val current = lease
                 if (!closed.get() && current != null && SessionRuntime.isAuthorized(sessionId, current.leaseSecret, current.displayGeneration)) {
                     receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
                 }
             }
-            is ControlPacket.PresentationFeedback -> displayHandler.post {
+            is ControlPacket.PresentationFeedback -> policyHandler.post {
                 val current = lease
                 if (!closed.get() && current != null && SessionRuntime.isAuthorized(sessionId, current.leaseSecret, current.displayGeneration)) {
                     receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
                 }
             }
-            is ControlPacket.PresentationHeartbeat -> displayHandler.post {
+            is ControlPacket.PresentationHeartbeat -> policyHandler.post {
                 val current = lease
                 if (!closed.get() && current != null && SessionRuntime.isAuthorized(sessionId, current.leaseSecret, current.displayGeneration)) {
                     receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
                 }
             }
-            is ControlPacket.DisplayCapabilities -> displayHandler.post {
+            is ControlPacket.DisplayCapabilities -> policyHandler.post {
                 val current = lease
                 if (!closed.get() && current != null && SessionRuntime.isAuthorized(sessionId, current.leaseSecret, current.displayGeneration)) {
                     receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
@@ -687,31 +731,35 @@ class HostWebRtcSession(
     private var lastPrimaryRepairRequestMs = 0L
 
     private fun handleMediaRecoveryRequest() {
-        displayHandler.post {
-            if (closed.get()) return@post
-            fallbackStreamer.enable()
-            fallbackStreamer.requestKeyframe()
-            // Pausing the track here also pauses the primary encoder we want to
-            // recover. Request current pixels without disabling capture/video.
-            runCatching { capture.requestSnapshot() }
-            val now = android.os.SystemClock.elapsedRealtime()
-            val decodedRecently = lease?.let {
-                receiverFeedback.hasRecentDecodedFrames(it.leaseSecret, it.displayGeneration, now)
-            } == true
-            if (decodedRecently) {
-                // A slow/missing Surface is a renderer problem. Renegotiating a
-                // working hardware codec can replace it with expensive libvpx
-                // while the original presentation problem is still unresolved.
-                primaryRecoveryRequests = 0
-                lastPrimaryRepairRequestMs = now
-                listener.onDiagnostic("Primary decoder is progressing • retaining codec during display recovery")
-            } else if (now - lastPrimaryRepairRequestMs >= 2500L) {
-                lastPrimaryRepairRequestMs = now
-                primaryRecoveryRequests++
-                if (primaryRecoveryRequests >= 2) peer.recoverPrimaryVideoCodec()
-            }
-            listener.onDiagnostic("Video recovery active • fresh capture requested")
+        policyHandler.post {
+            handleMediaRecoveryRequestOnPolicy()
         }
+    }
+
+    private fun handleMediaRecoveryRequestOnPolicy() {
+        if (closed.get()) return
+        fallbackStreamer.enable()
+        fallbackStreamer.requestKeyframe()
+        // Pausing the track here also pauses the primary encoder we want to
+        // recover. Request current pixels without disabling capture/video.
+        runCatching { capture.requestSnapshot() }
+        val now = android.os.SystemClock.elapsedRealtime()
+        val decodedRecently = lease?.let {
+            receiverFeedback.hasRecentDecodedFrames(it.leaseSecret, it.displayGeneration, now)
+        } == true
+        if (decodedRecently) {
+            // A slow/missing Surface is a renderer problem. Renegotiating a
+            // working hardware codec can replace it with expensive libvpx
+            // while the original presentation problem is still unresolved.
+            primaryRecoveryRequests = 0
+            lastPrimaryRepairRequestMs = now
+            listener.onDiagnostic("Primary decoder is progressing • retaining codec during display recovery")
+        } else if (now - lastPrimaryRepairRequestMs >= 2500L) {
+            lastPrimaryRepairRequestMs = now
+            primaryRecoveryRequests++
+            if (primaryRecoveryRequests >= 2) peer.recoverPrimaryVideoCodec()
+        }
+        listener.onDiagnostic("Video recovery active • fresh capture requested")
     }
 
     override fun onVideoHealth(
@@ -719,7 +767,7 @@ class HostWebRtcSession(
     ) {
         if (snapshot.direction != "outbound") return
 
-        displayHandler.post {
+        policyHandler.post {
             if (closed.get()) return@post
 
             val now = android.os.SystemClock.elapsedRealtime()
@@ -894,15 +942,18 @@ class HostWebRtcSession(
     private fun noteRemoteInteraction() {
         if (closed.get()) return
 
-        if (interactionActive) {
-            refreshInteractionPriorityTimeout()
-        } else {
-            updateInteractionPriority(true)
+        policyHandler.post {
+            if (closed.get()) return@post
+            if (interactionActive) {
+                refreshInteractionPriorityTimeout()
+            } else {
+                updateInteractionPriority(true)
+            }
         }
     }
 
     private fun updateInteractionPriority(active: Boolean) {
-        displayHandler.removeCallbacks(interactionPriorityTimeout)
+        policyHandler.removeCallbacks(interactionPriorityTimeout)
         fallbackStreamer.setInteractionActive(active)
 
         if (interactionActive != active) {
@@ -971,8 +1022,8 @@ class HostWebRtcSession(
     private fun refreshInteractionPriorityTimeout() {
         if (closed.get() || !interactionActive) return
 
-        displayHandler.removeCallbacks(interactionPriorityTimeout)
-        displayHandler.postDelayed(
+        policyHandler.removeCallbacks(interactionPriorityTimeout)
+        policyHandler.postDelayed(
             interactionPriorityTimeout,
             INTERACTION_PRIORITY_TIMEOUT_MS
         )
@@ -1033,6 +1084,21 @@ class HostWebRtcSession(
                 "Source motion → freshness-first video policy before stats"
             )
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun interactionRefreshDelayMs(): Long {
+        val refreshRate =
+            runCatching {
+                displayManager
+                    .getDisplay(Display.DEFAULT_DISPLAY)
+                    ?.mode
+                    ?.refreshRate
+            }.getOrNull()
+
+        return InteractionRefreshTiming.oneDisplayTickMs(
+            refreshRate
+        )
     }
 
     private fun effectiveCaptureProfile(
@@ -1097,10 +1163,11 @@ class HostWebRtcSession(
         displayHandler.removeCallbacks(iceRestart)
         displayHandler.removeCallbacks(startupControlRecovery)
         displayHandler.removeCallbacks(captureFrameWatchdog)
-        displayHandler.removeCallbacks(interactionPriorityTimeout)
+        displayHandler.removeCallbacks(interactionRefreshProbe)
         displayHandler.removeCallbacks(
             leaseWatchdog
         )
+        policyHandler.removeCallbacksAndMessages(null)
         runCatching {
             displayManager.unregisterDisplayListener(displayListener)
         }
@@ -1110,13 +1177,13 @@ class HostWebRtcSession(
         runCatching { fallbackStreamer.close() }
         runCatching { peer.close() }
         runCatching { capture.close() }
+        runCatching { policyThread.quitSafely() }
 
         peerConnected = false
         everConnected = false
         controlOpen = false
         transportReady = false
         interactionActive = false
-        passiveMotionPriority.reset()
         lease = null
     }
 
@@ -1197,7 +1264,6 @@ class HostWebRtcSession(
         private const val MAX_CAPTURE_RECOVERY_ATTEMPTS = 3
         private const val LEASE_WATCHDOG_MS = 3_000L
         private const val INTERACTION_PRIORITY_TIMEOUT_MS = 3_000L
-        private const val INTERACTION_REFRESH_DELAY_MS = 32L
         private const val MAX_SESSION_VIDEO_FPS = 60
         private const val PRESENTATION_HEARTBEAT_FRESH_MS = 1_500
     }
