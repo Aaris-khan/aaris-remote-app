@@ -15,6 +15,7 @@ class VideoCadenceGovernor(
 
     private var pressure = 0
     private var healthy = 0
+    private var interactiveHeadroom = 0
     private var changedAt = Long.MIN_VALUE / 2
     private var lastOverloadAtMs = Long.MIN_VALUE / 2
 
@@ -63,6 +64,127 @@ class VideoCadenceGovernor(
         return true
     }
 
+    /**
+     * A real remote-control gesture is authoritative evidence that temporal
+     * freshness matters now. If a previous congestion episode left the
+     * governor parked at 15/20 fps, immediately restore one bounded interactive
+     * floor rather than waiting 8-12 seconds for passive recovery telemetry.
+     *
+     * This is only a source ceiling. libwebrtc still owns pacing, congestion
+     * control and frame dropping, and the normal pressure path can step back
+     * down if the fresh probe is not sustainable.
+     */
+    fun ensureInteractionFloor(
+        minimumFps: Int,
+        nowMs: Long
+    ): Boolean {
+        val target = minOf(
+            maxFps,
+            ASCENDING_CAPS.firstOrNull { it >= minimumFps } ?: minimumFps
+        ).coerceAtLeast(1)
+        if (cap >= target) return false
+
+        cap = target
+        changedAt = nowMs
+        pressure = 0
+        healthy = 0
+        interactiveHeadroom = 0
+        return true
+    }
+
+    /**
+     * Once 24 fps is stable, probe 30 fps quickly when the measured path has
+     * real headroom. This avoids the old failure mode where a clean hardware
+     * H.264 path stayed self-capped at 15 fps even while MediaProjection was
+     * producing 40-50 fresh frames/sec and the sender queue was near zero.
+     *
+     * Require consecutive healthy windows and a short cooldown after any
+     * cadence change. A failed probe naturally falls back through observe().
+     */
+    fun tryProbeDuringInteraction(
+        outbound: VideoHealthSnapshot,
+        receiver: VideoHealthWindow?,
+        producerFps: Double?,
+        interactionActive: Boolean,
+        nowMs: Long
+    ): Boolean {
+        if (!interactionActive) {
+            interactiveHeadroom = 0
+            return false
+        }
+
+        val ceiling = minOf(maxFps, INTERACTION_PROBE_FPS)
+        if (cap >= ceiling) {
+            interactiveHeadroom = 0
+            return false
+        }
+
+        val sender = outbound.recent
+        val producerHealthy =
+            producerFps != null &&
+                producerFps.isFinite() &&
+                producerFps >= INTERACTION_PROBE_MIN_PRODUCER_FPS
+        val frameBudgetMs = 1000.0 / INTERACTION_PROBE_FPS
+        val senderHealthy =
+            sender != null &&
+                sender.intervalMs in 500..6000 &&
+                sender.frames >= MIN_INTERACTION_PROBE_FRAMES &&
+                sender.processingMs?.let {
+                    it.isFinite() && it >= 0.0 &&
+                        it <= frameBudgetMs * INTERACTION_PROBE_CODEC_BUDGET_RATIO
+                } == true &&
+                sender.sendQueueMs?.let {
+                    it.isFinite() && it >= 0.0 &&
+                        it <= INTERACTION_PROBE_MAX_QUEUE_MS
+                } == true
+
+        val qualityHealthy =
+            outbound.qualityLimitationReason == null ||
+                outbound.qualityLimitationReason.equals("none", ignoreCase = true)
+        val networkHealthy =
+            (outbound.roundTripTimeMs?.let { it in 0..INTERACTION_PROBE_MAX_RTT_MS } == true) &&
+                (outbound.packetLossRatio ?: 0.0) < INTERACTION_PROBE_MAX_LOSS
+
+        val receiverHealthy =
+            receiver?.let { window ->
+                window.intervalMs in 500..6000 &&
+                    window.frames >= MIN_INTERACTION_PROBE_RECEIVER_FRAMES &&
+                    window.processingMs?.let {
+                        it.isFinite() && it >= 0.0 &&
+                            it <= frameBudgetMs * INTERACTION_PROBE_CODEC_BUDGET_RATIO
+                    } != false &&
+                    (window.dropped ?: 0) == 0 &&
+                    (window.freezes ?: 0) == 0 &&
+                    window.presentationAgeMs?.let {
+                        it <= INTERACTION_PROBE_MAX_PRESENTATION_AGE_MS
+                    } != false
+            } ?: true
+
+        val sampleHealthy =
+            producerHealthy && senderHealthy && qualityHealthy &&
+                networkHealthy && receiverHealthy
+        interactiveHeadroom =
+            if (sampleHealthy) {
+                (interactiveHeadroom + 1).coerceAtMost(INTERACTION_PROBE_SAMPLES)
+            } else {
+                0
+            }
+
+        if (
+            interactiveHeadroom < INTERACTION_PROBE_SAMPLES ||
+            nowMs - changedAt < INTERACTION_PROBE_COOLDOWN_MS
+        ) {
+            return false
+        }
+
+        cap = ceiling
+        changedAt = nowMs
+        pressure = 0
+        healthy = 0
+        interactiveHeadroom = 0
+        return true
+    }
+
     fun observe(
         outbound: VideoHealthSnapshot,
         receiver: VideoHealthWindow?,
@@ -81,6 +203,7 @@ class VideoCadenceGovernor(
             sender.frames <= MAX_QUIET_ENCODED_FRAMES) {
             pressure = 0
             healthy = 0
+            interactiveHeadroom = 0
             return false
         }
 
@@ -335,6 +458,7 @@ class VideoCadenceGovernor(
             cap = boundedNext
             changedAt = nowMs
             pressure = 0
+            interactiveHeadroom = 0
             return true
         }
 
@@ -403,6 +527,17 @@ class VideoCadenceGovernor(
         val ASCENDING_CAPS = listOf(15, 20, 24, 30, 45, 60)
 
         const val MOTION_RECOVERY_FPS_CEILING = 30
+        const val INTERACTION_PROBE_FPS = 30
+        const val INTERACTION_PROBE_MIN_PRODUCER_FPS = 24.0
+        const val INTERACTION_PROBE_CODEC_BUDGET_RATIO = 0.80
+        const val INTERACTION_PROBE_MAX_QUEUE_MS = 35.0
+        const val INTERACTION_PROBE_MAX_RTT_MS = 250
+        const val INTERACTION_PROBE_MAX_LOSS = 0.04
+        const val INTERACTION_PROBE_MAX_PRESENTATION_AGE_MS = 1_500
+        const val MIN_INTERACTION_PROBE_FRAMES = 8
+        const val MIN_INTERACTION_PROBE_RECEIVER_FRAMES = 5
+        const val INTERACTION_PROBE_SAMPLES = 2
+        const val INTERACTION_PROBE_COOLDOWN_MS = 1_500L
         const val QUIET_PRODUCER_FPS = 2.5
         const val MAX_QUIET_ENCODED_FRAMES = 3
         const val QUIET_PROBE_COOLDOWN_MS = 8_000L
