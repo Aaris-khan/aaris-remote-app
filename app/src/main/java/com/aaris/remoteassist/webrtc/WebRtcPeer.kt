@@ -1590,6 +1590,7 @@ class WebRtcPeer(
                 .uppercase()
         val implementation = latestOutboundCodecImplementation
         val hardware = WebRtcRuntime.hardwareScreenEncoders(appContext)
+        val normalizedHardware = hardware.map(String::uppercase).toSet()
         val remote = peerConnection.remoteDescription?.description ?: return false
         val codecs =
             factory.getRtpSenderCapabilities(
@@ -1601,7 +1602,7 @@ class WebRtcPeer(
                 .recoveryCandidates(
                     current = current,
                     implementation = implementation,
-                    hardwareEncoders = hardware
+                    hardwareEncoders = normalizedHardware
                 )
                 .firstOrNull { codec ->
                     ScreenCodecPolicy.remoteSupports(remote, codec) &&
@@ -1632,7 +1633,7 @@ class WebRtcPeer(
 
             val stickyHardware =
                 candidate.equals(current, ignoreCase = true) &&
-                    current in hardware.map(String::uppercase).toSet() &&
+                    current in normalizedHardware &&
                     !ScreenCodecPolicy.isSoftwareImplementation(implementation)
 
             listener.onDiagnostic(
