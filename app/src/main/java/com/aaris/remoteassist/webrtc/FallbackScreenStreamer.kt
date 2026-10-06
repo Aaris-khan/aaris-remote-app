@@ -63,6 +63,9 @@ class FallbackScreenStreamer(
             }
         }
     private var refreshTask: ScheduledFuture<*>? = null
+    // Compatibility recovery is normally idle. Keep its VideoSink completely
+    // off the 30/45/60 fps capture callback until recovery is actually needed.
+    private var sinkAttached = false
 
     @Volatile
     private var referenceFrame: ReferenceFrame? = null
@@ -140,12 +143,6 @@ class FallbackScreenStreamer(
         }
     }
 
-    init {
-        // Use the capture source before RTP's CPU/network downscaling. A failed
-        // RTP encoder must not permanently reduce a settled recovery image.
-        capture.addSnapshotSink(sink)
-    }
-
     fun setDeltaCapable(capable: Boolean) {
         val changed = deltaCapable.getAndSet(capable) != capable
         if (!changed) return
@@ -175,9 +172,17 @@ class FallbackScreenStreamer(
     }
 
     @Synchronized fun enable() {
-        if (closed.get() || !enabled.compareAndSet(false, true)) {
+        if (closed.get() || enabled.get()) {
             return
         }
+
+        /*
+         * Attach before publishing enabled=true. The host immediately requests
+         * a fresh recovery sample after enable(), so the sink must already be
+         * visible to ScreenCaptureTrack when that frame arrives.
+         */
+        attachSinkIfNeeded()
+        enabled.set(true)
 
         lastFrameAtMs.set(0L)
         referenceFrame = null
@@ -206,8 +211,23 @@ class FallbackScreenStreamer(
             refreshTask?.cancel(false); refreshTask = null
             referenceFrame = null
             lastKeyframeAtMs = 0L
+            detachSinkIfNeeded()
             onDiagnostic("Compatibility screen stream disabled")
         }
+    }
+
+    private fun attachSinkIfNeeded() {
+        if (sinkAttached) return
+        // Use the capture source before RTP's CPU/network downscaling. A failed
+        // RTP encoder must not permanently reduce a settled recovery image.
+        capture.addSnapshotSink(sink)
+        sinkAttached = true
+    }
+
+    private fun detachSinkIfNeeded() {
+        if (!sinkAttached) return
+        capture.removeSnapshotSink(sink)
+        sinkAttached = false
     }
 
     private fun currentFrameIntervalMs(): Long {
@@ -702,7 +722,7 @@ class FallbackScreenStreamer(
         enabled.set(false)
         refreshTask?.cancel(false); refreshTask = null
         referenceFrame = null
-        runCatching { capture.removeSnapshotSink(sink) }
+        runCatching { detachSinkIfNeeded() }
         // Accepted fallback work owns only a CPU buffer. Let its finally block
         // close that copy without keeping the capture SurfaceTexture alive.
         worker.shutdown()
