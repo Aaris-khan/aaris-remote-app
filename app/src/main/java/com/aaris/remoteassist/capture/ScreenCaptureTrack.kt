@@ -10,6 +10,7 @@ import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 import org.webrtc.CapturerObserver
 import java.util.concurrent.CopyOnWriteArraySet
+import com.aaris.remoteassist.webrtc.RealtimeMediaPolicy
 import com.aaris.remoteassist.webrtc.WebRtcRuntime
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,6 +25,7 @@ class ScreenCaptureTrack(
     private val factory = WebRtcRuntime.factory(appContext)
     private val eglBase = WebRtcRuntime.eglBase(appContext)
     private val closed = AtomicBoolean(false)
+    private val interactionPriorityActive = AtomicBoolean(false)
     private val snapshotSinks = CopyOnWriteArraySet<VideoSink>()
     private val sampleClock = CaptureSampleClock()
     private val activityTracker = CaptureActivityTracker()
@@ -178,6 +180,29 @@ class ScreenCaptureTrack(
     fun sampleSourceFps(nowMs: Long): Double? = activityTracker.sampleFps(nowMs)
     fun removeSnapshotSink(sink: VideoSink) { snapshotSinks -= sink }
 
+    /**
+     * Give the SurfaceTexture delivery lane a temporary scheduling advantage
+     * while remote input is actively changing pixels. This does not create
+     * extra frames or increase encoder work; it only reduces scheduler jitter
+     * between SurfaceTexture availability and libwebrtc's capture observer.
+     *
+     * Read the newest requested state on the owner thread so a rapid
+     * active->idle transition cannot leave the thread permanently boosted.
+     */
+    fun setInteractionPriority(active: Boolean) {
+        if (closed.get()) return
+        if (interactionPriorityActive.getAndSet(active) == active) return
+
+        surfaceTextureHelper.handler.post {
+            if (closed.get()) return@post
+            android.os.Process.setThreadPriority(
+                RealtimeMediaPolicy.threadPriority(
+                    interactionPriorityActive.get()
+                )
+            )
+        }
+    }
+
     fun armInteractionRefresh(
         nowMs: Long = android.os.SystemClock.elapsedRealtime()
     ) {
@@ -207,6 +232,7 @@ class ScreenCaptureTrack(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        interactionPriorityActive.set(false)
         surfaceTextureHelper.handler.removeCallbacks(idleRefresh)
         snapshotSinks.clear()
 
