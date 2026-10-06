@@ -31,16 +31,25 @@ class CaptureRefreshPolicyTest {
         assertFalse(policy.shouldRefreshForInteraction(2_020))
     }
 
-    @Test fun rapidInteractionsNeverBuildSyntheticRefreshBacklog() {
+    @Test fun rapidInteractionsKeepFirstDeadlineAndNeverBuildSyntheticRefreshBacklog() {
         val policy = CaptureRefreshPolicy()
         policy.onSample(10_000)
 
         policy.onInteractionApplied(10_010)
         policy.onInteractionApplied(10_014)
         policy.onInteractionApplied(10_018)
-        assertFalse(policy.shouldRefreshForInteraction(10_023))
-        assertTrue(policy.shouldRefreshForInteraction(10_024))
+
+        // Later CONTINUE samples must not postpone the first display-tick pull.
+        assertFalse(policy.shouldRefreshForInteraction(10_015))
+        assertTrue(policy.shouldRefreshForInteraction(10_016))
+        assertFalse(policy.shouldRefreshForInteraction(10_017))
+
+        // Once the single-flight request is consumed, a later interaction may
+        // arm the next bounded pull without inheriting stale backlog.
+        policy.onInteractionApplied(10_020)
         assertFalse(policy.shouldRefreshForInteraction(10_025))
+        assertTrue(policy.shouldRefreshForInteraction(10_026))
+        assertFalse(policy.shouldRefreshForInteraction(10_027))
     }
 
     @Test fun movingScreenGetsNoDuplicateWorkAndLatestSampleDefersIdleProbe() {
