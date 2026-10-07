@@ -51,47 +51,37 @@ class PresentationProvenRecoveryTest {
     )
 
     @Test
-    fun verifiedPresentationRecoversAfterFailedCadenceCooldown() {
+    fun verifiedPresentationRecoversFineCadenceBackToSixty() {
         val governor = VideoCadenceGovernor(60)
         val sending60 = outbound(frames = 60, processingMs = 5.0)
         val overloadedReceiver = receiver(frames = 30, processingMs = 25.0)
 
         assertFalse(governor.observe(sending60, overloadedReceiver, 60, 1_000))
         assertTrue(governor.observe(sending60, overloadedReceiver, 60, 2_000))
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
 
-        val healthySender = outbound(frames = 45, processingMs = 5.0)
+        val healthySender = outbound(frames = 60, processingMs = 5.0)
         val healthyDisplay = receiver(
-            frames = 45,
+            frames = 60,
             processingMs = 5.0,
-            presentedFrames = 45,
-            maxRenderGapMs = 30
+            presentedFrames = 60,
+            maxRenderGapMs = 20
         )
 
-        // The failed high-cadence path gets an 8s retry cooldown. After
-        // that, three fresh end-to-end proof windows earn a bounded 60 fps
-        // trial instead of leaving a recovered display stuck at 45 fps.
-        repeat(10) { index ->
-            assertFalse(
-                governor.observe(
-                    healthySender,
-                    healthyDisplay,
-                    45,
-                    3_000L + index * 1_000L,
-                    producerFps = 60.0
-                )
-            )
-        }
-        assertTrue(
+        // After a fine 60 -> 58 relief step, recovery waits through the
+        // bounded cooldown, then requires fresh sender/decode/EGL proof before
+        // earning the 60-fps trial and validating it with new glass windows.
+        repeat(9) { index ->
             governor.observe(
                 healthySender,
                 healthyDisplay,
-                45,
-                13_000L,
+                governor.cap,
+                3_000L + index * 1_000L,
                 producerFps = 60.0
             )
-        )
+        }
         assertEquals(60, governor.cap)
+        assertFalse(governor.probingHighCadence)
     }
 
     @Test
@@ -101,13 +91,21 @@ class PresentationProvenRecoveryTest {
         val overloadedReceiver = receiver(frames = 30, processingMs = 25.0)
         governor.observe(sending60, overloadedReceiver, 60, 1_000)
         governor.observe(sending60, overloadedReceiver, 60, 2_000)
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
 
-        val healthySender = outbound(frames = 45, processingMs = 5.0)
-        val decoderOnly = receiver(frames = 45, processingMs = 5.0)
+        val healthySender = outbound(frames = 58, processingMs = 5.0)
+        val decoderOnly = receiver(frames = 58, processingMs = 5.0)
         repeat(8) { index ->
-            assertFalse(governor.observe(healthySender, decoderOnly, 45, 3_000L + index * 1_000L))
+            assertFalse(
+                governor.observe(
+                    healthySender,
+                    decoderOnly,
+                    58,
+                    3_000L + index * 1_000L,
+                    producerFps = 60.0
+                )
+            )
         }
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
 }

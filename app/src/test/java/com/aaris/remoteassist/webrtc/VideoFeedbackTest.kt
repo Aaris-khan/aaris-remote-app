@@ -127,7 +127,7 @@ class VideoFeedbackTest {
                 producerFps = 60.0
             )
         )
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
 
         val sameHeldSample =
             badFresh.copy(
@@ -138,12 +138,12 @@ class VideoFeedbackTest {
             governor.observe(
                 sender60,
                 sameHeldSample,
-                45,
+                58,
                 1_500L,
                 producerFps = 60.0
             )
         )
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
 
     @Test fun workingDecoderEvidenceSurvivesConsumptionButExpiresAndCannotCrossLeases() {
@@ -172,19 +172,19 @@ class VideoFeedbackTest {
         val sending60 = outbound().let { it.copy(recent = it.recent!!.copy(frames = 60)) }
         assertFalse(governor.observe(sending60, receiver(25.0), 60, 1000))
         assertTrue(governor.observe(sending60, receiver(25.0), 60, 2000))
-        assertEquals(45, governor.cap); assertFalse(governor.mayReduceResolution(3000))
-        repeat(11) { governor.observe(outbound(), receiver(), 45, 3000L + it * 1000) }
-        assertEquals(45, governor.cap)
-        assertFalse(governor.observe(outbound(), receiver(), 45, 14_000)); assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap); assertFalse(governor.mayReduceResolution(3000))
+        repeat(11) { governor.observe(outbound(), receiver(), 58, 3000L + it * 1000) }
+        assertEquals(58, governor.cap)
+        assertFalse(governor.observe(outbound(), receiver(), 58, 14_000)); assertEquals(58, governor.cap)
     }
-    @Test fun measuredSenderQueueResidenceGetsFastFortyFiveFpsRelief() {
+    @Test fun measuredSenderQueueResidenceGetsFineGrainedRelief() {
         val governor = VideoCadenceGovernor(60)
         val queued = outbound().let {
             it.copy(recent = it.recent!!.copy(frames = 60, sendQueueMs = 70.0))
         }
         val healthyReceiver = receiver().copy(frames = 60)
         assertTrue(governor.observe(queued, healthyReceiver, 60, 1000))
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
     @Test fun severeQueueResidenceCanDownshiftAfterOneMeasuredWindow() {
         val governor = VideoCadenceGovernor(60)
@@ -199,7 +199,7 @@ class VideoFeedbackTest {
         val sending60 = outbound().let { it.copy(recent = it.recent!!.copy(frames = 60)) }
         val delayedReceiver = receiver().copy(frames = 60, jitterMs = 100.0, dropped = 0, freezes = 0)
         assertTrue(governor.observe(sending60, delayedReceiver, 60, 1000))
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
     @Test fun cpuPressureSkipsFortyFiveBecauseEncoderNeedsStrongerRelief() {
         val governor = VideoCadenceGovernor(60)
@@ -250,9 +250,9 @@ class VideoFeedbackTest {
         val governor = VideoCadenceGovernor(60)
         governor.observe(outbound(40.0), null, 60, 1000)
         governor.observe(outbound(40.0), null, 60, 2000)
-        assertEquals(45, governor.cap)
-        repeat(16) { governor.observe(outbound(), null, 45, 3000L + it * 1000) }
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
+        repeat(16) { governor.observe(outbound(), null, 58, 3000L + it * 1000) }
+        assertEquals(58, governor.cap)
     }
     @Test fun healthyPipelinedHardwareIsNotCappedJustBecauseCodecTimeExceedsFrameInterval() {
         val governor = VideoCadenceGovernor(60)

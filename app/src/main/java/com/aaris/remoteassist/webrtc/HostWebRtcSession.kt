@@ -1058,6 +1058,54 @@ class HostWebRtcSession(
                 } else {
                     "n/a"
                 }
+            val glassIntervalMs = receiver?.presentationIntervalMs
+            val glassDrawnFrames = receiver?.presentedFrames
+            val glassExpectedFps =
+                listOfNotNull(
+                    effective.fps.toDouble(),
+                    qdSender?.fps,
+                    receiver?.fps
+                )
+                    .filter { it.isFinite() && it >= 0.0 }
+                    .minOrNull()
+            val glassExpectedFrames =
+                if (
+                    glassIntervalMs != null &&
+                    glassIntervalMs > 0 &&
+                    glassExpectedFps != null
+                ) {
+                    kotlin.math.round(
+                        glassExpectedFps * glassIntervalMs / 1_000.0
+                    ).toInt().coerceAtLeast(0)
+                } else {
+                    null
+                }
+            val glassSkippedFrames =
+                if (
+                    glassExpectedFrames != null &&
+                    glassDrawnFrames != null
+                ) {
+                    (glassExpectedFrames - glassDrawnFrames)
+                        .coerceAtLeast(0)
+                } else {
+                    null
+                }
+            val glassDeliveryPercent =
+                if (
+                    glassExpectedFrames != null &&
+                    glassExpectedFrames > 0 &&
+                    glassDrawnFrames != null
+                ) {
+                    (
+                        glassDrawnFrames.toDouble() /
+                            glassExpectedFrames.toDouble() *
+                            100.0
+                        )
+                        .coerceIn(0.0, 100.0)
+                } else {
+                    null
+                }
+
             val qd =
                 buildString {
                     append("PIPE • ")
@@ -1099,6 +1147,24 @@ class HostWebRtcSession(
                     append(if (receiver?.presentationSampleFresh == false) "(held)" else "")
                     append(" glassSeq=")
                     append(receiver?.presentationSampleSequence ?: "-")
+                    append('\n')
+
+                    append("GLASS • draw=")
+                    append(glassDrawnFrames ?: "-")
+                    append('/')
+                    append(glassExpectedFrames ?: "-")
+                    append(" skip=")
+                    append(glassSkippedFrames ?: "-")
+                    append(" ratio=")
+                    append(
+                        glassDeliveryPercent
+                            ?.let {
+                                "${kotlin.math.round(it * 10.0) / 10.0}%"
+                            }
+                            ?: "-"
+                    )
+                    append(" gap=")
+                    append(metric(receiver?.maxRenderGapMs, "ms"))
                     append('\n')
 
                     append("NET • rtt=")

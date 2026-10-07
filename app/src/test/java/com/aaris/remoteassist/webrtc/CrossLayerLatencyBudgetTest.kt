@@ -56,7 +56,7 @@ class CrossLayerLatencyBudgetTest {
         // stale for 60 fps remote control. At full cadence we now take one
         // immediate soft step instead of waiting another stats window.
         assertTrue(governor.observe(sender, controller, 60, 1_000))
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
 
     @Test
@@ -67,10 +67,10 @@ class CrossLayerLatencyBudgetTest {
 
         // Neither endpoint is individually unhealthy. Together they retain
         // about 3.6 60-Hz frame periods, which is enough to make a fresh swipe
-        // visibly trail the controlled phone. One soft 60 -> 45 step drains
+        // visibly trail the controlled phone. One fine 60 -> 58 step starts draining
         // the queue while lower rungs keep conservative hysteresis.
         assertTrue(governor.observe(sender, controller, 60, 1_000))
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
 
     @Test

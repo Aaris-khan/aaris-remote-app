@@ -46,7 +46,7 @@ class VideoUrgentFreshnessTest {
         val governor = VideoCadenceGovernor(60)
 
         assertTrue(governor.observe(outbound(queueMs = 120.0), receiver(), 60, 2_000))
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
 
     @Test
@@ -54,7 +54,7 @@ class VideoUrgentFreshnessTest {
         val governor = VideoCadenceGovernor(60)
 
         assertTrue(governor.observe(outbound(queueMs = 70.0), receiver(), 60, 2_000))
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
 
     @Test
@@ -80,11 +80,11 @@ class VideoUrgentFreshnessTest {
                 nowMs = 500
             )
         )
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
 
     @Test
-    fun ordinaryFortyFiveCadenceVarianceDoesNotCascade() {
+    fun ordinaryFineCadenceVarianceDoesNotCascade() {
         val governor = VideoCadenceGovernor(60)
         assertTrue(
             governor.observeFastPresentation(
@@ -102,12 +102,12 @@ class VideoUrgentFreshnessTest {
                 intervalMs = 500,
                 renderedFrames = 20,
                 maxGapMs = 80,
-                requestedFps = 45,
+                requestedFps = 58,
                 interactionActive = true,
                 nowMs = 1_000
             )
         )
-        assertEquals(45, governor.cap)
+        assertEquals(58, governor.cap)
     }
 
     @Test
@@ -129,12 +129,12 @@ class VideoUrgentFreshnessTest {
                 intervalMs = 500,
                 renderedFrames = 10,
                 maxGapMs = 180,
-                requestedFps = 45,
+                requestedFps = 58,
                 interactionActive = true,
                 nowMs = 1_000
             )
         )
-        assertEquals(30, governor.cap)
+        assertEquals(55, governor.cap)
     }
 
     @Test
@@ -184,7 +184,7 @@ class VideoUrgentFreshnessTest {
         val governor = VideoCadenceGovernor(60)
         assertTrue(governor.observe(outbound(queueMs = 120.0), receiver(), 60, 2_000))
 
-        assertFalse(governor.observe(outbound(queueMs = 120.0), receiver(), 45, 3_000))
-        assertEquals(45, governor.cap)
+        assertFalse(governor.observe(outbound(queueMs = 120.0), receiver(), 58, 3_000))
+        assertEquals(58, governor.cap)
     }
 }
