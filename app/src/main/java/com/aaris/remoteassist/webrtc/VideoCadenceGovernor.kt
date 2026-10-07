@@ -20,6 +20,7 @@ class VideoCadenceGovernor(
     private var changedAt = Long.MIN_VALUE / 2
     private var lastOverloadAtMs = Long.MIN_VALUE / 2
     private var lastDecision = "startup"
+    private var lastDeadlineSummary = "deadline=unknown"
     private val highCadenceProbe = HighCadenceProbe()
     val probingHighCadence: Boolean get() = highCadenceProbe.probing
 
@@ -486,7 +487,7 @@ class VideoCadenceGovernor(
                 sender = sender,
                 receiver = receiver?.takeIf { receiverMeasured }
             )
-        val pipelineResidenceMs = freshnessDeadline.controllableDebtMs
+        lastDeadlineSummary = freshnessDeadline.compact()
         val pipelineResidencePressure = freshnessDeadline.pressure
         val fallbackLayerPressure =
             !freshnessDeadline.complete &&
@@ -804,6 +805,7 @@ class VideoCadenceGovernor(
         }
 
         return "cap=${cap}fps decision=$lastDecision " +
+            "$lastDeadlineSummary " +
             "changeAgo=${ageMs(changedAt)} " +
             "overloadAgo=${ageMs(lastOverloadAtMs)} " +
             "floorProof=$interactiveFloorHeadroom/$INTERACTION_FLOOR_SAMPLES " +
