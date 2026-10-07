@@ -13,6 +13,8 @@ interface SignalingClient : Closeable {
         fun onRemoteCandidate(candidate: SignalCandidate)
         fun onRemoteIceRestartRequested()
         fun onRemotePresence(online: Boolean)
+        fun onBrowserControllerAttached(epoch: Long) = Unit
+        fun onSessionClosed() = Unit
         fun onSignalingDiagnostic(message: String) = Unit
         fun onError(error: Throwable)
     }

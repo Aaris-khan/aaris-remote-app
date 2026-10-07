@@ -44,6 +44,8 @@ class WebRtcPeer(
         fun onFallbackVideoFrame(frame: FallbackVideoFrame) = Unit
         fun onFallbackDeltaFrame(frame: FallbackDeltaFrame) = Unit
         fun onRemoteMediaRecoveryRequested() = Unit
+        fun onBrowserControllerAttached(epoch: Long) = Unit
+        fun onRemoteSessionClosed() = Unit
         fun onVideoHealth(snapshot: VideoHealthSnapshot) = Unit
         fun onDiagnostic(message: String) = Unit
         fun onError(error: Throwable)
@@ -1160,6 +1162,14 @@ class WebRtcPeer(
 
     override fun onRemotePresence(online: Boolean) = Unit
 
+    override fun onBrowserControllerAttached(epoch: Long) {
+        if (!closed.get() && role == PeerRole.HOST) listener.onBrowserControllerAttached(epoch)
+    }
+
+    override fun onSessionClosed() {
+        if (!closed.get()) listener.onRemoteSessionClosed()
+    }
+
     override fun onSignalingDiagnostic(message: String) {
         listener.onDiagnostic(message)
     }
@@ -1179,6 +1189,7 @@ class WebRtcPeer(
     override fun onIceConnectionChange(
         newState: PeerConnection.IceConnectionState
     ) {
+        if (closed.get()) return
         listener.onDiagnostic("ICE state → " + newState.name)
         when (newState) {
             PeerConnection.IceConnectionState.CONNECTED,
@@ -1195,6 +1206,7 @@ class WebRtcPeer(
     override fun onConnectionChange(
         newState: PeerConnection.PeerConnectionState
     ) {
+        if (closed.get()) return
         listener.onDiagnostic("PeerConnection state → " + newState.name)
         when (newState) {
             PeerConnection.PeerConnectionState.CONNECTED ->

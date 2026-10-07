@@ -243,11 +243,14 @@ class CloudflareSignalingClient(
         if (raw == "pong") return
         val root = JSONObject(raw)
         if (root.optString("kind") == "session") {
+            val session = root.optJSONObject("session")
             if (
-                root.optJSONObject("session")
-                    ?.optString("state") == "CLOSED"
+                session?.optString("state") == "CLOSED"
             ) {
-                dispatch { listener?.onRemotePresence(false) }
+                dispatch { listener?.onSessionClosed() }
+            } else if (role == PeerRole.HOST && session?.optBoolean("browserLink") == true) {
+                val epoch = session.optLong("browserEpoch", 0)
+                if (epoch > 0) dispatch { listener?.onBrowserControllerAttached(epoch) }
             }
             return
         }

@@ -1,0 +1,143 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { createBrowserProtocol } from './browser-protocol.js';
+import { browserResponse } from './browser-console.js';
+
+// Run the actual Worker module with only the Cloudflare host class substituted.
+// The transaction stub serializes operations like Durable Object SQLite.
+const source = (await fs.readFile(new URL('./core-worker.js', import.meta.url), 'utf8'))
+  .replace('import { DurableObject } from "cloudflare:workers";', 'class DurableObject { constructor(ctx, env) { this.ctx=ctx; this.env=env; } }')
+  .replace('"./browser-console.js"', JSON.stringify(new URL('./browser-console.js', import.meta.url).href));
+globalThis.WebSocketRequestResponsePair = class {};
+const { default: worker, AarisSession } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+class Storage {
+  values = new Map(); queue = Promise.resolve();
+  async get(k) { return structuredClone(this.values.get(k)); }
+  async put(k,v) { this.values.set(k,structuredClone(v)); }
+  async delete(k) { this.values.delete(k); }
+  async deleteAll() { this.values.clear(); }
+  async list({prefix}) { return new Map([...this.values].filter(([k])=>k.startsWith(prefix))); }
+  async setAlarm(t) { this.alarm=t; }
+  async deleteAlarm() { this.alarm=null; }
+  transaction(fn) { const p=this.queue.then(()=>fn(this)); this.queue=p.catch(()=>{}); return p; }
+}
+const sha = async s => Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s))).toString('hex');
+const sid='a'.repeat(64), host='host-token'.padEnd(43,'h'), controller='controller-token'.padEnd(43,'c');
+const client=crypto.randomUUID(), instance=crypto.randomUUID();
+async function fixture() {
+  const sockets=[],storage=new Storage();
+  const ctx={storage,getWebSockets:role=>sockets.filter(s=>!role||s.a.role===role),setWebSocketAutoResponse(){}};
+  const room=new AarisSession(ctx,{}); const now=Date.now();
+  const h=await sha(host), c=await sha(controller);
+  await room.initBrowser(sid,h,c,now);
+  const env={SESSIONS:{getByName:()=>room,get:()=>room,idFromName:x=>x}};
+  const call=(path,token=controller,data,extra={})=>worker.fetch(new Request(`https://remote.test${path}`,{method:data===undefined?'GET':'POST',headers:{Authorization:`Bearer ${token}`,...(data===undefined?{}:{'Content-Type':'application/json'}),...extra},body:data===undefined?undefined:JSON.stringify(data)}),env);
+  return {room,storage,h,c,now,call,sockets,env};
+}
+test('GET previews load a token-free console without claiming or consuming a session',async()=>{
+  let touched=false;
+  const r=await worker.fetch(new Request('https://remote.test/remote/'),{SESSIONS:{get(){touched=true;}}});
+  assert.equal(r.status,200);assert.equal(touched,false);
+  const html=await r.text(); assert.match(html,/autoplay muted playsinline/); assert.doesNotMatch(html,/getUserMedia|captcha|password|Sign in/);
+  assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.equal(r.headers.get('Cache-Control'),'no-store');
+  assert.match(await browserResponse('/remote/client.js').text(),/browser_ping/);
+});
+test('claim is idempotent, refresh rotates epoch, another controller is refused while owner is live',async()=>{
+  const f=await fixture();
+  const first=await f.room.claimBrowser(f.c,client,instance,f.now);
+  assert.equal(first.browserEpoch,1);
+  assert.equal((await f.room.claimBrowser(f.c,client,instance,f.now+1)).browserEpoch,1);
+  assert.equal((await f.room.claimBrowser(f.c,crypto.randomUUID(),crypto.randomUUID(),f.now+2)).code,'controller_busy');
+  const replacement=crypto.randomUUID();
+  assert.equal((await f.room.claimBrowser(f.c,client,replacement,f.now+3)).browserEpoch,2);
+  assert.equal((await f.room.authorizeRequest(f.c,instance)).code,'controller_replaced');
+  assert.equal((await f.room.authorizeRequest(f.c,replacement)).ok,true);
+  assert.equal((await f.room.authorizeRequest(f.h,null)).ok,true);
+});
+test('concurrent claims admit one controller and browser heartbeat protects its live lease',async()=>{
+  const f=await fixture();
+  const results=await Promise.all([f.room.claimBrowser(f.c,client,instance,f.now),f.room.claimBrowser(f.c,crypto.randomUUID(),crypto.randomUUID(),f.now)]);
+  assert.equal(results.filter(r=>r.ok).length,1);
+  const s=await f.storage.get('session');s.browser.lastSeen=f.now-44_000;await f.storage.put('session',s);
+  let pong;
+  await f.room.webSocketMessage({deserializeAttachment:()=>({role:'controller',instanceId:instance}),send:v=>pong=v},'browser_ping');
+  assert.equal(pong,'pong'); assert.ok((await f.storage.get('session')).browser.lastSeen>=f.now);
+});
+test('a concurrent old socket heartbeat cannot restore the replaced controller',async()=>{
+  const f=await fixture();await f.room.claimBrowser(f.c,client,instance,f.now);
+  const next=crypto.randomUUID();let closed;
+  const old={deserializeAttachment:()=>({role:'controller',instanceId:instance}),send(){},close:code=>closed=code};
+  await Promise.all([f.room.claimBrowser(f.c,client,next,f.now+1),f.room.webSocketMessage(old,'browser_ping')]);
+  assert.equal((await f.storage.get('session')).browser.instanceId,next);
+  assert.equal((await f.storage.get('session')).browser.epoch,2);assert.equal(closed,4009);
+});
+test('expired owner can be replaced but expired or stopped sessions cannot be resumed',async()=>{
+  const f=await fixture(); await f.room.claimBrowser(f.c,client,instance,f.now);
+  assert.equal((await f.room.claimBrowser(f.c,crypto.randomUUID(),crypto.randomUUID(),f.now+46_000)).ok,true);
+  await f.room.closeSession(f.h,f.now+47_000);
+  assert.equal((await f.room.claimBrowser(f.c,client,instance,f.now+48_000)).status,410);
+  const g=await fixture();assert.equal((await g.room.claimBrowser(g.c,client,instance,g.now+300_001)).status,410);
+});
+test('host and browser credentials are separate; browser cannot mark its own projection ready',async()=>{
+  const f=await fixture();
+  assert.equal((await f.room.claimBrowser(f.h,client,instance,f.now)).status,401);
+  assert.equal((await f.room.claimBrowser(f.c,client,instance,f.now)).ok,true);
+  assert.equal((await f.room.transition(f.c,'SCREEN_READY',f.now)).status,403);
+  assert.equal((await f.room.transition(f.h,'SCREEN_READY',f.now)).ok,true);
+  assert.equal((await f.room.transition(f.h,'LIVE',f.now)).ok,true);
+  assert.equal(f.storage.alarm,f.now+7_200_000);
+  assert.equal((await f.call(`/v1/sessions/${sid}`,controller,undefined,{'X-Aaris-Instance':instance})).status,200);
+  assert.equal((await f.call(`/v1/sessions/${sid}`,controller)).status,409);
+});
+test('cross-origin claim and invalid browser websocket credentials are refused',async()=>{
+  const f=await fixture();
+  assert.equal((await f.call(`/v1/sessions/${sid}/browser-claim`,controller,{clientId:client,instanceId:instance},{Origin:'https://evil.test'})).status,403);
+  const r=await worker.fetch(new Request(`https://remote.test/v1/sessions/${sid}/socket`,{headers:{Origin:'https://evil.test','Sec-WebSocket-Protocol':`aaris-remote, auth.${controller}, instance.${instance}`}}),f.env);
+  assert.equal(r.status,401);
+});
+test('legacy phone-to-phone approval, signaling, and close work without browser ownership',async()=>{
+  const f=await fixture();await f.storage.deleteAll();
+  assert.equal((await f.room.init(sid,f.h,'host',f.now,f.now+300_000)).created,true);
+  assert.equal((await f.room.redeem(f.c,'controller',f.now)).ok,true);
+  for(const state of ['HOST_APPROVED','SCREEN_READY','LIVE'])assert.equal((await f.room.transition(f.h,state,f.now)).ok,true);
+  assert.equal((await f.room.authorizeRequest(f.c,null)).ok,true);
+  assert.equal((await f.room.publishEvent(f.h,'description',{type:'offer',sdp:'v=0'},f.now)).ok,true);
+  assert.equal((await f.room.closeSession(f.h,f.now)).ok,true);
+  assert.equal((await f.call(`/v1/sessions/${sid}`,host)).status,200);
+});
+const wire=createBrowserProtocol(), hello={secret:-9007199254740997n,generation:42,width:1080,height:2400};
+test('JavaScript packets match the shared fixtures decoded by Android unit tests',async()=>{
+  const file=await fs.readFile(new URL('../app/src/test/resources/browser-control-v1.properties',import.meta.url),'utf8');
+  const fixtures=Object.fromEntries(file.split('\n').filter(l=>l&&!l.startsWith('#')).map(l=>l.split('=')));
+  for(const [name,args] of [['tap',{x:.5,y:1}],['longPress',{x:0,y:1,durationMs:600}],['swipe',{x:.2,y:.8,toX:.2,toY:.1,durationMs:350}],['back',{}],['home',{}],['recents',{}],['text',{text:'Hello नमस्ते'}],['drag',{points:[{x:0,y:1},{x:.5,y:.5},{x:1,y:0}],durationMs:700}]]) {
+    assert.equal(Buffer.from(wire.command(name,hello,9007199254740999n,args)).toString('hex'),fixtures[name]);
+  }
+});
+test('binary control preserves signed 64-bit lease and sequence and matches Android coordinate quantization',()=>{
+  const b=wire.command('tap',hello,9007199254740999n,{x:.5,y:1}),v=new DataView(b);
+  assert.equal(b.byteLength,26);assert.equal(v.getUint8(0),1);assert.equal(v.getUint8(1),3);
+  assert.equal(v.getBigInt64(2),hello.secret);assert.equal(v.getInt32(10),42);assert.equal(v.getBigInt64(14),9007199254740999n);
+  assert.equal(v.getUint16(22),32767);assert.equal(v.getUint16(24),65535);
+  assert.equal(new DataView(wire.heartbeat(hello)).getBigInt64(2),hello.secret);
+  assert.throws(()=>wire.command('tap',hello,1n,{x:NaN,y:.5}));
+  assert.throws(()=>wire.command('text',hello,1n,{text:'😀'.repeat(513)}));
+});
+test('letterboxing, portrait, landscape and display rotation map to the actual visible video',()=>{
+  assert.deepEqual(wire.point(320,480,{left:120,top:80,width:400,height:800},1080,2160),{x:.5,y:.5});
+  const rect={left:0,top:0,width:800,height:600};
+  assert.equal(wire.point(5,300,rect,1080,2400),null);
+  assert.deepEqual(wire.point(400,300,rect,1080,2400),{x:.5,y:.5});
+  assert.equal(wire.point(400,1,rect,2400,1080),null);
+  assert.deepEqual(wire.point(400,300,rect,2400,1080),{x:.5,y:.5});
+  assert.equal(wire.point(0,0,rect,0,0),null);
+});
+test('long press, swipe, drag and text use the existing Android v1 packet shapes',()=>{
+  assert.equal(wire.command('longPress',hello,1n,{x:0,y:0,durationMs:1}).byteLength,28);
+  assert.equal(new DataView(wire.command('longPress',hello,1n,{x:0,y:0,durationMs:1})).getUint16(26),250);
+  assert.equal(wire.command('swipe',hello,1n,{x:0,y:0,toX:1,toY:1}).byteLength,32);
+  const drag=wire.command('drag',hello,1n,{points:[{x:0,y:0},{x:1,y:1}],durationMs:400});
+  assert.equal(drag.byteLength,33);assert.equal(new DataView(drag).getUint8(22),2);
+  assert.equal(new DataView(drag).getUint16(31),400);
+  assert.equal(wire.command('text',hello,1n,{text:'हाय'}).byteLength,24+new TextEncoder().encode('हाय').length);
+});

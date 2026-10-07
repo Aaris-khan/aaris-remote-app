@@ -39,6 +39,8 @@ import com.aaris.remoteassist.ai.AiConnectorRuntime
 import com.aaris.remoteassist.ai.AiConnectorService
 import com.aaris.remoteassist.ai.AiConnectorState
 import com.aaris.remoteassist.ai.AiConnectorStore
+import com.aaris.remoteassist.ai.BrowserLinkBackend
+import com.aaris.remoteassist.ai.BrowserLinkRuntime
 import com.aaris.remoteassist.capture.ScreenShareService
 import com.aaris.remoteassist.diagnostics.ConnectionFlightRecorder
 import com.aaris.remoteassist.diagnostics.CrashRecorder
@@ -81,6 +83,42 @@ class MainActivity : ComponentActivity() {
     private var aiProjectionPending = false
     private var aiSetupJob: Job? = null
     private var aiLinkRegistered = false
+    private lateinit var browserLinkButton: Button
+    private lateinit var browserLinkStatus: TextView
+    private var browserSetupJob: Job? = null
+    private var browserProjectionPending = false
+    private var browserProjectionSessionId: String? = null
+    private val browserLinkListener: () -> Unit = {
+        runOnUiThread {
+            if (::browserLinkButton.isInitialized) {
+                browserLinkButton.text = when {
+                    BrowserLinkRuntime.sharing -> "Stop AI Link"
+                    BrowserLinkRuntime.ticket != null -> "Cancel AI Link"
+                    else -> "Connect with AI through link"
+                }
+                browserLinkStatus.text = BrowserLinkRuntime.message
+                refreshIdleUi()
+            }
+        }
+    }
+    private val browserScreenLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val expectedSessionId = browserProjectionSessionId
+        browserProjectionSessionId = null
+        browserProjectionPending = false
+        val ticket = BrowserLinkRuntime.ticket
+        if (ticket == null || ticket.sessionId != expectedSessionId) return@registerForActivityResult
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            runCatching {
+                startForegroundService(Intent(this, ScreenShareService::class.java)
+                    .setAction(ScreenShareService.ACTION_START)
+                    .putExtra(ScreenShareService.EXTRA_SESSION_ID, ticket.sessionId)
+                    .putExtra(ScreenShareService.EXTRA_RESULT_CODE, result.resultCode)
+                    .putExtra(ScreenShareService.EXTRA_CAPTURE_DATA, result.data)
+                    .putExtra(ScreenShareService.EXTRA_BROWSER_LINK, true))
+            }.onFailure { cancelBrowserLink("Screen sharing could not start. Tap Connect with AI through link again.") }
+        } else cancelBrowserLink("Screen sharing was not allowed. Tap Connect with AI through link to try again.")
+        refreshIdleUi()
+    }
     private val aiStateListener: (AiConnectorState) -> Unit = { state ->
         runOnUiThread {
             if (::aiButton.isInitialized) {
@@ -178,11 +216,14 @@ class MainActivity : ComponentActivity() {
         aiSetupPending = savedInstanceState?.getBoolean("aiSetupPending") ?: false
         aiProjectionPending = savedInstanceState?.getBoolean("aiProjectionPending") ?: false
         aiLinkRegistered = savedInstanceState?.getBoolean("aiLinkRegistered") ?: false
+        browserProjectionPending = savedInstanceState?.getBoolean("browserProjectionPending") == true && BrowserLinkRuntime.ticket != null
+        browserProjectionSessionId = savedInstanceState?.getString("browserProjectionSessionId")
         // A registration coroutine does not survive Activity recreation. Do
         // not restore a disabled Connect button with no job able to finish it.
         if (!aiLinkRegistered && !aiProjectionPending) aiSetupPending = false
         setContentView(ScrollView(this).apply { isFillViewport = true; addView(buildUi()) })
         AiConnectorRuntime.addListener(aiStateListener)
+        BrowserLinkRuntime.addListener(browserLinkListener)
         scope.launch {
             aiCredential = withContext(Dispatchers.IO) { runCatching { AiConnectorStore(this@MainActivity).load() }.getOrNull() }
             showAiLink(false)
@@ -295,6 +336,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         mainActivityResumed = true
+        if (BrowserLinkRuntime.ticket != null && !BrowserLinkRuntime.sharing && !browserProjectionPending && PermissionGate.isAccessibilityEnabled(this)) continueBrowserSetup()
         if (aiSetupPending && aiLinkRegistered && !aiProjectionPending && PermissionGate.isAccessibilityEnabled(this)) continueAiSetup()
 
         val pendingController =
@@ -377,6 +419,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        BrowserLinkRuntime.removeListener(browserLinkListener)
+        if (isFinishing && !BrowserLinkRuntime.sharing) cancelBrowserLink()
         AiConnectorRuntime.removeListener(aiStateListener)
         accessibilityReadyJob?.cancel()
         accessibilityReadyJob = null
@@ -1916,6 +1960,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun isIdleForNewSession(): Boolean {
+        if (BrowserLinkRuntime.ticket != null || browserSetupJob?.isActive == true || browserProjectionPending) return false
         if (AiConnectorRuntime.state.active || SessionCoordinator.isAiReserved() || aiSetupPending) return false
         if (activeHostSessionId != null) return false
         if (pendingControllerSessionId != null) return false
@@ -2156,6 +2201,22 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(aiStatus, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
+        browserLinkButton = Button(this).apply {
+            text = "Connect with AI through link"
+            AarisUi.secondaryButton(this)
+            setOnClickListener { requestBrowserLink() }
+        }
+        root.addView(browserLinkButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply { topMargin = dp(12) })
+        browserLinkStatus = TextView(this).apply {
+            text = BrowserLinkRuntime.message
+            textSize = 12f
+            setTextColor(AarisUi.TEXT_SECONDARY)
+            setPadding(0, dp(6), 0, dp(10))
+            contentDescription = "AI browser link status. Tap to copy the active link again."
+            setOnClickListener { copyBrowserLink() }
+        }
+        root.addView(browserLinkStatus, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
         val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -2337,16 +2398,89 @@ class MainActivity : ComponentActivity() {
         connectButton.alpha = if (humanEnabled) 1f else 0.58f
         shareButton.alpha = if (humanEnabled) 1f else 0.58f
         if (::aiButton.isInitialized) aiButton.isEnabled = AiConnectorRuntime.state.active || (enabled && !aiSetupPending)
+        if (::browserLinkButton.isInitialized) browserLinkButton.isEnabled = BrowserLinkRuntime.ticket != null || (enabled && browserSetupJob?.isActive != true)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("aiSetupPending", aiSetupPending)
         outState.putBoolean("aiProjectionPending", aiProjectionPending)
         outState.putBoolean("aiLinkRegistered", aiLinkRegistered)
+        outState.putBoolean("browserProjectionPending", browserProjectionPending)
+        outState.putString("browserProjectionSessionId", browserProjectionSessionId)
         super.onSaveInstanceState(outState)
     }
 
     private fun setAiStatus(message: String) { status.text = message; aiStatus.text = message }
+
+    private fun requestBrowserLink() {
+        if (BrowserLinkRuntime.sharing) {
+            startService(Intent(this, ScreenShareService::class.java).setAction(ScreenShareService.ACTION_STOP))
+            return
+        }
+        if (BrowserLinkRuntime.ticket != null) { cancelBrowserLink(); return }
+        if (!isIdleForNewSession()) { toast("End the current session first."); return }
+        connectivityBlockMessage()?.let { status.text = it; return }
+        browserSetupJob = scope.launch {
+            BrowserLinkRuntime.update("Creating and copying your AI link…")
+            setButtonsEnabled(false)
+            try {
+                val ticket = BrowserLinkBackend.create(this@MainActivity)
+                BrowserLinkRuntime.prepare(ticket)
+                SessionCoordinator.prepareReady()
+                SessionCoordinator.transition(ticket.sessionId, SessionState.PAIR_PENDING)
+                SessionCoordinator.transition(ticket.sessionId, SessionState.HOST_APPROVED)
+                copyBrowserLink()
+                if (!PermissionGate.isAccessibilityEnabled(this@MainActivity)) {
+                    BrowserLinkRuntime.update("Link copied • turn on Aaris Remote Accessibility, then return here")
+                    PermissionGate.openAccessibilitySettings(this@MainActivity)
+                }
+            } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (error: Exception) { cancelBrowserLink("Could not create the link. Check internet and try again.") }
+            finally { browserSetupJob = null; refreshIdleUi() }
+            if (PermissionGate.isAccessibilityEnabled(this@MainActivity)) continueBrowserSetup()
+        }
+    }
+
+    private fun continueBrowserSetup() {
+        if (browserSetupJob?.isActive == true || browserProjectionPending || BrowserLinkRuntime.sharing) return
+        val ticket = BrowserLinkRuntime.ticket ?: return
+        browserSetupJob = scope.launch {
+            try {
+                val deadline = SystemClock.elapsedRealtime() + 6000
+                while (!AssistAccessibilityService.isConnected() && SystemClock.elapsedRealtime() < deadline) delay(100)
+                if (BrowserLinkRuntime.ticket != ticket || isFinishing) return@launch
+                if (!AssistAccessibilityService.isConnected()) {
+                    cancelBrowserLink("Accessibility is still starting. Try the AI link button again."); return@launch
+                }
+                browserProjectionPending = true
+                browserProjectionSessionId = ticket.sessionId
+                BrowserLinkRuntime.update("Link copied • allow entire-screen sharing, then paste the link into your AI")
+                val manager = getSystemService(MediaProjectionManager::class.java)
+                browserScreenLauncher.launch(if (Build.VERSION.SDK_INT >= 34)
+                    manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay()) else manager.createScreenCaptureIntent())
+            } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (error: Exception) { cancelBrowserLink("Could not open screen sharing. Try the AI link button again.") }
+            finally { browserSetupJob = null; refreshIdleUi() }
+        }
+    }
+
+    private fun copyBrowserLink() {
+        val value = BrowserLinkRuntime.ticket ?: return
+        val clip = ClipData.newPlainText("Aaris AI browser link", value.link)
+        clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+        toast("AI link copied")
+    }
+
+    private fun cancelBrowserLink(message: String = "AI link cancelled • tap to create a new link") {
+        val id = BrowserLinkRuntime.ticket?.sessionId ?: run { BrowserLinkRuntime.update(message); return }
+        BrowserLinkRuntime.clear(id, message)
+        SessionCoordinator.close(id)
+        BackendSessionCloser.close(this, id)
+        browserProjectionPending = false
+        browserProjectionSessionId = null
+        refreshIdleUi()
+    }
 
     private fun requestAiConnection(rotate: Boolean = false) {
         if (AiConnectorRuntime.state.active) { AiConnectorService.stop(this); return }

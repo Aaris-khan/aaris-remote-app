@@ -31,7 +31,8 @@ class HostWebRtcSession(
     context: Context,
     private val sessionId: String,
     projectionGrant: ProjectionGrant,
-    private val listener: Listener
+    private val listener: Listener,
+    private val browserLink: Boolean = false
 ) : Closeable, WebRtcPeer.Listener {
     interface Listener {
         fun onLive()
@@ -176,19 +177,17 @@ class HostWebRtcSession(
 
     private val transport = ControlTransportTracker()
 
-    private val signaling = CloudflareSignalingClient(
-        context = appContext,
-        sessionId = sessionId,
-        role = PeerRole.HOST
-    )
-
-    private val peer = WebRtcPeer(
+    private fun createPeer() = WebRtcPeer(
         context = appContext,
         sessionId = sessionId,
         role = PeerRole.HOST,
-        signaling = signaling,
+        signaling = CloudflareSignalingClient(appContext, sessionId, PeerRole.HOST),
         listener = this
     )
+    @Volatile private var peer = createPeer()
+    private val peerSwapLock = Any()
+    private var browserEpoch = 0L
+    private var browserOfflineAtMs = 0L
 
     private val capture = ScreenCaptureTrack(
         context = appContext,
@@ -206,9 +205,9 @@ class HostWebRtcSession(
     private val fallbackStreamer =
         FallbackScreenStreamer(
             capture = capture,
-            sendPacket = peer::sendFallbackVideo,
+            sendPacket = { peer.sendFallbackVideo(it) },
             onDiagnostic = listener::onDiagnostic,
-            canStartFrame = peer::canStartFallbackFrame,
+            canStartFrame = { peer.canStartFallbackFrame() },
             requestFreshFrame = capture::requestSnapshot
         )
 
@@ -263,7 +262,7 @@ class HostWebRtcSession(
     private val connectionWatchdog = Runnable {
         if (
             !closed.get() &&
-            (!peerConnected || !controlOpen)
+            (!peerConnected || !controlOpen || (browserLink && !transportReady))
         ) {
             listener.onRemoteDisconnect()
         }
@@ -336,6 +335,12 @@ class HostWebRtcSession(
                 expected != null &&
                 SessionRuntime.currentLease() == null
             ) {
+                if (browserLink) {
+                    // Lease expiry disables gestures immediately. Keep the single
+                    // projection alive for a bounded browser reconnect window.
+                    waitForBrowser()
+                    return
+                }
                 listener.onRemoteDisconnect()
                 return
             }
@@ -428,7 +433,7 @@ class HostWebRtcSession(
         displayHandler.removeCallbacks(connectionWatchdog)
         displayHandler.postDelayed(
             connectionWatchdog,
-            CONNECT_TIMEOUT_MS
+            if (browserLink) BROWSER_CONNECT_TIMEOUT_MS else CONNECT_TIMEOUT_MS
         )
         peer.start()
     }
@@ -542,6 +547,8 @@ class HostWebRtcSession(
         transport.onPeerDisconnected()
             ?.let(listener::onConnectivityChanged)
 
+        if (browserLink && everConnected) displayHandler.post { waitForBrowser() }
+
         if (everConnected && !closed.get()) {
             displayHandler.removeCallbacks(iceRestart)
             displayHandler.postDelayed(
@@ -571,6 +578,10 @@ class HostWebRtcSession(
         transport.onControlChannelClosed()
             ?.let(listener::onConnectivityChanged)
         if (!closed.get()) {
+            if (browserLink && everConnected) {
+                displayHandler.post { waitForBrowser() }
+                return
+            }
             displayHandler.removeCallbacks(connectionWatchdog)
             displayHandler.postDelayed(
                 connectionWatchdog,
@@ -581,6 +592,13 @@ class HostWebRtcSession(
 
     override fun onControlMessage(bytes: ByteArray) {
         val packet = ControlProtocol.decode(bytes) ?: return
+
+        if (browserLink && (!transportReady || browserOfflineAtMs != 0L)) {
+            if (packet is ControlPacket.Heartbeat && packet.leaseSecret == lease?.leaseSecret && peerConnected && controlOpen) {
+                displayHandler.post { ensureLiveHandshake() }
+            }
+            return
+        }
 
         when (packet) {
             is ControlPacket.Heartbeat -> {
@@ -632,7 +650,12 @@ class HostWebRtcSession(
                  */
                 noteRemoteInteraction()
 
+                val commandPeer = peer
                 AssistAccessibilityService.dispatch(command) { applied ->
+                    // An asynchronous gesture from the previous browser must
+                    // never ACK a recycled sequence number on its replacement.
+                    if (browserLink && (closed.get() || peer !== commandPeer ||
+                        !SessionRuntime.isAuthorized(sessionId, command.leaseSecret, command.generation))) return@dispatch
                     if (applied) {
                         /*
                          * Arm a causal refresh at the exact applied-input point.
@@ -1620,6 +1643,53 @@ class HostWebRtcSession(
         listener.onRecoverableError(error)
     }
 
+    private fun waitForBrowser() {
+        if (closed.get() || !browserLink) return
+        if (browserOfflineAtMs == 0L) {
+            browserOfflineAtMs = android.os.SystemClock.elapsedRealtime()
+            SessionRuntime.reset()
+            transportReady = false
+            displayHandler.removeCallbacks(connectionWatchdog)
+            displayHandler.postDelayed(connectionWatchdog, BROWSER_RECONNECT_GRACE_MS)
+            listener.onDiagnostic("Browser offline • control paused • waiting up to 60 seconds")
+        }
+    }
+
+    override fun onBrowserControllerAttached(epoch: Long) {
+        displayHandler.post {
+            if (!browserLink || closed.get() || epoch <= browserEpoch) return@post
+            browserEpoch = epoch
+            SessionRuntime.reset()
+            transportReady = false
+            controlOpen = false
+            peerConnected = false
+            browserOfflineAtMs = 0L
+            // Recreate only transport. Never consume the projection grant twice
+            // or allocate another capture/encoder pipeline on browser refresh.
+            policyHandler.post replaceTransport@{
+                synchronized(peerSwapLock) {
+                    if (closed.get()) return@replaceTransport
+                    peer.close()
+                    if (closed.get()) return@replaceTransport
+                    peer = createPeer()
+                    val effective = effectiveCaptureProfile(profile)
+                    val policy = InteractiveVideoPolicy.forState(profile.tier, false)
+                    peer.addLocalVideoTrack(capture.videoTrack, profile.maxVideoBitrateBps, effective.fps,
+                        policy.preserveResolution, policy.motionPriority)
+                    peer.start()
+                }
+                displayHandler.post {
+                    if (!closed.get()) {
+                        displayHandler.removeCallbacks(connectionWatchdog)
+                        displayHandler.postDelayed(connectionWatchdog, BROWSER_RECONNECT_GRACE_MS)
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onRemoteSessionClosed() { listener.onRemoteDisconnect() }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
 
@@ -1640,7 +1710,7 @@ class HostWebRtcSession(
             capture.videoTrack.removeSink(captureProbe)
         }
         runCatching { fallbackStreamer.close() }
-        runCatching { peer.close() }
+        synchronized(peerSwapLock) { runCatching { peer.close() } }
         runCatching { capture.close() }
         runCatching { policyThread.quitSafely() }
 
@@ -1681,6 +1751,7 @@ class HostWebRtcSession(
 
         displayHandler.removeCallbacks(connectionWatchdog)
         transportReady = true
+        browserOfflineAtMs = 0L
         lease = currentLease
 
         displayHandler.removeCallbacks(
@@ -1719,6 +1790,8 @@ class HostWebRtcSession(
     }
     companion object {
         private const val CONNECT_TIMEOUT_MS = 90_000L
+        private const val BROWSER_CONNECT_TIMEOUT_MS = 300_000L
+        private const val BROWSER_RECONNECT_GRACE_MS = 60_000L
         private const val CONTROL_CHANNEL_GRACE_MS = 5_000L
         private const val ICE_RESTART_DELAY_MS = 1_500L
         private const val STARTUP_CONTROL_RECOVERY_INITIAL_DELAY_MS = 8_000L
