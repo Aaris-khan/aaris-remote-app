@@ -74,12 +74,27 @@ internal object FreshnessDeadlineController {
             )
         }
 
-        // Codec times are useful debt when exposed, but absence must not make
-        // the whole controller blind because pacer/playout residence are the
-        // dominant queueing signals and are required above.
-        val encodeMs = sender?.processingMs.valid() ?: 0.0
-        val decodeMs = receiver?.processingMs.valid() ?: 0.0
-        val debtMs = encodeMs + checkNotNull(sendQueueMs) + decodeMs + checkNotNull(playoutMs)
+        /*
+         * Service time is not automatically backlog. A 5 ms encode still costs
+         * latency, but it does not retain an obsolete frame when the target
+         * period is 16.7 ms. Count only codec service beyond one target frame
+         * period as queue-generating debt; normal codec cost stays under the
+         * existing throughput/codec-pressure controller.
+         *
+         * This separation prevents a slow single frame from being mistaken for
+         * a pacer/jitter backlog while still charging sustained codec overrun.
+         */
+        val encodeExcessMs =
+            ((sender?.processingMs.valid() ?: 0.0) - framePeriodMs)
+                .coerceAtLeast(0.0)
+        val decodeExcessMs =
+            ((receiver?.processingMs.valid() ?: 0.0) - framePeriodMs)
+                .coerceAtLeast(0.0)
+        val debtMs =
+            checkNotNull(sendQueueMs) +
+                checkNotNull(playoutMs) +
+                encodeExcessMs +
+                decodeExcessMs
         val utilization = debtMs / deadlineMs
 
         val state =
