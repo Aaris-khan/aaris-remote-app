@@ -2,6 +2,7 @@ package com.aaris.remoteassist.ui
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -166,6 +167,7 @@ class InlineRemoteControllerView(
 
     private var attached = false
     private var previousLegacySystemUiVisibility: Int? = null
+    private var previousRequestedOrientation: Int? = null
     private var immersiveModeApplied = false
 
     @Volatile
@@ -315,6 +317,8 @@ class InlineRemoteControllerView(
             override fun onLive(geometry: RemoteGeometry) {
                 activity.runOnUiThread {
                     this@InlineRemoteControllerView.geometry = geometry
+                    adoptLatestFrameForGeometry(geometry)
+                    syncControllerOrientation(geometry)
                     updateVideoViewport()
                     showVideoStatus(if (remoteTrack == null) {
                         "Connected • waiting for screen video…"
@@ -437,6 +441,10 @@ class InlineRemoteControllerView(
     fun show() {
         if (attached) return
         attached = true
+        if (previousRequestedOrientation == null) {
+            previousRequestedOrientation =
+                activity.requestedOrientation
+        }
 
         enterControllerImmersiveMode()
         buildUi()
@@ -492,6 +500,7 @@ class InlineRemoteControllerView(
 
         remoteTrack = null
         (root.parent as? ViewGroup)?.removeView(root)
+        restoreControllerOrientation()
         exitControllerImmersiveMode()
     }
 
@@ -704,6 +713,24 @@ class InlineRemoteControllerView(
                 strokeColor = AarisUi.REMOTE_BORDER
             )
             elevation = dp(8).toFloat()
+        }
+
+        dock.addOnLayoutChangeListener {
+                _,
+                left,
+                top,
+                right,
+                bottom,
+                oldLeft,
+                oldTop,
+                oldRight,
+                oldBottom ->
+            if (
+                right - left != oldRight - oldLeft ||
+                bottom - top != oldBottom - oldTop
+            ) {
+                updateRemoteContentSafeArea()
+            }
         }
 
         addButton("Stats") {
@@ -999,6 +1026,14 @@ class InlineRemoteControllerView(
             if (visible) View.VISIBLE else View.GONE
         controlHandle.visibility =
             if (visible) View.GONE else View.VISIBLE
+        updateRemoteContentSafeArea()
+        if (visible) {
+            dock.post {
+                if (attached && dock.visibility == View.VISIBLE) {
+                    updateRemoteContentSafeArea()
+                }
+            }
+        }
 
         if (visible) {
             controlHandleParked = false
@@ -1039,6 +1074,30 @@ class InlineRemoteControllerView(
         params.marginStart = targetStartMargin
         params.marginEnd = targetEndMargin
         dock.layoutParams = params
+        updateRemoteContentSafeArea()
+    }
+
+    private fun updateRemoteContentSafeArea() {
+        val params =
+            rendererContainer.layoutParams as? FrameLayout.LayoutParams
+                ?: return
+        val insets =
+            RemoteControllerLayoutPolicy.contentInsets(
+                dockVisible = dock.visibility == View.VISIBLE,
+                dockOnRight = controlHandleOnRight,
+                dockWidthPx = dock.width,
+                gapPx = dp(20)
+            )
+        if (
+            params.leftMargin == insets.leftPx &&
+            params.rightMargin == insets.rightPx
+        ) {
+            return
+        }
+
+        params.leftMargin = insets.leftPx
+        params.rightMargin = insets.rightPx
+        rendererContainer.layoutParams = params
     }
 
     private fun positionControlHandleIfNeeded() {
@@ -1438,6 +1497,71 @@ class InlineRemoteControllerView(
             }
         }
         sinkTrack = null
+    }
+
+    private fun adoptLatestFrameForGeometry(
+        remote: RemoteGeometry
+    ) {
+        val observedWidth = latestObservedFrameWidth
+        val observedHeight = latestObservedFrameHeight
+        if (
+            observedWidth > 0 &&
+            observedHeight > 0 &&
+            RemoteViewportMapper.frameMatchesRemote(
+                remoteWidth = remote.widthPx,
+                remoteHeight = remote.heightPx,
+                frameWidth = observedWidth,
+                frameHeight = observedHeight
+            )
+        ) {
+            frameWidth = observedWidth
+            frameHeight = observedHeight
+        } else if (
+            frameWidth > 0 &&
+            frameHeight > 0 &&
+            !RemoteViewportMapper.frameMatchesRemote(
+                remoteWidth = remote.widthPx,
+                remoteHeight = remote.heightPx,
+                frameWidth = frameWidth,
+                frameHeight = frameHeight
+            )
+        ) {
+            // Do not let the previous portrait/landscape frame pin the new
+            // generation to a stale viewport while the first matching frame
+            // is still crossing WebRTC.
+            frameWidth = 0
+            frameHeight = 0
+        }
+    }
+
+    private fun syncControllerOrientation(
+        remote: RemoteGeometry
+    ) {
+        val target =
+            when (
+                RemoteControllerLayoutPolicy.orientation(
+                    remote.widthPx,
+                    remote.heightPx
+                )
+            ) {
+                RemoteScreenOrientation.LANDSCAPE ->
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                RemoteScreenOrientation.PORTRAIT ->
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                null -> return
+            }
+
+        if (activity.requestedOrientation != target) {
+            activity.requestedOrientation = target
+        }
+    }
+
+    private fun restoreControllerOrientation() {
+        val previous = previousRequestedOrientation ?: return
+        previousRequestedOrientation = null
+        if (activity.requestedOrientation != previous) {
+            activity.requestedOrientation = previous
+        }
     }
 
     private fun updateRendererAspect(
