@@ -165,7 +165,7 @@ class ControllerWebRtcSession(
         if (displayRefreshRateHz != null) {
             publishDisplayCapabilities(displayRefreshRateHz)
         }
-        return peer.sendControl(
+        return peer.sendTelemetry(
             bytes = ControlProtocol.encode(
                 ControlPacket.PresentationFeedback(
                     leaseSecret = lease,
@@ -175,10 +175,7 @@ class ControllerWebRtcSession(
                     renderedFrames = window.renderedFrames,
                     maxGapMs = window.maxGapMs
                 )
-            ),
-            // Presentation telemetry is freshness-only: stale retransmits must
-            // never sit ahead of the user's next authoritative control packet.
-            freshnessSensitive = true
+            )
         )
     }
 
@@ -197,7 +194,7 @@ class ControllerWebRtcSession(
                 ?.takeIf { it.isFinite() && it in 1f..240f }
                 ?: return false
 
-        return peer.sendControl(
+        return peer.sendTelemetry(
             ControlProtocol.encode(
                 ControlPacket.DisplayCapabilities(
                     lease,
@@ -205,8 +202,7 @@ class ControllerWebRtcSession(
                     feedbackSequence.incrementAndGet(),
                     refresh
                 )
-            ),
-            freshnessSensitive = true
+            )
         )
     }
 
@@ -237,17 +233,14 @@ class ControllerWebRtcSession(
         if (closed.get()) return false
         val lease = leaseSecret ?: return false
         val display = geometry ?: return false
-        return peer.sendControl(
+        return peer.sendTelemetry(
             bytes = ControlProtocol.encode(
                 ControlPacket.PresentationHeartbeat(
                     leaseSecret = lease,
                     generation = display.generation,
                     sequence = feedbackSequence.incrementAndGet()
                 )
-            ),
-            // Tiny proof-of-glass packet. Losing an old heartbeat is harmless;
-            // retransmitting it ahead of touch input would be actively harmful.
-            freshnessSensitive = true
+            )
         )
     }
 
@@ -683,7 +676,7 @@ class ControllerWebRtcSession(
                 return@post
             }
 
-            peer.sendControl(
+            peer.sendTelemetry(
                 bytes =
                     ControlProtocol.encode(
                         ControlPacket.PhotonFeedback(
@@ -694,8 +687,7 @@ class ControllerWebRtcSession(
                             commandAckMs = sample.commandAckMs,
                             postAckPresentMs = sample.postAckPresentMs
                         )
-                    ),
-                freshnessSensitive = true
+                    )
             )
 
             val now = SystemClock.elapsedRealtime()
@@ -737,7 +729,7 @@ class ControllerWebRtcSession(
         val display = geometry
         val recent = snapshot.recent
         if (lease != null && display != null && recent != null) {
-            peer.sendControl(
+            peer.sendTelemetry(
                 bytes = ControlProtocol.encode(
                     ControlPacket.VideoFeedback(
                         lease,
@@ -757,10 +749,7 @@ class ControllerWebRtcSession(
                         recent.dropped ?: -1,
                         recent.freezes ?: -1
                     )
-                ),
-                // Decoder health is periodic freshness telemetry. Once the live lane
-                // exists, dropping an old sample beats head-of-line blocking input.
-                freshnessSensitive = true
+                )
             )
         }
         val now = android.os.SystemClock.elapsedRealtime()

@@ -172,6 +172,69 @@ class AdaptiveScreenSmoothnessTest {
     }
 
     @Test
+    fun moderateResidualLossCanEscapeStickyFifteenWhenLocalPathIsClean() {
+        val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
+        val recovered =
+            outbound(
+                fps = 15,
+                processingMs = 27.0,
+                queueMs = 0.0
+            ).copy(
+                roundTripTimeMs = 120,
+                packetLossRatio = 0.06,
+                codecImplementation = "c2.mtk.avc.encoder"
+            )
+
+        assertFalse(
+            governor.tryProbeDuringInteraction(
+                outbound = recovered,
+                receiver = null,
+                producerFps = 30.0,
+                interactionActive = true,
+                nowMs = 1_000L
+            )
+        )
+        assertTrue(
+            governor.tryProbeDuringInteraction(
+                outbound = recovered,
+                receiver = null,
+                producerFps = 30.0,
+                interactionActive = true,
+                nowMs = 1_500L
+            )
+        )
+        assertEquals(24, governor.cap)
+    }
+
+    @Test
+    fun severeResidualLossStillBlocksStickyFifteenRescue() {
+        val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
+        val lossy =
+            outbound(
+                fps = 15,
+                processingMs = 27.0,
+                queueMs = 0.0
+            ).copy(
+                roundTripTimeMs = 120,
+                packetLossRatio = 0.10,
+                codecImplementation = "c2.mtk.avc.encoder"
+            )
+
+        repeat(4) { index ->
+            assertFalse(
+                governor.tryProbeDuringInteraction(
+                    outbound = lossy,
+                    receiver = null,
+                    producerFps = 30.0,
+                    interactionActive = true,
+                    nowMs = 1_000L + index * 500L
+                )
+            )
+        }
+        assertEquals(15, governor.cap)
+    }
+
+    @Test
     fun cleanInteractionRescueStillRejectsCodecThatCannotSustainTwentyFour() {
         val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
         val tooSlow =

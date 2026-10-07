@@ -354,6 +354,9 @@ class WebRtcPeer(
     private var liveControlChannel: DataChannel? = null
 
     @Volatile
+    private var telemetryControlChannel: DataChannel? = null
+
+    @Volatile
     private var fallbackVideoChannel: DataChannel? = null
 
     private val fallbackReassembler =
@@ -544,6 +547,22 @@ class WebRtcPeer(
                     DataChannel.Init().apply {
                         ordered = false
                         maxRetransmits = 0
+                    }
+                )
+            )
+            bindTelemetryControlChannel(
+                peerConnection.createDataChannel(
+                    TELEMETRY_CONTROL_CHANNEL,
+                    DataChannel.Init().apply {
+                        /*
+                         * Health/presentation feedback must not share the
+                         * touch-MOVE freshness stream. One bounded retransmit
+                         * dramatically improves proof-of-glass delivery under
+                         * moderate packet loss without introducing reliable
+                         * ordered head-of-line blocking.
+                         */
+                        ordered = false
+                        maxRetransmits = 1
                     }
                 )
             )
@@ -870,6 +889,45 @@ class WebRtcPeer(
         }
 
         return sendBinary(channel, bytes)
+    }
+
+    /**
+     * Tiny receiver/media telemetry uses its own unordered SCTP stream.
+     *
+     * The live input lane deliberately drops superseded MOVE samples at very
+     * small buffered amounts. Presentation/video/photon feedback is different:
+     * losing every sample makes the host adaptation loop blind. Isolating the
+     * streams prevents touch bursts from starving proof-of-glass while one
+     * bounded retransmission improves delivery on lossy mobile paths.
+     *
+     * Before the telemetry stream opens, fall back to the existing freshness
+     * lane for startup compatibility. Never spill steady-state telemetry into
+     * the reliable ordered command stream.
+     */
+    fun sendTelemetry(bytes: ByteArray): Boolean {
+        val telemetry = telemetryControlChannel
+        if (telemetry?.state() == DataChannel.State.OPEN) {
+            if (
+                telemetry.bufferedAmount() >=
+                    MAX_TELEMETRY_CONTROL_BUFFERED_BYTES
+            ) {
+                return false
+            }
+            return sendBinary(telemetry, bytes)
+        }
+
+        val live = liveControlChannel
+        if (live?.state() == DataChannel.State.OPEN) {
+            if (
+                live.bufferedAmount() >=
+                    MAX_FRESH_CONTROL_BUFFERED_BYTES
+            ) {
+                return false
+            }
+            return sendBinary(live, bytes)
+        }
+
+        return false
     }
 
     private fun sendBinary(
@@ -1240,6 +1298,11 @@ class WebRtcPeer(
                     return
                 }
 
+                TELEMETRY_CONTROL_CHANNEL -> {
+                    bindTelemetryControlChannel(dataChannel)
+                    return
+                }
+
                 FALLBACK_VIDEO_CHANNEL -> {
                     bindFallbackVideoChannel(dataChannel)
                     return
@@ -1282,6 +1345,9 @@ class WebRtcPeer(
 
         liveControlChannel?.let(::disposeDataChannel)
         liveControlChannel = null
+
+        telemetryControlChannel?.let(::disposeDataChannel)
+        telemetryControlChannel = null
 
         fallbackVideoChannel?.let(::disposeDataChannel)
         fallbackVideoChannel = null
@@ -1545,6 +1611,41 @@ class WebRtcPeer(
         if (channel.state() == DataChannel.State.OPEN) {
             listener.onDiagnostic(
                 "control-live-v1 DataChannel OPEN • freshness lane ready"
+            )
+        }
+    }
+
+    private fun bindTelemetryControlChannel(channel: DataChannel) {
+        telemetryControlChannel?.let { existing ->
+            if (existing !== channel) {
+                disposeDataChannel(existing)
+            }
+        }
+
+        telemetryControlChannel = channel
+        channel.registerObserver(
+            object : DataChannel.Observer {
+                override fun onBufferedAmountChange(
+                    previousAmount: Long
+                ) = Unit
+
+                override fun onStateChange() {
+                    if (channel.state() == DataChannel.State.OPEN) {
+                        listener.onDiagnostic(
+                            "control-telemetry-v1 DataChannel OPEN • glass feedback isolated"
+                        )
+                    }
+                }
+
+                override fun onMessage(buffer: DataChannel.Buffer) {
+                    readControlMessage(buffer)
+                }
+            }
+        )
+
+        if (channel.state() == DataChannel.State.OPEN) {
+            listener.onDiagnostic(
+                "control-telemetry-v1 DataChannel OPEN • glass feedback isolated"
             )
         }
     }
@@ -1942,12 +2043,14 @@ class WebRtcPeer(
         private const val MAX_PENDING_REMOTE_CANDIDATES = 192
         private const val MAX_CONTROL_PACKET_BYTES = 4_096
         private const val MAX_FRESH_CONTROL_BUFFERED_BYTES = 512L
+        private const val MAX_TELEMETRY_CONTROL_BUFFERED_BYTES = 4_096L
         private const val MAX_FALLBACK_PACKET_BYTES = 12_500
         private const val MAX_FALLBACK_BUFFERED_BYTES = 900_000L
         private const val MAX_FRESH_FALLBACK_BUFFERED_BYTES = 64_000L
         private const val FALLBACK_DELTA_MAGIC = 0x41524432
         private const val CONTROL_CHANNEL = "control-v1"
         private const val LIVE_CONTROL_CHANNEL = "control-live-v1"
+        private const val TELEMETRY_CONTROL_CHANNEL = "control-telemetry-v1"
         private const val FALLBACK_VIDEO_CHANNEL = "fallback-video-v1"
         private const val SCREEN_STREAM_ID = "remote-screen"
         // This is the smallest *maximum-bitrate ceiling* we allow the

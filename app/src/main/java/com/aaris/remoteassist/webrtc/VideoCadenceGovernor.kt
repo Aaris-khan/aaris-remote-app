@@ -156,12 +156,33 @@ class VideoCadenceGovernor(
             val qualityHealthy =
                 outbound.qualityLimitationReason == null ||
                     outbound.qualityLimitationReason.equals("none", ignoreCase = true)
+            /*
+             * Emergency rescue below 24 fps is intentionally more tolerant
+             * than a 24 -> 30 promotion. At 240/360-wide emergency rungs a
+             * recovered zero-queue hardware path can still deliver useful
+             * fresh motion with moderate residual loss. Requiring <4% loss here
+             * made real mobile paths stick at 15 fps long after congestion had
+             * cleared. Severe loss still blocks rescue; the 30-fps probe below
+             * retains the stricter threshold.
+             */
+            val floorLossLimit =
+                if (cap <= STICKY_LOW_CADENCE_FPS) {
+                    INTERACTION_FLOOR_RECOVERY_MAX_LOSS
+                } else {
+                    INTERACTION_FLOOR_MAX_LOSS
+                }
+            val floorRttLimit =
+                if (cap <= STICKY_LOW_CADENCE_FPS) {
+                    INTERACTION_FLOOR_RECOVERY_MAX_RTT_MS
+                } else {
+                    INTERACTION_FLOOR_MAX_RTT_MS
+                }
             val networkHealthy =
                 outbound.roundTripTimeMs?.let {
-                    it in 0..INTERACTION_FLOOR_MAX_RTT_MS
+                    it in 0..floorRttLimit
                 } == true &&
                     (outbound.packetLossRatio ?: 0.0) <
-                        INTERACTION_FLOOR_MAX_LOSS
+                        floorLossLimit
             val receiverHealthy =
                 receiver?.let { window ->
                     window.processingMs?.let {
@@ -809,6 +830,9 @@ class VideoCadenceGovernor(
         const val INTERACTION_FLOOR_MAX_QUEUE_MS = 25.0
         const val INTERACTION_FLOOR_MAX_RTT_MS = 300
         const val INTERACTION_FLOOR_MAX_LOSS = 0.04
+        const val STICKY_LOW_CADENCE_FPS = 15
+        const val INTERACTION_FLOOR_RECOVERY_MAX_RTT_MS = 350
+        const val INTERACTION_FLOOR_RECOVERY_MAX_LOSS = 0.08
         const val INTERACTION_FLOOR_MAX_PRESENTATION_AGE_MS = 1_500
         const val MIN_INTERACTION_FLOOR_FRAMES = 5
         const val INTERACTION_FLOOR_SAMPLES = 2
