@@ -1020,7 +1020,7 @@ class HostWebRtcSession(
              * 3-second health callback: no new timer, RTCStats request, frame
              * copy or media worker is added.
              */
-            val sender = snapshot.recent
+            val qdSender = snapshot.recent
             val effective = effectiveCaptureProfile(profile)
             val cadenceFloor =
                 motionVideoBudget.cadenceFloor(
@@ -1069,7 +1069,7 @@ class HostWebRtcSession(
                     append(" target=")
                     append(effective.fps)
                     append("fps send=")
-                    append(fps(sender?.fps))
+                    append(fps(qdSender?.fps))
                     append(" decode=")
                     append(fps(receiver?.fps))
                     append(" present=")
@@ -1079,11 +1079,11 @@ class HostWebRtcSession(
                     append('\n')
 
                     append("LAT • enc=")
-                    append(metric(sender?.processingMs, "ms"))
+                    append(metric(qdSender?.processingMs, "ms"))
                     append(" dec=")
                     append(metric(receiver?.processingMs, "ms"))
                     append(" queue=")
-                    append(metric(sender?.sendQueueMs, "ms"))
+                    append(metric(qdSender?.sendQueueMs, "ms"))
                     append(" jitter=")
                     append(metric(receiver?.jitterMs, "ms"))
                     append(" target=")
@@ -1103,7 +1103,7 @@ class HostWebRtcSession(
                     append(" bwe=")
                     append(metric(snapshot.availableOutgoingBitrateBps?.div(1_000.0), "kbps"))
                     append(" tx=")
-                    append(metric(sender?.bitrateBps?.div(1_000.0), "kbps"))
+                    append(metric(qdSender?.bitrateBps?.div(1_000.0), "kbps"))
                     append(" limited=")
                     append(snapshot.qualityLimitationReason ?: "-")
                     append(" path=")
