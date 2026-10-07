@@ -9,6 +9,20 @@ on:
   pull_request:
 
 jobs:
+  browser-webrtc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - run: npm install --no-save playwright
+      - run: npx playwright install --with-deps chromium
+      - run: node cloudflare/browser-webrtc.test.mjs
+
   mcp-protocol:
     runs-on: ubuntu-latest
     timeout-minutes: 3

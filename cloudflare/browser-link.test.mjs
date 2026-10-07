@@ -99,6 +99,13 @@ test('legacy phone-to-phone approval, signaling, and close work without browser 
   assert.equal((await f.call(`/v1/sessions/${sid}`,host)).status,200);
 });
 const wire=createBrowserProtocol(), hello={secret:-9007199254740997n,generation:42,width:1080,height:2400};
+test('JavaScript packets match the shared fixtures decoded by Android unit tests',async()=>{
+  const file=await fs.readFile(new URL('../app/src/test/resources/browser-control-v1.properties',import.meta.url),'utf8');
+  const fixtures=Object.fromEntries(file.split('\n').filter(l=>l&&!l.startsWith('#')).map(l=>l.split('=')));
+  for(const [name,args] of [['tap',{x:.5,y:1}],['longPress',{x:0,y:1,durationMs:600}],['swipe',{x:.2,y:.8,toX:.2,toY:.1,durationMs:350}],['back',{}],['home',{}],['recents',{}],['text',{text:'Hello नमस्ते'}],['drag',{points:[{x:0,y:1},{x:.5,y:.5},{x:1,y:0}],durationMs:700}]]) {
+    assert.equal(Buffer.from(wire.command(name,hello,9007199254740999n,args)).toString('hex'),fixtures[name]);
+  }
+});
 test('binary control preserves signed 64-bit lease and sequence and matches Android coordinate quantization',()=>{
   const b=wire.command('tap',hello,9007199254740999n,{x:.5,y:1}),v=new DataView(b);
   assert.equal(b.byteLength,26);assert.equal(v.getUint8(0),1);assert.equal(v.getUint8(1),3);

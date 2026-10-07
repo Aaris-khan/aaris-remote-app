@@ -1189,6 +1189,7 @@ class WebRtcPeer(
     override fun onIceConnectionChange(
         newState: PeerConnection.IceConnectionState
     ) {
+        if (closed.get()) return
         listener.onDiagnostic("ICE state → " + newState.name)
         when (newState) {
             PeerConnection.IceConnectionState.CONNECTED,
@@ -1205,6 +1206,7 @@ class WebRtcPeer(
     override fun onConnectionChange(
         newState: PeerConnection.PeerConnectionState
     ) {
+        if (closed.get()) return
         listener.onDiagnostic("PeerConnection state → " + newState.name)
         when (newState) {
             PeerConnection.PeerConnectionState.CONNECTED ->
