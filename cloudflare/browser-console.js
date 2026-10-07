@@ -153,8 +153,9 @@ export function browserMain(protocolFactory) {
     }
     throw new Error('Action outcome unknown. Inspect a fresh screenshot before trying again.');
   }
-  async function snapshotAct(action, args) {
-    if (!snapshotFresh()) throw new Error('Wait for a fresh phone screenshot');
+  async function agentAct(action, args, requireVisibleSnapshot = false) {
+    if (requireVisibleSnapshot && !snapshotFresh()) throw new Error('Wait for a fresh phone screenshot');
+    if (!observation?.observationId || performance.now() - observationAt >= 85000) throw new Error('Wait for a fresh phone observation');
     if (busy) throw new Error('Wait for the current action to finish');
     const mapped = { longPress: 'long_press', text: 'type' }[action] || action;
     const input = { ...args };
@@ -169,9 +170,12 @@ export function browserMain(protocolFactory) {
       busy = false;
       if (result.observationId) setObservation(result);
       if (result.error) throw new Error(result.error);
-      message(result.applied === true ? 'Screenshot mode • action applied' : result.applied === false ? 'Action was not applied • inspect the phone' : 'Action outcome unknown • inspect the phone');
+      message(result.applied === true ? 'AI action applied' : result.applied === false ? 'Action was not applied • inspect the phone' : 'Action outcome unknown • inspect the phone');
       return result;
     } finally { snapshotPending = false; busy = false; }
+  }
+  async function snapshotAct(action, args) {
+    return agentAct(action, args, true);
   }
   async function getActionObservation() {
     if (busy) throw new Error('Wait for the current action to finish');
@@ -266,7 +270,7 @@ export function browserMain(protocolFactory) {
      * control is available. It reuses the MCP-class validation/executor instead
      * of trusting a stale browser coordinate.
      */
-    const result = await snapshotAct(compiled.action, compiled.args);
+    const result = await agentAct(compiled.action, compiled.args, false);
     if (aiResult) aiResult.textContent = result?.applied === true ? 'Applied' : result?.error || 'Outcome unknown';
     return result;
   }
@@ -498,9 +502,9 @@ export function browserResponse(path) {
 <button id="play" hidden>Show phone</button><nav aria-label="Phone controls"><button data-action="back">Back</button><button data-action="home">Home</button><button data-action="recents">Recent apps</button><button data-swipe="up">Swipe up</button><button data-swipe="down">Swipe down</button><button id="refresh">Fresh screenshot</button><button id="disconnect">Disconnect</button></nav>
 <div class="tools"><input id="text" aria-label="Text to enter on phone" placeholder="Type into the phone’s focused field"><button id="sendText">Send text</button></div>
 <details open><summary>AI Command JSON</summary>
-<p>For browser-capable AI: paste one JSON action, then press Execute. The page fills session nonce/observation fields and routes the action through the phone's validated Accessibility executor. Examples: <code>{"action":"tap","target":"YouTube"}</code>, <code>{"action":"type","text":"Aarish Khan"}</code>, <code>{"action":"swipe","direction":"up"}</code>.</p>
+<p>For browser-capable AI: paste one JSON action, then press Execute. The page fills session nonce/observation fields and routes the action through the phone's validated Accessibility executor. Examples: <code>{"action":"tap","x":0.73,"y":0.41}</code> for any visible pixel target (including games/canvas), <code>{"action":"tap","target":"YouTube"}</code> when a named Accessibility target exists, <code>{"action":"type","text":"Aarish Khan"}</code>, <code>{"action":"swipe","direction":"up"}</code>. Coordinates are normalized from 0 to 1 across the phone screen.</p>
 <div id="aiTargets" aria-live="polite">Loading named phone targets…</div>
-<textarea id="aiCommand" aria-label="AI command JSON" spellcheck="false" placeholder='{"action":"tap","target":"YouTube"}'></textarea>
+<textarea id="aiCommand" aria-label="AI command JSON" spellcheck="false" placeholder='{"action":"tap","x":0.73,"y":0.41}'></textarea>
 <div class="tools"><button id="aiExecute">Execute AI command</button><span id="aiResult" role="status" aria-live="polite"></span></div>
 </details>
 <details><summary>Tap using normalized coordinates</summary><div class="tools"><label>X <input id="x" type="number" min="0" max="1" step="0.01" value="0.5"></label><label>Y <input id="y" type="number" min="0" max="1" step="0.01" value="0.5"></label><button id="tapPoint">Tap point</button></div></details>
