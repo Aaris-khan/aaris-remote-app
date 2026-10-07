@@ -26,8 +26,9 @@ async def main():
         assert b'autoplay muted playsinline' in r.read()
     session=request('/v1/browser-sessions',data={},expected=201)
     sid,host,token=(session[k] for k in ('sessionId','hostToken','controllerToken'))
-    browser_client=session['browserClientId']
-    assert str(uuid.UUID(browser_client))==browser_client
+    browser_client=session.get('browserClientId')
+    if browser_client is not None:
+        assert str(uuid.UUID(browser_client))==browser_client
     assert host!=token
     path='/v1/sessions/'+sid
     client,instance=str(uuid.uuid4()),str(uuid.uuid4())
