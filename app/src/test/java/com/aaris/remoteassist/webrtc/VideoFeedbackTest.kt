@@ -118,7 +118,7 @@ class VideoFeedbackTest {
                 it.copy(recent = it.recent!!.copy(frames = 60))
             }
 
-        assertTrue(
+        assertFalse(
             governor.observe(
                 sender60,
                 badFresh,
@@ -127,10 +127,25 @@ class VideoFeedbackTest {
                 producerFps = 60.0
             )
         )
+        assertEquals(60, governor.cap)
+
+        val secondFresh =
+            badFresh.copy(
+                presentationSampleSequence = 8
+            )
+        assertTrue(
+            governor.observe(
+                sender60,
+                secondFresh,
+                60,
+                1_500L,
+                producerFps = 60.0
+            )
+        )
         assertEquals(58, governor.cap)
 
         val sameHeldSample =
-            badFresh.copy(
+            secondFresh.copy(
                 presentationSampleAgeMs = 550,
                 presentationSampleFresh = false
             )
@@ -139,7 +154,7 @@ class VideoFeedbackTest {
                 sender60,
                 sameHeldSample,
                 58,
-                1_500L,
+                2_000L,
                 producerFps = 60.0
             )
         )
@@ -183,7 +198,9 @@ class VideoFeedbackTest {
             it.copy(recent = it.recent!!.copy(frames = 60, sendQueueMs = 70.0))
         }
         val healthyReceiver = receiver().copy(frames = 60)
-        assertTrue(governor.observe(queued, healthyReceiver, 60, 1000))
+        assertFalse(governor.observe(queued, healthyReceiver, 60, 1000))
+        assertEquals(60, governor.cap)
+        assertTrue(governor.observe(queued, healthyReceiver, 60, 1500))
         assertEquals(58, governor.cap)
     }
     @Test fun severeQueueResidenceCanDownshiftAfterOneMeasuredWindow() {
@@ -198,7 +215,9 @@ class VideoFeedbackTest {
         val governor = VideoCadenceGovernor(60)
         val sending60 = outbound().let { it.copy(recent = it.recent!!.copy(frames = 60)) }
         val delayedReceiver = receiver().copy(frames = 60, jitterMs = 100.0, dropped = 0, freezes = 0)
-        assertTrue(governor.observe(sending60, delayedReceiver, 60, 1000))
+        assertFalse(governor.observe(sending60, delayedReceiver, 60, 1000))
+        assertEquals(60, governor.cap)
+        assertTrue(governor.observe(sending60, delayedReceiver, 60, 1500))
         assertEquals(58, governor.cap)
     }
     @Test fun cpuPressureSkipsFortyFiveBecauseEncoderNeedsStrongerRelief() {
