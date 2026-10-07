@@ -106,8 +106,8 @@ class VideoFeedbackTest {
             receiver().copy(
                 frames = 60,
                 presentationIntervalMs = 500,
-                presentedFrames = 15,
-                maxRenderGapMs = 180,
+                presentedFrames = 24,
+                maxRenderGapMs = 50,
                 presentationAgeMs = 50,
                 presentationSampleSequence = 7,
                 presentationSampleAgeMs = 50,
