@@ -637,16 +637,12 @@ class VideoCadenceGovernor(
                     )
 
         /*
-         * Full-cadence remoting has the smallest frame budget. At 60 fps an
-         * ordinary, measured queue/jitter/render-pressure crossing already means
-         * multiple old frames can sit between the user's finger and the pixels
-         * they see. Waiting for a second one-second stats window makes a fast
-         * swipe feel sticky even when the control command was applied promptly.
-         *
-         * Allow exactly one early soft 60 -> 45 relief step. Requiring both the
-         * current cap and requested cadence to remain at 60 prevents this signal
-         * from cascading below 45; lower rungs retain the established two-window
-         * hysteresis unless pressure is urgent or severe.
+         * Full-cadence remoting has the smallest frame budget, but one ordinary
+         * mobile-network or scheduler excursion is not enough to prove that 60
+         * fps is unsustainable. Keep this signal scoped to full cadence, then
+         * let the confidence gate distinguish isolated evidence from sustained
+         * pressure. Confirmed soft pressure earns only the next fine rung
+         * (normally 60 -> 58); urgent/severe evidence still bypasses the gate.
          */
         val highCadenceResidencePressure =
             pipelineResidencePressure || fallbackLayerPressure
