@@ -215,7 +215,16 @@ export function browserMain(protocolFactory) {
       if (command.target !== undefined || command.label !== undefined) {
         return { action: 'tap', args: resolveNamedTarget(command, value) };
       }
-      const x = Number(command.x), y = Number(command.y);
+      let x = Number(command.x), y = Number(command.y);
+      const space = String(command.space || 'normalized').trim().toLowerCase();
+      if (space === 'pixel' || space === 'pixels') {
+        const width = Number(value?.display?.width), height = Number(value?.display?.height);
+        if (!(width > 0 && height > 0)) throw new Error('Phone pixel geometry unavailable');
+        if (!(x >= 0 && x < width && y >= 0 && y < height)) throw new Error(`pixel tap must fit ${width}×${height}`);
+        x /= width; y /= height;
+      } else if (space !== 'normalized' && space !== 'unit') {
+        throw new Error('tap space must be "normalized" or "pixel"');
+      }
       if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new Error('tap x/y must be normalized 0..1');
       return { action: 'tap', args: { x, y } };
     }
@@ -502,7 +511,7 @@ export function browserResponse(path) {
 <button id="play" hidden>Show phone</button><nav aria-label="Phone controls"><button data-action="back">Back</button><button data-action="home">Home</button><button data-action="recents">Recent apps</button><button data-swipe="up">Swipe up</button><button data-swipe="down">Swipe down</button><button id="refresh">Fresh screenshot</button><button id="disconnect">Disconnect</button></nav>
 <div class="tools"><input id="text" aria-label="Text to enter on phone" placeholder="Type into the phone’s focused field"><button id="sendText">Send text</button></div>
 <details open><summary>AI Command JSON</summary>
-<p>For browser-capable AI: paste one JSON action, then press Execute. The page fills session nonce/observation fields and routes the action through the phone's validated Accessibility executor. Examples: <code>{"action":"tap","x":0.73,"y":0.41}</code> for any visible pixel target (including games/canvas), <code>{"action":"tap","target":"YouTube"}</code> when a named Accessibility target exists, <code>{"action":"type","text":"Aarish Khan"}</code>, <code>{"action":"swipe","direction":"up"}</code>. Coordinates are normalized from 0 to 1 across the phone screen.</p>
+<p>For browser-capable AI: paste one JSON action, then press Execute. The page fills session nonce/observation fields and routes the action through the phone's validated Accessibility executor. Examples: <code>{"action":"tap","x":0.73,"y":0.41}</code> for any visible target including games/canvas, or <code>{"action":"tap","x":742,"y":1180,"space":"pixel"}</code> using phone pixels. Named Accessibility targets such as <code>{"action":"tap","target":"YouTube"}</code> are optional shortcuts. One action is executed per fresh observation so a screen change can never make the next tap use stale coordinates.</p>
 <div id="aiTargets" aria-live="polite">Loading named phone targets…</div>
 <textarea id="aiCommand" aria-label="AI command JSON" spellcheck="false" placeholder='{"action":"tap","x":0.73,"y":0.41}'></textarea>
 <div class="tools"><button id="aiExecute">Execute AI command</button><span id="aiResult" role="status" aria-live="polite"></span></div>
