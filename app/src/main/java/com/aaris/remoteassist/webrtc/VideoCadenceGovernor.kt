@@ -20,6 +20,7 @@ class VideoCadenceGovernor(
     private var changedAt = Long.MIN_VALUE / 2
     private var lastOverloadAtMs = Long.MIN_VALUE / 2
     private var lastDecision = "startup"
+    private var lastDeadlineSummary = "deadline=unknown"
     private val highCadenceProbe = HighCadenceProbe()
     val probingHighCadence: Boolean get() = highCadenceProbe.probing
 
@@ -470,41 +471,27 @@ class VideoCadenceGovernor(
                 receiverJitterMs != null && receiverJitterMs > jitterPressureThresholdMs
 
         /*
-         * A remoting stream can feel late even when no single queue crosses its
-         * individual alarm threshold. Sender pacer residence and receiver jitter
-         * residence are serial waiting rooms in the same motion-to-photon path,
-         * so budget them together as well.
+         * One deadline controller owns controllable staleness. It intentionally
+         * excludes path propagation (RTT/2): cadence cannot make physics faster,
+         * but it can stop codec/pacer/playout queues from retaining obsolete
+         * screen states. Complete evidence collapses encode + sender-pacer +
+         * decode + receiver-playout residence into one frame-relative signal.
          *
-         * The combined budget is deliberately frame-relative. At 60 fps we do
-         * not allow roughly four to five old frames to accumulate before reacting:
-         * residence above about three frame periods qualifies for the soft
-         * 60 -> 45 relief step. At lower cadence the absolute budget expands,
-         * avoiding needless quality loss on constrained devices. Full 60 fps may
-         * take one early soft relief step; lower cadence retains the established
-         * multi-window hysteresis unless pressure is already urgent or severe.
-         *
-         * Require both measurements for this cross-layer signal. If either
-         * endpoint omits its stat, the established per-layer thresholds keep
-         * their exact behavior instead of being silently tightened.
-         *
-         * Libwebrtc still owns bandwidth estimation and packet pacing. This
-         * governor only lowers capture cadence when the measured pipeline is
-         * accumulating stale frames, which gives GCC room to drain its queues.
+         * If an endpoint does not expose residence, the established per-layer
+         * alarms remain a conservative fallback rather than inventing latency.
+         * Libwebrtc continues to own GCC/TWCC and packet pacing.
          */
-        val pipelineResidenceMs =
-            if (sendQueueMs != null && receiverMeasured && receiverJitterMs != null) {
-                sendQueueMs + receiverJitterMs
-            } else {
-                null
-            }
-        val pipelineResidencePressureThresholdMs =
-            maxOf(
-                MIN_PIPELINE_RESIDENCE_PRESSURE_MS,
-                budgetMs * PIPELINE_RESIDENCE_BUDGET_MULTIPLIER
+        val freshnessDeadline =
+            FreshnessDeadlineController.assess(
+                targetFps = requestedFps,
+                sender = sender,
+                receiver = receiver?.takeIf { receiverMeasured }
             )
-        val pipelineResidencePressure =
-            pipelineResidenceMs != null &&
-                pipelineResidenceMs > pipelineResidencePressureThresholdMs
+        lastDeadlineSummary = freshnessDeadline.compact()
+        val pipelineResidencePressure = freshnessDeadline.pressure
+        val fallbackLayerPressure =
+            !freshnessDeadline.complete &&
+                (queuePressure || receiverDelay)
 
         /*
          * RTP/decode counters can look healthy while the controller GPU is
@@ -550,7 +537,7 @@ class VideoCadenceGovernor(
         val congestion =
             loss >= PACKET_LOSS_PRESSURE_RATIO ||
                 (outbound.roundTripTimeMs ?: 0) >= RTT_PRESSURE_MS ||
-                queuePressure || receiverDelay || pipelineResidencePressure
+                pipelineResidencePressure || fallbackLayerPressure
 
         val severePresentationPressure =
             (
@@ -582,12 +569,17 @@ class VideoCadenceGovernor(
                             )
                     )
 
+        val fallbackSevereResidence =
+            !freshnessDeadline.complete &&
+                (
+                    (sendQueueMs ?: 0.0) >= SEVERE_QUEUE_MS ||
+                        (receiverJitterMs ?: 0.0) >= SEVERE_JITTER_MS
+                    )
         val severePressure =
             loss >= SEVERE_PACKET_LOSS_RATIO ||
                 (outbound.roundTripTimeMs ?: 0) >= SEVERE_RTT_MS ||
-                (sendQueueMs ?: 0.0) >= SEVERE_QUEUE_MS ||
-                (receiverJitterMs ?: 0.0) >= SEVERE_JITTER_MS ||
-                (pipelineResidenceMs ?: 0.0) >= SEVERE_PIPELINE_RESIDENCE_MS ||
+                freshnessDeadline.severe ||
+                fallbackSevereResidence ||
                 receiverDropRatio >= SEVERE_RECEIVER_DROP_RATIO ||
                 severePresentationPressure ||
                 senderDeliveryCollapse
@@ -605,13 +597,17 @@ class VideoCadenceGovernor(
          * while GCC is draining the previous queue. Ordinary full-cadence relief
          * is handled separately below and cannot cascade below the 60 -> 45 step.
          */
+        val fallbackUrgentResidence =
+            !freshnessDeadline.complete &&
+                (
+                    (sendQueueMs ?: 0.0) >= queuePressureThresholdMs * URGENT_FRESHNESS_MULTIPLIER ||
+                        (receiverJitterMs ?: 0.0) >= jitterPressureThresholdMs * URGENT_FRESHNESS_MULTIPLIER
+                    )
         val urgentFreshnessPressure =
             !severePressure &&
                 (
-                    (sendQueueMs ?: 0.0) >= queuePressureThresholdMs * URGENT_FRESHNESS_MULTIPLIER ||
-                        (receiverJitterMs ?: 0.0) >= jitterPressureThresholdMs * URGENT_FRESHNESS_MULTIPLIER ||
-                        (pipelineResidenceMs ?: 0.0) >=
-                            pipelineResidencePressureThresholdMs * URGENT_FRESHNESS_MULTIPLIER ||
+                    freshnessDeadline.urgent ||
+                        fallbackUrgentResidence ||
                         (presentationMeasured &&
                             renderGapMs >= renderGapPressureMs * URGENT_FRESHNESS_MULTIPLIER)
                     )
@@ -632,7 +628,7 @@ class VideoCadenceGovernor(
             !severePressure &&
                 cap >= HIGH_CADENCE_FAST_RELIEF_FPS &&
                 requestedFps >= HIGH_CADENCE_FAST_RELIEF_FPS &&
-                (queuePressure || receiverDelay || pipelineResidencePressure || presentationPressure)
+                (pipelineResidencePressure || fallbackLayerPressure || presentationPressure)
 
         val cpuPressure = outbound.qualityLimitationReason == "cpu"
 
@@ -723,8 +719,8 @@ class VideoCadenceGovernor(
                     cpuPressure -> "cpu-relief->$boundedNext"
                     severePressure -> "severe-relief->$boundedNext"
                     presentationPressure -> "presentation-relief->$boundedNext"
-                    queuePressure || pipelineResidencePressure ->
-                        "queue-relief->$boundedNext"
+                    pipelineResidencePressure || fallbackLayerPressure ->
+                        "deadline-relief->$boundedNext"
                     receiverDelay -> "jitter-relief->$boundedNext"
                     codecPressure -> "codec-relief->$boundedNext"
                     loss >= PACKET_LOSS_PRESSURE_RATIO ->
@@ -809,6 +805,7 @@ class VideoCadenceGovernor(
         }
 
         return "cap=${cap}fps decision=$lastDecision " +
+            "$lastDeadlineSummary " +
             "changeAgo=${ageMs(changedAt)} " +
             "overloadAgo=${ageMs(lastOverloadAtMs)} " +
             "floorProof=$interactiveFloorHeadroom/$INTERACTION_FLOOR_SAMPLES " +
@@ -882,8 +879,6 @@ class VideoCadenceGovernor(
         const val QUEUE_BUDGET_MULTIPLIER = 1.5
         const val MIN_JITTER_PRESSURE_MS = 85.0
         const val JITTER_BUDGET_MULTIPLIER = 2.0
-        const val MIN_PIPELINE_RESIDENCE_PRESSURE_MS = 45.0
-        const val PIPELINE_RESIDENCE_BUDGET_MULTIPLIER = 2.25
         const val MIN_RENDER_GAP_PRESSURE_MS = 45.0
         const val RENDER_GAP_BUDGET_MULTIPLIER = 2.25
         const val PRESENTATION_DELIVERY_RATIO = 0.82
@@ -896,7 +891,6 @@ class VideoCadenceGovernor(
         const val SEVERE_RTT_MS = 900
         const val SEVERE_QUEUE_MS = 150.0
         const val SEVERE_JITTER_MS = 180.0
-        const val SEVERE_PIPELINE_RESIDENCE_MS = 220.0
         const val SEVERE_RECEIVER_DROP_RATIO = 0.25
         const val SEVERE_PRESENTATION_DELIVERY_RATIO = 0.60
         const val SEVERE_RENDER_GAP_MS = 150.0
