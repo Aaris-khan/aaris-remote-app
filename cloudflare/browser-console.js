@@ -273,6 +273,7 @@ export function browserMain(protocolFactory) {
   }
   async function executeAiJson() {
     if (!aiCommand) return;
+    if (aiResult) aiResult.textContent = 'Running…';
     let command;
     try { command = JSON.parse(aiCommand.value); }
     catch { throw new Error('Invalid JSON'); }
