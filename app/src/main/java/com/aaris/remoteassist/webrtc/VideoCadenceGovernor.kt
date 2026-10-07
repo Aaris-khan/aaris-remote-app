@@ -293,10 +293,10 @@ class VideoCadenceGovernor(
      * FPS or estimate bandwidth. GCC/TWCC and the full telemetry governor remain
      * authoritative for network adaptation and recovery.
      *
-     * At 60 fps one trustworthy hitch earns only the soft 60 -> 45 rung. A
-     * 45 -> 30 step needs severe presentation evidence in a later fresh window.
-     * The bounded cooldown plus one-rung rule prevents a single scheduler pause
-     * from cascading through multiple cadence levels.
+     * At high cadence one trustworthy hitch earns only one fine relief step
+     * (for example 60 -> 58). A large fall toward 30 still requires severe
+     * presentation/pipeline evidence. The bounded cooldown plus one-step rule
+     * prevents one scheduler pause from cascading through multiple levels.
      */
     fun observeFastPresentation(
         intervalMs: Int,
@@ -374,7 +374,7 @@ class VideoCadenceGovernor(
                 it < effectiveFps && it < cap
             } ?: return false
 
-        // Moderate fast relief is deliberately limited to 60 -> 45.
+        // Moderate presentation-only relief is deliberately one fine step.
         if (!severe && next < SOFT_PRESENTATION_RELIEF_FPS) {
             return false
         }
@@ -660,11 +660,11 @@ class VideoCadenceGovernor(
 
             val ceiling = minOf(cap, requestedFps)
             /*
-             * 45 fps is an important intermediate rung for ordinary interactive
-             * pressure: it avoids the visible 60 -> 30 cliff. Severe queue/jitter/
-             * presentation pressure and CPU limitation are different: freshness
-             * is already at risk, so they deliberately skip the soft rung and
-             * take a stronger <=30 fps relief step.
+             * Fine cadence steps avoid visible cliffs during ordinary interactive
+             * pressure: 60 can trim to 58, then 55/50 only if pressure persists.
+             * Severe queue/jitter/presentation pressure and CPU limitation are
+             * different: freshness is already at risk, so they may deliberately
+             * jump to a stronger <=30 fps relief step.
              */
             val needsStrongRelief = severePressure || cpuPressure
             val ordinaryNext = DESCENDING_CAPS.firstOrNull { candidate ->
@@ -798,8 +798,10 @@ class VideoCadenceGovernor(
         cap <= RESOLUTION_REDUCTION_MAX_FPS && nowMs - changedAt >= RESOLUTION_REDUCTION_GRACE_MS
 
     private companion object {
-        val DESCENDING_CAPS = listOf(60, 45, 30, 24, 20, 15)
-        val ASCENDING_CAPS = listOf(15, 20, 24, 30, 45, 60)
+        val DESCENDING_CAPS =
+            listOf(60, 58, 55, 50, 45, 40, 36, 33, 30, 24, 20, 15)
+        val ASCENDING_CAPS =
+            listOf(15, 20, 24, 30, 33, 36, 40, 45, 50, 55, 58, 60)
 
         const val MOTION_RECOVERY_FPS_CEILING = 30
         const val INTERACTION_RESCUE_FLOOR_FPS = 24
