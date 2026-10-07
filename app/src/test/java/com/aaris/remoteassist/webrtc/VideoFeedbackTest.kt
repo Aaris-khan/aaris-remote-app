@@ -59,6 +59,93 @@ class VideoFeedbackTest {
         assertNull(feedback.consume(42, 2, 3401))
     }
 
+    @Test fun presentationCadenceSurvivesStatsPhaseSkewWithoutBecomingNewProofTwice() {
+        val feedback = ReceiverVideoFeedback()
+        val presentation =
+            ControlPacket.PresentationFeedback(
+                leaseSecret = 42,
+                generation = 2,
+                sequence = 10,
+                intervalMs = 500,
+                renderedFrames = 15,
+                maxGapMs = 36
+            )
+        assertTrue(feedback.accept(presentation, 42, 2, 1_000))
+
+        val first = checkNotNull(feedback.consume(42, 2, 1_050))
+        assertEquals(30.0, first.presentedFps!!, 0.001)
+        assertEquals(10L, first.presentationSampleSequence)
+        assertEquals(50, first.presentationSampleAgeMs)
+        assertTrue(first.presentationSampleFresh)
+
+        // The independent stats loop may tick again before the next 500 ms EGL
+        // window closes. Keep the same cadence visible, but mark it held so it
+        // cannot be counted as a second adaptation vote.
+        val held = checkNotNull(feedback.consume(42, 2, 1_500))
+        assertEquals(30.0, held.presentedFps!!, 0.001)
+        assertEquals(10L, held.presentationSampleSequence)
+        assertEquals(500, held.presentationSampleAgeMs)
+        assertFalse(held.presentationSampleFresh)
+
+        // Retention is bounded; liveness heartbeat state may remain, but stale
+        // cadence itself disappears.
+        val expired = checkNotNull(feedback.consume(42, 2, 2_501))
+        assertNull(expired.presentedFps)
+        assertNull(expired.presentationSampleSequence)
+
+        val next = presentation.copy(sequence = 11)
+        assertTrue(feedback.accept(next, 42, 2, 2_600))
+        val freshAgain = checkNotNull(feedback.consume(42, 2, 2_650))
+        assertEquals(11L, freshAgain.presentationSampleSequence)
+        assertTrue(freshAgain.presentationSampleFresh)
+    }
+
+    @Test fun retainedBadPresentationCannotCascadeMultipleCadenceDrops() {
+        val governor = VideoCadenceGovernor(60, 60)
+        val badFresh =
+            receiver().copy(
+                frames = 60,
+                presentationIntervalMs = 500,
+                presentedFrames = 15,
+                maxRenderGapMs = 180,
+                presentationAgeMs = 50,
+                presentationSampleSequence = 7,
+                presentationSampleAgeMs = 50,
+                presentationSampleFresh = true
+            )
+        val sender60 =
+            outbound().let {
+                it.copy(recent = it.recent!!.copy(frames = 60))
+            }
+
+        assertTrue(
+            governor.observe(
+                sender60,
+                badFresh,
+                60,
+                1_000L,
+                producerFps = 60.0
+            )
+        )
+        assertEquals(45, governor.cap)
+
+        val sameHeldSample =
+            badFresh.copy(
+                presentationSampleAgeMs = 550,
+                presentationSampleFresh = false
+            )
+        assertFalse(
+            governor.observe(
+                sender60,
+                sameHeldSample,
+                45,
+                1_500L,
+                producerFps = 60.0
+            )
+        )
+        assertEquals(45, governor.cap)
+    }
+
     @Test fun workingDecoderEvidenceSurvivesConsumptionButExpiresAndCannotCrossLeases() {
         val feedback = ReceiverVideoFeedback()
         assertFalse(feedback.hasRecentDecodedFrames(42, 2, 100))
