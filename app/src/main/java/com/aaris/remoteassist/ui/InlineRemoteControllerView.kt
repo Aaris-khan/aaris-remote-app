@@ -1232,6 +1232,13 @@ class InlineRemoteControllerView(
                     android.os.SystemClock.elapsedRealtime()
 
                 /*
+                 * One synchronized O(1) check per actual EGL swap. It emits no
+                 * packet unless an authoritative applied-input probe is pending,
+                 * so this adds no steady-state telemetry loop or media queue.
+                 */
+                session()?.onFramePresented(presentedAtMs)
+
+                /*
                  * Cadence windows need multiple swaps and can be reset during
                  * recovery. A tiny proof-of-glass heartbeat is independent:
                  * one real EGL swap is enough to prove that pixels reached the

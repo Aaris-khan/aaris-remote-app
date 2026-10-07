@@ -29,7 +29,21 @@ data class VideoHealthWindow(
      */
     val presentationSampleSequence: Long? = null,
     val presentationSampleAgeMs: Int? = null,
-    val presentationSampleFresh: Boolean = true
+    val presentationSampleFresh: Boolean = true,
+    /**
+     * Conservative controller-clock input-to-glass upper bound. This includes
+     * command uplink + host apply + ACK return + the next real EGL swap.
+     *
+     * postAckPresentMs is the receiver/media tail after the applied ACK reaches
+     * the controller. The host uses these fields as promotion/recovery gates,
+     * never as a standalone reason to slash cadence.
+     */
+    val inputToGlassUpperBoundMs: Int? = null,
+    val commandAckMs: Int? = null,
+    val postAckPresentMs: Int? = null,
+    val photonSampleSequence: Long? = null,
+    val photonSampleAgeMs: Int? = null,
+    val photonSampleFresh: Boolean = true
 ) {
     val fps: Double get() = frames * 1000.0 / intervalMs
 

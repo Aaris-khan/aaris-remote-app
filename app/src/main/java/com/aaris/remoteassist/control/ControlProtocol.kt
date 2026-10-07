@@ -173,6 +173,30 @@ sealed interface ControlPacket {
         fun valid() = sequence > 0 && refreshRateHz.isFinite() && refreshRateHz in 1f..240f
     }
 
+    /**
+     * Conservative controller-clock input-to-glass upper bound.
+     *
+     * postAckPresentMs isolates the receiver/media tail after an applied command
+     * ACK reaches the controller. High commandAckMs with a tiny post-ACK tail is
+     * control/network pressure, not evidence that video cadence should be cut.
+     */
+    data class PhotonFeedback(
+        val leaseSecret: Long,
+        val generation: Int,
+        val sequence: Long,
+        val inputToGlassUpperBoundMs: Int,
+        val commandAckMs: Int,
+        val postAckPresentMs: Int
+    ) : ControlPacket {
+        fun valid() =
+            sequence > 0 &&
+                inputToGlassUpperBoundMs in 0..30_000 &&
+                commandAckMs in 0..30_000 &&
+                postAckPresentMs in 0..5_000 &&
+                inputToGlassUpperBoundMs >= commandAckMs &&
+                inputToGlassUpperBoundMs >= postAckPresentMs
+    }
+
     data object Disconnect : ControlPacket
 }
 
@@ -201,6 +225,7 @@ object ControlProtocol {
     private const val PRESENTATION_FEEDBACK: Byte = 20
     private const val PRESENTATION_HEARTBEAT: Byte = 21
     private const val DISPLAY_CAPABILITIES: Byte = 22
+    private const val PHOTON_FEEDBACK: Byte = 23
 
     private const val MAX_TEXT_BYTES = 2048
     private const val MAX_GESTURE_PATH_POINTS = 96
@@ -211,6 +236,7 @@ object ControlProtocol {
         if (packet is ControlPacket.PresentationFeedback) require(packet.valid())
         if (packet is ControlPacket.PresentationHeartbeat) require(packet.valid())
         if (packet is ControlPacket.DisplayCapabilities) require(packet.valid())
+        if (packet is ControlPacket.PhotonFeedback) require(packet.valid())
         val textBytes = (packet as? ControlPacket.Text)
             ?.text
             ?.toByteArray(Charsets.UTF_8)
@@ -268,6 +294,7 @@ object ControlProtocol {
             is ControlPacket.PresentationFeedback -> 2 + 8 + 4 + 8 + 12
             is ControlPacket.PresentationHeartbeat -> 2 + 8 + 4 + 8
             is ControlPacket.DisplayCapabilities -> 2 + 8 + 4 + 8 + 4
+            is ControlPacket.PhotonFeedback -> 2 + 8 + 4 + 8 + 12
             ControlPacket.Disconnect -> 2
         }
 
@@ -459,6 +486,17 @@ object ControlProtocol {
             is ControlPacket.DisplayCapabilities -> {
                 putCommandHeader(buffer, packet.leaseSecret, packet.generation, packet.sequence)
                 buffer.putFloat(packet.refreshRateHz)
+            }
+            is ControlPacket.PhotonFeedback -> {
+                putCommandHeader(
+                    buffer,
+                    packet.leaseSecret,
+                    packet.generation,
+                    packet.sequence
+                )
+                buffer.putInt(packet.inputToGlassUpperBoundMs)
+                buffer.putInt(packet.commandAckMs)
+                buffer.putInt(packet.postAckPresentMs)
             }
             ControlPacket.Disconnect -> Unit
         }
@@ -726,6 +764,18 @@ object ControlProtocol {
                         header.leaseSecret, header.generation, header.sequence, buffer.float
                     ).also { require(it.valid()) }
                 }
+                PHOTON_FEEDBACK -> {
+                    require(buffer.remaining() == 32)
+                    val header = readHeader(buffer)
+                    ControlPacket.PhotonFeedback(
+                        leaseSecret = header.leaseSecret,
+                        generation = header.generation,
+                        sequence = header.sequence,
+                        inputToGlassUpperBoundMs = buffer.int,
+                        commandAckMs = buffer.int,
+                        postAckPresentMs = buffer.int
+                    ).also { require(it.valid()) }
+                }
                 DISCONNECT -> {
                     require(buffer.remaining() == 0)
                     ControlPacket.Disconnect
@@ -871,6 +921,7 @@ object ControlProtocol {
             is ControlPacket.PresentationFeedback,
             is ControlPacket.PresentationHeartbeat,
             is ControlPacket.DisplayCapabilities,
+            is ControlPacket.PhotonFeedback,
             ControlPacket.Disconnect -> null
         }
     }
@@ -935,6 +986,7 @@ object ControlProtocol {
         is ControlPacket.PresentationFeedback -> PRESENTATION_FEEDBACK
         is ControlPacket.PresentationHeartbeat -> PRESENTATION_HEARTBEAT
         is ControlPacket.DisplayCapabilities -> DISPLAY_CAPABILITIES
+        is ControlPacket.PhotonFeedback -> PHOTON_FEEDBACK
         ControlPacket.Disconnect -> DISCONNECT
     }
 }
