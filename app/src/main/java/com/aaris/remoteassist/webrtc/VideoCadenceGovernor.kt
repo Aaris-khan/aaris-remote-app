@@ -16,8 +16,10 @@ class VideoCadenceGovernor(
     private var pressure = 0
     private var healthy = 0
     private var interactiveHeadroom = 0
+    private var interactiveFloorHeadroom = 0
     private var changedAt = Long.MIN_VALUE / 2
     private var lastOverloadAtMs = Long.MIN_VALUE / 2
+    private var lastDecision = "startup"
     private val highCadenceProbe = HighCadenceProbe()
     val probingHighCadence: Boolean get() = highCadenceProbe.probing
 
@@ -63,6 +65,7 @@ class VideoCadenceGovernor(
         changedAt = nowMs
         pressure = 0
         healthy = 0
+        lastDecision = "quiet-recovery->$next"
         return true
     }
 
@@ -94,6 +97,8 @@ class VideoCadenceGovernor(
         pressure = 0
         healthy = 0
         interactiveHeadroom = 0
+        interactiveFloorHeadroom = 0
+        lastDecision = "interaction-floor->$target"
         return true
     }
 
@@ -113,7 +118,95 @@ class VideoCadenceGovernor(
         interactionActive: Boolean,
         nowMs: Long
     ): Boolean {
-        if (!interactionActive || nowMs - lastOverloadAtMs < INTERACTION_PROBE_COOLDOWN_MS) {
+        if (!interactionActive) {
+            interactiveHeadroom = 0
+            interactiveFloorHeadroom = 0
+            return false
+        }
+
+        val sender = outbound.recent
+
+        /*
+         * A recent overload must block blind finger-down promotion, but it must
+         * not pin a recovered path at 15/20 fps for the whole cooldown. When
+         * active motion itself proves that 24 fps fits the encoder + pacer +
+         * network budget for two fresh windows, rescue only to 24. The normal
+         * 30/45/60 probes still require their stricter evidence.
+         */
+        val interactionFloorTarget =
+            minOf(maxFps, INTERACTION_RESCUE_FLOOR_FPS)
+        if (cap < interactionFloorTarget) {
+            val floorBudgetMs = 1_000.0 / interactionFloorTarget
+            val producerHealthy =
+                producerFps != null &&
+                    producerFps.isFinite() &&
+                    producerFps >= interactionFloorTarget * 0.90
+            val senderHealthy =
+                sender != null &&
+                    sender.intervalMs in 500..6000 &&
+                    sender.frames >= MIN_INTERACTION_FLOOR_FRAMES &&
+                    sender.processingMs?.let {
+                        it.isFinite() && it >= 0.0 &&
+                            it <= floorBudgetMs * INTERACTION_FLOOR_CODEC_BUDGET_RATIO
+                    } == true &&
+                    sender.sendQueueMs?.let {
+                        it.isFinite() && it >= 0.0 &&
+                            it <= INTERACTION_FLOOR_MAX_QUEUE_MS
+                    } == true
+            val qualityHealthy =
+                outbound.qualityLimitationReason == null ||
+                    outbound.qualityLimitationReason.equals("none", ignoreCase = true)
+            val networkHealthy =
+                outbound.roundTripTimeMs?.let {
+                    it in 0..INTERACTION_FLOOR_MAX_RTT_MS
+                } == true &&
+                    (outbound.packetLossRatio ?: 0.0) <
+                        INTERACTION_FLOOR_MAX_LOSS
+            val receiverHealthy =
+                receiver?.let { window ->
+                    window.processingMs?.let {
+                        it.isFinite() && it >= 0.0 &&
+                            it <= floorBudgetMs *
+                                INTERACTION_FLOOR_CODEC_BUDGET_RATIO
+                    } != false &&
+                        (window.dropped ?: 0) == 0 &&
+                        (window.freezes ?: 0) == 0 &&
+                        window.presentationAgeMs?.let {
+                            it <= INTERACTION_FLOOR_MAX_PRESENTATION_AGE_MS
+                        } != false
+                } ?: true
+
+            val floorHealthy =
+                producerHealthy && senderHealthy && qualityHealthy &&
+                    networkHealthy && receiverHealthy
+            interactiveFloorHeadroom =
+                if (floorHealthy) {
+                    (interactiveFloorHeadroom + 1)
+                        .coerceAtMost(INTERACTION_FLOOR_SAMPLES)
+                } else {
+                    0
+                }
+
+            if (
+                interactiveFloorHeadroom >= INTERACTION_FLOOR_SAMPLES &&
+                nowMs - changedAt >= INTERACTION_FLOOR_MIN_CHANGE_INTERVAL_MS
+            ) {
+                cap = interactionFloorTarget
+                changedAt = nowMs
+                pressure = 0
+                healthy = 0
+                interactiveHeadroom = 0
+                interactiveFloorHeadroom = 0
+                lastDecision =
+                    "interaction-clean-rescue->$interactionFloorTarget"
+                return true
+            }
+            return false
+        }
+
+        interactiveFloorHeadroom = 0
+
+        if (nowMs - lastOverloadAtMs < INTERACTION_PROBE_COOLDOWN_MS) {
             interactiveHeadroom = 0
             return false
         }
@@ -123,8 +216,6 @@ class VideoCadenceGovernor(
             interactiveHeadroom = 0
             return false
         }
-
-        val sender = outbound.recent
         val producerHealthy =
             producerFps != null &&
                 producerFps.isFinite() &&
@@ -187,6 +278,8 @@ class VideoCadenceGovernor(
         pressure = 0
         healthy = 0
         interactiveHeadroom = 0
+        interactiveFloorHeadroom = 0
+        lastDecision = "interaction-headroom->$ceiling"
         return true
     }
 
@@ -292,6 +385,8 @@ class VideoCadenceGovernor(
         pressure = 0
         healthy = 0
         interactiveHeadroom = 0
+        interactiveFloorHeadroom = 0
+        lastDecision = "fast-presentation-relief->$next"
         return true
     }
 
@@ -518,12 +613,20 @@ class VideoCadenceGovernor(
             outbound, receiver, producerFps, cap, minOf(maxFps, maximumFps),
             allowHighCadenceProbe, overloaded, nowMs
         )?.let { next ->
+            val before = cap
             cap = next
             changedAt = nowMs
             pressure = 0
             healthy = 0
             interactiveHeadroom = 0
+            interactiveFloorHeadroom = 0
             if (overloaded) lastOverloadAtMs = nowMs
+            lastDecision =
+                if (next > before) {
+                    "high-probe->$next"
+                } else {
+                    "high-probe-rollback->$next"
+                }
             return true
         }
 
@@ -583,6 +686,20 @@ class VideoCadenceGovernor(
             changedAt = nowMs
             pressure = 0
             interactiveHeadroom = 0
+            interactiveFloorHeadroom = 0
+            lastDecision =
+                when {
+                    cpuPressure -> "cpu-relief->$boundedNext"
+                    severePressure -> "severe-relief->$boundedNext"
+                    presentationPressure -> "presentation-relief->$boundedNext"
+                    queuePressure || pipelineResidencePressure ->
+                        "queue-relief->$boundedNext"
+                    receiverDelay -> "jitter-relief->$boundedNext"
+                    codecPressure -> "codec-relief->$boundedNext"
+                    loss >= PACKET_LOSS_PRESSURE_RATIO ->
+                        "loss-relief->$boundedNext"
+                    else -> "pressure-relief->$boundedNext"
+                }
             return true
         }
 
@@ -644,7 +761,27 @@ class VideoCadenceGovernor(
         cap = next
         changedAt = nowMs
         healthy = 0
+        lastDecision = "healthy-recovery->$next"
         return true
+    }
+
+    /**
+     * Reuses governor state already maintained for adaptation. This is sampled
+     * by the existing 3-second on-screen QD path and performs no media work.
+     */
+    fun debugSummary(nowMs: Long): String {
+        fun ageMs(timestampMs: Long): String {
+            if (timestampMs <= Long.MIN_VALUE / 4) return "none"
+            return (nowMs - timestampMs)
+                .coerceAtLeast(0L)
+                .let { "${it}ms" }
+        }
+
+        return "cap=${cap}fps decision=$lastDecision " +
+            "changeAgo=${ageMs(changedAt)} " +
+            "overloadAgo=${ageMs(lastOverloadAtMs)} " +
+            "floorProof=$interactiveFloorHeadroom/$INTERACTION_FLOOR_SAMPLES " +
+            highCadenceProbe.debugSummary(nowMs)
     }
 
     fun mayReduceResolution(nowMs: Long): Boolean =
@@ -655,6 +792,16 @@ class VideoCadenceGovernor(
         val ASCENDING_CAPS = listOf(15, 20, 24, 30, 45, 60)
 
         const val MOTION_RECOVERY_FPS_CEILING = 30
+        const val INTERACTION_RESCUE_FLOOR_FPS = 24
+        const val INTERACTION_FLOOR_CODEC_BUDGET_RATIO = 0.85
+        const val INTERACTION_FLOOR_MAX_QUEUE_MS = 25.0
+        const val INTERACTION_FLOOR_MAX_RTT_MS = 300
+        const val INTERACTION_FLOOR_MAX_LOSS = 0.04
+        const val INTERACTION_FLOOR_MAX_PRESENTATION_AGE_MS = 1_500
+        const val MIN_INTERACTION_FLOOR_FRAMES = 5
+        const val INTERACTION_FLOOR_SAMPLES = 2
+        const val INTERACTION_FLOOR_MIN_CHANGE_INTERVAL_MS = 500L
+
         const val INTERACTION_PROBE_FPS = 30
         const val INTERACTION_PROBE_MIN_PRODUCER_FPS = 24.0
         const val INTERACTION_PROBE_CODEC_BUDGET_RATIO = 0.80

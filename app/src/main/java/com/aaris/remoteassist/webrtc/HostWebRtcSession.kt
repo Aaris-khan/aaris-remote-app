@@ -1015,6 +1015,131 @@ class HostWebRtcSession(
                     "displayMax=${receiver?.displayRefreshRateHz?.toInt()}Hz trial=${cadenceGovernor.probingHighCadence}"
             )
 
+            /*
+             * Existing QD overlay, richer data. Reuse this already-running
+             * 3-second health callback: no new timer, RTCStats request, frame
+             * copy or media worker is added.
+             */
+            val qdSender = snapshot.recent
+            val effective = effectiveCaptureProfile(profile)
+            val cadenceFloor =
+                motionVideoBudget.cadenceFloor(
+                    profile = profile,
+                    motionActive = motionActive,
+                    nowMs = now,
+                    interactionActive = interactionActive
+                )
+            fun metric(value: Double?, suffix: String = ""): String =
+                value
+                    ?.takeIf { it.isFinite() && it >= 0.0 }
+                    ?.let { "${kotlin.math.round(it).toInt()}$suffix" }
+                    ?: "-"
+            fun metric(value: Int?, suffix: String = ""): String =
+                value?.takeIf { it >= 0 }?.let { "$it$suffix" } ?: "-"
+            fun fps(value: Double?): String = metric(value, "fps")
+            val lossPercent =
+                snapshot.packetLossRatio
+                    ?.takeIf { it.isFinite() && it >= 0.0 }
+                    ?.let { kotlin.math.round(it * 1_000.0) / 10.0 }
+                    ?.let { "$it%" }
+                    ?: "-"
+            val thermal =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    when (powerManager?.currentThermalStatus) {
+                        PowerManager.THERMAL_STATUS_NONE -> "none"
+                        PowerManager.THERMAL_STATUS_LIGHT -> "light"
+                        PowerManager.THERMAL_STATUS_MODERATE -> "moderate"
+                        PowerManager.THERMAL_STATUS_SEVERE -> "severe"
+                        PowerManager.THERMAL_STATUS_CRITICAL -> "critical"
+                        PowerManager.THERMAL_STATUS_EMERGENCY -> "emergency"
+                        PowerManager.THERMAL_STATUS_SHUTDOWN -> "shutdown"
+                        else -> "unknown"
+                    }
+                } else {
+                    "n/a"
+                }
+            val qd =
+                buildString {
+                    append("PIPE • ")
+                    append(effective.captureWidthPx)
+                    append('x')
+                    append(effective.captureHeightPx)
+                    append(" source=")
+                    append(fps(sourceFps))
+                    append(" target=")
+                    append(effective.fps)
+                    append("fps send=")
+                    append(fps(qdSender?.fps))
+                    append(" decode=")
+                    append(fps(receiver?.fps))
+                    append(" present=")
+                    append(presentationState)
+                    append(" display=")
+                    append(metric(receiver?.displayRefreshRateHz, "Hz"))
+                    append('\n')
+
+                    append("LAT • enc=")
+                    append(metric(qdSender?.processingMs, "ms"))
+                    append(" dec=")
+                    append(metric(receiver?.processingMs, "ms"))
+                    append(" queue=")
+                    append(metric(qdSender?.sendQueueMs, "ms"))
+                    append(" jitter=")
+                    append(metric(receiver?.jitterMs, "ms"))
+                    append(" target=")
+                    append(metric(receiver?.jitterTargetMs, "ms"))
+                    append(" playout=")
+                    append(metric(receiver?.playoutDelayMs, "ms"))
+                    append(" gap=")
+                    append(metric(receiver?.maxRenderGapMs, "ms"))
+                    append(" age=")
+                    append(metric(receiver?.presentationAgeMs, "ms"))
+                    append('\n')
+
+                    append("NET • rtt=")
+                    append(metric(snapshot.roundTripTimeMs, "ms"))
+                    append(" loss=")
+                    append(lossPercent)
+                    append(" bwe=")
+                    append(metric(snapshot.availableOutgoingBitrateBps?.div(1_000.0), "kbps"))
+                    append(" tx=")
+                    append(metric(qdSender?.bitrateBps?.div(1_000.0), "kbps"))
+                    append(" limited=")
+                    append(snapshot.qualityLimitationReason ?: "-")
+                    append(" path=")
+                    append(snapshot.candidatePath ?: "-")
+                    append('\n')
+
+                    append("GOV • ")
+                    append(cadenceGovernor.debugSummary(now))
+                    append(" floor=")
+                    append(cadenceFloor)
+                    append("fps pixel=")
+                    append(motionVideoBudget.shortEdge)
+                    append(" motion=")
+                    append(motionActive)
+                    append(" touch=")
+                    append(interactionActive)
+                    append(" deviceMax=")
+                    append(deviceFpsLimit)
+                    append("fps")
+                    append('\n')
+
+                    append("DEV • codec=")
+                    append(snapshot.codec ?: "-")
+                    append(" impl=")
+                    append(snapshot.codecImplementation ?: "-")
+                    append(" thermal=")
+                    append(thermal)
+                    append(" powerSave=")
+                    append(powerManager?.isPowerSaveMode == true)
+                    append(" drop=")
+                    append(receiver?.dropped ?: "-")
+                    append(" freeze=")
+                    append(receiver?.freezes ?: "-")
+                }
+            listener.onDiagnostic("QD|MEDIA|$qd")
+
             // One resolution owner during motion: do not simultaneously lower
             // the legacy quality tier and the motion pixel budget.
             if (motionActive) return@post

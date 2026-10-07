@@ -112,6 +112,92 @@ class AdaptiveScreenSmoothnessTest {
     }
 
     @Test
+    fun cleanActiveMotionRescuesRecentOverloadFromFifteenToTwentyFour() {
+        val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
+
+        // Mark a very recent overload while already parked at the lowest rung.
+        // A blind finger-down promotion must remain blocked.
+        assertFalse(
+            governor.observe(
+                outbound = outbound(
+                    fps = 5,
+                    processingMs = 60.0,
+                    queueMs = 300.0
+                ),
+                receiver = null,
+                requestedFps = 15,
+                nowMs = 1_000L,
+                producerFps = 60.0
+            )
+        )
+        assertFalse(governor.ensureInteractionFloor(24, 1_100L))
+        assertEquals(15, governor.cap)
+
+        val cleanForTwentyFour =
+            outbound(
+                fps = 15,
+                processingMs = 30.0,
+                queueMs = 0.0
+            ).copy(
+                roundTripTimeMs = 14,
+                packetLossRatio = 0.0,
+                codecImplementation = "c2.mtk.avc.encoder"
+            )
+
+        // Two fresh active windows prove 24 fps is sustainable even though
+        // the older overload cooldown has not expired yet.
+        assertFalse(
+            governor.tryProbeDuringInteraction(
+                outbound = cleanForTwentyFour,
+                receiver = null,
+                producerFps = 60.0,
+                interactionActive = true,
+                nowMs = 1_500L
+            )
+        )
+        assertTrue(
+            governor.tryProbeDuringInteraction(
+                outbound = cleanForTwentyFour,
+                receiver = null,
+                producerFps = 60.0,
+                interactionActive = true,
+                nowMs = 2_000L
+            )
+        )
+        assertEquals(24, governor.cap)
+        assertTrue(
+            governor.debugSummary(2_000L)
+                .contains("interaction-clean-rescue->24")
+        )
+    }
+
+    @Test
+    fun cleanInteractionRescueStillRejectsCodecThatCannotSustainTwentyFour() {
+        val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
+        val tooSlow =
+            outbound(
+                fps = 15,
+                processingMs = 39.0,
+                queueMs = 0.0
+            ).copy(
+                roundTripTimeMs = 14,
+                packetLossRatio = 0.0
+            )
+
+        repeat(4) { index ->
+            assertFalse(
+                governor.tryProbeDuringInteraction(
+                    outbound = tooSlow,
+                    receiver = null,
+                    producerFps = 60.0,
+                    interactionActive = true,
+                    nowMs = 1_000L + index * 500L
+                )
+            )
+        }
+        assertEquals(15, governor.cap)
+    }
+    @Test
     fun cleanRecordedHardwarePathQuicklyProbesThirtyFpsDuringInteraction() {
         val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
         assertTrue(governor.ensureInteractionFloor(24, 0L))
