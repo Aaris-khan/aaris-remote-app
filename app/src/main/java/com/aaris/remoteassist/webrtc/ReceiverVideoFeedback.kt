@@ -2,6 +2,12 @@ package com.aaris.remoteassist.webrtc
 
 import com.aaris.remoteassist.control.ControlPacket
 
+private data class PhotonTimingWindow(
+    val inputToGlassUpperBoundMs: Int,
+    val commandAckMs: Int,
+    val postAckPresentMs: Int
+)
+
 /**
  * Lease-bound receiver feedback.
  *
@@ -30,6 +36,13 @@ class ReceiverVideoFeedback {
     private var capabilitiesAtMs = 0L
     private var displayRefreshRateHz: Double? = null
 
+    private var lastPhotonSequence = 0L
+    private var photonReceivedAtMs = 0L
+    private var pendingPhoton: PhotonTimingWindow? = null
+    private var retainedPhoton: PhotonTimingWindow? = null
+    private var retainedPhotonAtMs = 0L
+    private var retainedPhotonSequence = 0L
+
     private fun bindIdentity(secret: Long, generation: Int) {
         val key = secret to generation
         if (identity == key) return
@@ -49,6 +62,12 @@ class ReceiverVideoFeedback {
         lastCapabilitiesSequence = 0L
         capabilitiesAtMs = 0L
         displayRefreshRateHz = null
+        lastPhotonSequence = 0L
+        photonReceivedAtMs = 0L
+        pendingPhoton = null
+        retainedPhoton = null
+        retainedPhotonAtMs = 0L
+        retainedPhotonSequence = 0L
     }
 
     fun accept(packet: ControlPacket.DisplayCapabilities, secret: Long, generation: Int, nowMs: Long): Boolean {
@@ -58,6 +77,33 @@ class ReceiverVideoFeedback {
         lastCapabilitiesSequence = packet.sequence
         capabilitiesAtMs = nowMs
         displayRefreshRateHz = packet.refreshRateHz.toDouble()
+        return true
+    }
+
+    fun accept(
+        packet: ControlPacket.PhotonFeedback,
+        secret: Long,
+        generation: Int,
+        nowMs: Long
+    ): Boolean {
+        if (
+            !packet.valid() ||
+            packet.leaseSecret != secret ||
+            packet.generation != generation
+        ) {
+            return false
+        }
+        bindIdentity(secret, generation)
+        if (packet.sequence <= lastPhotonSequence) return false
+        lastPhotonSequence = packet.sequence
+        photonReceivedAtMs = nowMs
+        pendingPhoton =
+            PhotonTimingWindow(
+                inputToGlassUpperBoundMs =
+                    packet.inputToGlassUpperBoundMs,
+                commandAckMs = packet.commandAckMs,
+                postAckPresentMs = packet.postAckPresentMs
+            )
         return true
     }
 
@@ -193,10 +239,41 @@ class ReceiverVideoFeedback {
             ?.takeIf { it in 0L..MAX_PRESENTATION_LIVENESS_AGE_MS }
             ?.toInt()
 
+        val newlyConsumedPhoton =
+            pendingPhoton?.takeIf {
+                nowMs - photonReceivedAtMs in 0L..MAX_AGE_MS
+            }
+        pendingPhoton = null
+        if (newlyConsumedPhoton != null) {
+            retainedPhoton = newlyConsumedPhoton
+            retainedPhotonAtMs = photonReceivedAtMs
+            retainedPhotonSequence = lastPhotonSequence
+        }
+        val photon =
+            newlyConsumedPhoton
+                ?: retainedPhoton?.takeIf {
+                    nowMs - retainedPhotonAtMs in
+                        0L..MAX_RETAINED_PHOTON_AGE_MS
+                }
+        val photonIsFresh = newlyConsumedPhoton != null
+        val photonSampleAgeMs =
+            photon?.let {
+                (nowMs - retainedPhotonAtMs)
+                    .takeIf { age ->
+                        age in 0L..MAX_RETAINED_PHOTON_AGE_MS
+                    }
+                    ?.toInt()
+            }
+        val photonSampleSequence =
+            photon?.let {
+                retainedPhotonSequence.takeIf { it > 0L }
+            }
+
         if (
             video == null &&
             presentation == null &&
-            presentationAgeMs == null
+            presentationAgeMs == null &&
+            photon == null
         ) {
             return null
         }
@@ -214,23 +291,38 @@ class ReceiverVideoFeedback {
             displayRefreshRateHz?.takeIf {
                 nowMs - capabilitiesAtMs in 0L..MAX_CAPABILITIES_AGE_MS
             }
-        return if (presentation == null) {
-            base.copy(
-                presentationAgeMs = presentationAgeMs,
-                displayRefreshRateHz = refreshRate
-            )
-        } else {
-            base.copy(
-                presentationIntervalMs = presentation.intervalMs,
-                presentedFrames = presentation.renderedFrames,
-                maxRenderGapMs = presentation.maxGapMs,
-                presentationAgeMs = presentationAgeMs,
-                displayRefreshRateHz = refreshRate,
-                presentationSampleSequence = presentationSampleSequence,
-                presentationSampleAgeMs = presentationSampleAgeMs,
-                presentationSampleFresh = presentationIsFresh
-            )
+        var result =
+            if (presentation == null) {
+                base.copy(
+                    presentationAgeMs = presentationAgeMs,
+                    displayRefreshRateHz = refreshRate
+                )
+            } else {
+                base.copy(
+                    presentationIntervalMs = presentation.intervalMs,
+                    presentedFrames = presentation.renderedFrames,
+                    maxRenderGapMs = presentation.maxGapMs,
+                    presentationAgeMs = presentationAgeMs,
+                    displayRefreshRateHz = refreshRate,
+                    presentationSampleSequence = presentationSampleSequence,
+                    presentationSampleAgeMs = presentationSampleAgeMs,
+                    presentationSampleFresh = presentationIsFresh
+                )
+            }
+
+        if (photon != null) {
+            result =
+                result.copy(
+                    inputToGlassUpperBoundMs =
+                        photon.inputToGlassUpperBoundMs,
+                    commandAckMs = photon.commandAckMs,
+                    postAckPresentMs = photon.postAckPresentMs,
+                    photonSampleSequence = photonSampleSequence,
+                    photonSampleAgeMs = photonSampleAgeMs,
+                    photonSampleFresh = photonIsFresh
+                )
         }
+        return result
     }
 
     private companion object {
@@ -239,6 +331,7 @@ class ReceiverVideoFeedback {
         // Long enough to bridge independent 500 ms stats/render phases, short
         // enough that high-cadence promotion still requires current glass proof.
         const val MAX_RETAINED_PRESENTATION_AGE_MS = 1_500L
+        const val MAX_RETAINED_PHOTON_AGE_MS = 3_000L
         const val MAX_PRESENTATION_INTERVAL_MS = 6_000
         const val MAX_PRESENTED_FRAMES = 2_048
         const val MAX_PRESENTATION_LIVENESS_AGE_MS = 30_000L
