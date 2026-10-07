@@ -18,6 +18,7 @@ jobs:
           persist-credentials: false
       - run: python3 -m pip install --quiet "websockets==15.0.1"
       - run: python3 cloudflare/smoke-browser-link.py
+      - run: python3 cloudflare/smoke-browser-agent.py
 
   browser-webrtc:
     runs-on: ubuntu-latest

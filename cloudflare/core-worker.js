@@ -144,10 +144,11 @@ export class AarisSession extends DurableObject{
     if(!s?.browserLink||!this.role(s,h))return{ok:false,status:401,error:'unauthorized'};
     if(s.state==='CLOSED'||deadline(s)<=Date.now())return{ok:false,status:410,error:'session_ended'};
     const observation=await this.ctx.storage.get('agent:observation');
-    const online=this.ctx.getWebSockets('host-agent').length>0;
+    const online=this.ctx.getWebSockets('host-agent').length>0,nativeOnline=this.ctx.getWebSockets('host').length>0;
+    const captureStatus=await this.ctx.storage.get('agent:status');
     if(online&&(!observation||Date.now()-observation.receivedAtMs>85000))await this.agentEnqueue(h,'observe',{},null);
-    return{ok:true,phoneOnline:online,state:s.state,observation:observation&&Date.now()-observation.receivedAtMs<90000?observation:null,
-      error:online?'OBSERVATION_PENDING':'PHONE_OFFLINE'};
+    return{ok:true,phoneOnline:online||nativeOnline,agentOnline:online,state:s.state,observation:observation&&Date.now()-observation.receivedAtMs<90000?observation:null,
+      error:online?(captureStatus?.error||'OBSERVATION_PENDING'):nativeOnline?'SCREENSHOT_ADAPTER_UNAVAILABLE':'PHONE_OFFLINE'};
   }
   async agentEnqueue(h,kind,args,instanceId) {
     let result,message;
@@ -195,6 +196,8 @@ export class AarisSession extends DurableObject{
       if(s.state==='CLOSED'||deadline(s)<=Date.now()){outcome={ok:false,status:410,error:'session_ended'};return}
       if(JSON.stringify(result).length>700000){outcome={ok:false,status:413,error:'FRAME_TOO_LARGE'};return}
       if(requestId){const r=await t.get('agent:r:'+requestId);if(!r?.dispatched||r.result){outcome={ok:false,status:409,error:'REQUEST_EXPIRED_OR_USED'};return}r.result=result;await t.put('agent:r:'+requestId,r)}
+      if(result.error&&!result.observationId)await t.put('agent:status',{error:String(result.error).slice(0,100),receivedAtMs:Date.now()});
+      if(result.observationId)await t.delete('agent:status');
       if(result.actionId&&!result.observationId)await t.delete('agent:observation');
       if(result.observationId&&result.image?.mimeType==='image/jpeg'&&typeof result.image.data==='string')
         await t.put('agent:observation',{...result,receivedAtMs:Date.now()});

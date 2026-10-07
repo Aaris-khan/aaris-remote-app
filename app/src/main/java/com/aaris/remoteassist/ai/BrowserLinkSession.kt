@@ -28,7 +28,7 @@ object BrowserLinkRuntime {
         private set
     @Volatile var sharing: Boolean = false
         private set
-    @Volatile var message: String = "Copy a link, then paste it into an AI with browser control."
+    @Volatile var message: String = "Copy a link, then paste it into your AI."
         private set
     private val listeners = CopyOnWriteArraySet<() -> Unit>()
     fun prepare(value: BrowserLinkTicket) { ticket = value; sharing = false; update("Link copied • finish screen sharing setup") }

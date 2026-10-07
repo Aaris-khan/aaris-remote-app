@@ -145,7 +145,7 @@ export function browserMain(protocolFactory) {
     try {
       const state = await api('agent-observe');
       if (state.observation) setObservation(state.observation);
-      else message(state.phoneOnline ? 'Phone connected • preparing screenshot…' : 'Phone offline • finish screen sharing on the phone');
+      else message(!state.phoneOnline ? 'Phone offline • finish screen sharing on the phone' : state.error === 'SCREENSHOT_ADAPTER_UNAVAILABLE' ? 'Screenshot adapter unavailable • update Aaris on the phone' : state.error === 'DEVICE_LOCKED_OR_ACCESSIBILITY_OFF' ? 'Unlock the phone or restore Accessibility' : state.error && state.error !== 'OBSERVATION_PENDING' ? `Phone screenshot unavailable • ${state.error}` : 'Phone connected • preparing screenshot…');
     } catch (error) { if (!stopped && !fresh()) message('Waiting for phone screenshot • reconnecting automatically…'); }
   }
   try { setObservation(JSON.parse($('initialObservation')?.dataset.value || 'null')); } catch {}

@@ -55,7 +55,9 @@ class BrowserAgentBridge(
             override fun onOpen(ws: WebSocket, response: Response) { scope.launch {
                 if (closed || socket !== ws) return@launch
                 retry = 0
-                mutex.withLock { runCatching { observeAndPublish() } }
+                mutex.withLock {
+                    runCatching { observeAndPublish() }.onFailure { runCatching { publish(failure("CAPTURE_UNAVAILABLE", false)) } }
+                }
             } }
             override fun onMessage(ws: WebSocket, text: String) { scope.launch {
                 if (closed || socket !== ws) return@launch

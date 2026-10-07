@@ -215,3 +215,14 @@ test('server-rendered screenshot links carry one observation and can be read wit
   await f.room.closeSession(f.h,f.now+10);
   assert.equal((await worker.fetch(new Request(url.replace('/remote/','/remote/frame')+`&observationId=${id}`),f.env)).status,410);
 });
+
+test('a connected host exposes capture failures instead of a permanent Connecting screen',async()=>{
+  const f=await fixture();f.sockets.push({a:{role:'host-agent'},send(){}});
+  await f.room.agentPublish(f.h,{error:'DEVICE_LOCKED_OR_ACCESSIBILITY_OFF',applied:false});
+  const result=await f.room.agentObservation(f.c);
+  assert.equal(result.phoneOnline,true);assert.equal(result.error,'DEVICE_LOCKED_OR_ACCESSIBILITY_OFF');
+  const html=await (await worker.fetch(new Request(`https://remote.test/remote/?session=${sid}&access=${controller}`),f.env)).text();
+  assert.match(html,/Unlock the phone or restore Accessibility/);
+  await f.room.closeSession(f.h,f.now+1);
+  assert.equal([...f.storage.values.keys()].filter(k=>k.startsWith('agent:')).length,0);
+});
