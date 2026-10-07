@@ -105,7 +105,7 @@ class BrowserAgentBridge(
         publish(result)
     }
     private suspend fun execute(raw: JSONObject, chatPackage: String?): JSONObject {
-        val args = BrowserAgentCommand.validate(JSONObject(raw.toString()), nonce)
+        val args = runCatching { BrowserAgentCommand.validate(JSONObject(raw.toString()), nonce) }.getOrElse { return failure("INVALID_COMMAND", false) }
         val id = args.getString("actionId"); val digest = args.toString()
         outcomes[id]?.let { return if (it.first == digest) JSONObject(it.second.toString()) else failure("ACTION_ID_CONFLICT", false) }
         val action = args.getString("action")
@@ -118,7 +118,7 @@ class BrowserAgentBridge(
             if (target.isBlank() || target == context.packageName || target in BrowserAgentCommand.chatPackages) return failure("TARGET_SCREEN_REQUIRED", false)
             val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
             val homePackage = context.packageManager.resolveActivity(home, 0)?.activityInfo?.packageName
-            resumed = if (target == homePackage) dispatch(JSONObject().put("action", "home"), lease, 1) else AiAppLauncher.launch(context, target)
+            resumed = if (target == homePackage) dispatch(JSONObject().put("action", "home"), lease, 1) == true else AiAppLauncher.launch(context, target)
             if (!resumed) return failure("TARGET_APP_UNAVAILABLE", false)
             delay(350)
         }
@@ -129,17 +129,17 @@ class BrowserAgentBridge(
         val valid = { isActive() && validation.stillValid() && SessionRuntime.isAuthorized(lease.sessionId, lease.leaseSecret, lease.displayGeneration) }
         val applied = if (action == "open_app") valid() && AiAppLauncher.launch(context, args.getString("app")) else dispatch(args, lease, if (resumed) 2 else 1, valid)
         engine.invalidate(); latest = null
-        val result = engine.observe().put("commandNonce", nonce).put("actionId", id).put("applied", applied)
+        val result = engine.observe().put("commandNonce", nonce).put("actionId", id).put("applied", applied ?: JSONObject.NULL)
         if (result.has("observationId")) latest = JSONObject(result.toString())
         outcomes[id] = digest to JSONObject(result.toString())
         while (outcomes.size > 64) outcomes.remove(outcomes.keys.first())
         return result
     }
-    private suspend fun dispatch(args: JSONObject, lease: LiveLease, sequence: Long, valid: () -> Boolean = { isActive() && SessionRuntime.isAuthorized(lease.sessionId, lease.leaseSecret, lease.displayGeneration) }): Boolean {
+    private suspend fun dispatch(args: JSONObject, lease: LiveLease, sequence: Long, valid: () -> Boolean = { isActive() && SessionRuntime.isAuthorized(lease.sessionId, lease.leaseSecret, lease.displayGeneration) }): Boolean? {
         val (width, height) = engine.geometry()
         val done = CompletableDeferred<Boolean>()
         AssistAccessibilityService.dispatch(AiActionTranslator.translate(args, lease, sequence, width, height), precondition = valid) { done.complete(it) }
-        return withTimeoutOrNull(3500) { done.await() } ?: false
+        return withTimeoutOrNull(3500) { done.await() }
     }
     private fun inspectChat() {
         if (closed || chatExecuting) return

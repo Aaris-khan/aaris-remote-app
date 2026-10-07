@@ -17,7 +17,7 @@ export function browserMain(protocolFactory) {
   const seenSignals = new Set();
   const timers = [], instanceId = crypto.randomUUID();
   let clientId;
-  const message = text => { status.textContent = text; };
+  const message = text => { if (status.textContent !== text) status.textContent = text; };
   function invalidateControls() {
     hello = null; pointer = null; videoReadyGeneration = -1;
     if (pending) { clearTimeout(pending.timer); pending.reject(new Error('Connection changed; observe before trying again')); pending = null; }
@@ -64,7 +64,7 @@ export function browserMain(protocolFactory) {
   }
   function frame() {
     lastFrameAt = performance.now(); rendered++;
-    if (hello && !busy) { fallback.hidden = true; video.hidden = false; message('Live • click the phone screen to control it'); }
+    if (fresh() && !busy) { fallback.hidden = true; video.hidden = false; message('Live • click the phone screen to control it'); }
     if (hello && hello.generation !== videoReadyGeneration) {
       short(wire.videoReady(hello)); videoReadyGeneration = hello.generation;
     }
@@ -94,14 +94,18 @@ export function browserMain(protocolFactory) {
     } finally { busy = false; }
   }
   function setObservation(value) {
-    if (!value?.observationId || !value.image || value.observationId === observation?.observationId || pointer || busy) return;
+    if (!value?.observationId || !value.image || pointer || busy) return;
+    if (value.observationId === observation?.observationId) { showFallback(); return; }
     observation = value; observationAt = performance.now();
     const params = new URLSearchParams({ session: sessionId, access: capability, observationId: value.observationId });
     fallback.src = `/remote/frame?${params}`;
-    fallback.onload = () => { if (!stopped && !fresh()) {
+    fallback.onload = showFallback;
+  }
+  function showFallback() {
+    if (!stopped && !fresh() && observation && fallback.complete && fallback.naturalWidth > 0) {
       video.hidden = true; fallback.hidden = false;
-      message(value.redacted ? 'Protected/setup screen • use Home to open the launcher' : 'Screenshot mode • click the phone screen to control it');
-    } };
+      message(observation.redacted ? 'Protected/setup screen • use Home to open the launcher' : 'Screenshot mode • click the phone screen to control it');
+    }
   }
   function snapshotFresh() {
     return !stopped && observation && performance.now() - observationAt < 85000 &&

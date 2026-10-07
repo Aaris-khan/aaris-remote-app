@@ -17,6 +17,7 @@ function bearer(r){const h=r.headers.get("authorization")||"";if(!h.toLowerCase(
 async function body(r){const x=await r.text();if(x.length>786432)throw new Error("request_too_large");return x?JSON.parse(x):{}}
 function deadline(s){if(!s)return null;if(s.state==="CODE_ACTIVE")return s.expiresAtMs;if(s.state==="PAIR_PENDING")return s.approvalExpiresAtMs||null;if(s.state==="HOST_APPROVED"||s.state==="SCREEN_READY")return s.connectExpiresAtMs||null;if(s.state==="LIVE"&&s.browserLink)return s.sessionExpiresAtMs;return null}
 const pub=s=>s?{sessionId:s.sessionId,state:s.state,hostUid:s.hostId,controllerUid:s.controllerId||null,displayGeneration:s.displayGeneration||0,deadlineAtMs:deadline(s),...(s.browserLink?{browserEpoch:s.browser?.epoch||0,browserLink:true}: {})}:null;
+const withoutImageData=value=>value?.image?{...value,image:{...value.image,data:undefined}}:value;
 const browserInstance=/^[a-f0-9-]{36}$/;
 export function browserPublicOrigin(request,env){
   const fallback=new URL(request.url).origin,raw=String(env?.BROWSER_PUBLIC_ORIGIN||'').trim();
@@ -194,6 +195,7 @@ export class AarisSession extends DurableObject{
       if(s.state==='CLOSED'||deadline(s)<=Date.now()){outcome={ok:false,status:410,error:'session_ended'};return}
       if(JSON.stringify(result).length>700000){outcome={ok:false,status:413,error:'FRAME_TOO_LARGE'};return}
       if(requestId){const r=await t.get('agent:r:'+requestId);if(!r?.dispatched||r.result){outcome={ok:false,status:409,error:'REQUEST_EXPIRED_OR_USED'};return}r.result=result;await t.put('agent:r:'+requestId,r)}
+      if(result.actionId&&!result.observationId)await t.delete('agent:observation');
       if(result.observationId&&result.image?.mimeType==='image/jpeg'&&typeof result.image.data==='string')
         await t.put('agent:observation',{...result,receivedAtMs:Date.now()});
       outcome={ok:true};
@@ -260,6 +262,7 @@ export class AarisSession extends DurableObject{
     }
     return o;
   }
+  async clearAgentData(){const data=await this.ctx.storage.list({prefix:'agent:'});if(data.size)await this.ctx.storage.delete([...data.keys()])}
   async closeSession(h,now,instanceId=null){
     let result,updated;
     await this.ctx.storage.transaction(async t=>{
@@ -269,7 +272,7 @@ export class AarisSession extends DurableObject{
       if(s.state!=='CLOSED'){s.state='CLOSED';s.closedAtMs=now;await t.put('session',s);await t.setAlarm(now+CLOSED_RETENTION);updated=s}
       result={ok:true,snapshot:pub(s)};
     });
-    if(updated)this.broadcastSession(updated);
+    if(updated){await this.clearAgentData();this.broadcastSession(updated)}
     return result;
   }
   async authorizeIce(h){
@@ -378,7 +381,7 @@ export class AarisSession extends DurableObject{
       return;
     }
     const d=deadline(s);
-    if(d!=null&&d<=now){s.state="CLOSED";s.closedAtMs=now;await this.ctx.storage.put("session",s);this.broadcastSession(s);await this.ctx.storage.setAlarm(now+CLOSED_RETENTION)}
+    if(d!=null&&d<=now){s.state="CLOSED";s.closedAtMs=now;await this.ctx.storage.put("session",s);await this.clearAgentData();this.broadcastSession(s);await this.ctx.storage.setAlarm(now+CLOSED_RETENTION)}
   }
 }
 
@@ -452,7 +455,7 @@ export default{
         const x=await body(request),r=await room.claimBrowser(h,x.clientId,x.instanceId,Date.now());
         return r.ok?j(r):fail(r.status,r.code,'Cannot join this browser session.');
       }
-      if(request.method==='GET'&&action==='agent-observe'){const r=await room.agentObservation(h);return j(r,r.ok?200:r.status||400)}
+      if(request.method==='GET'&&action==='agent-observe'){const r=await room.agentObservation(h);return j({...r,observation:withoutImageData(r.observation)},r.ok?200:r.status||400)}
       if(request.method==='POST'&&action==='agent-publish'){
         const x=await body(request),r=await room.agentPublish(h,x.result,x.requestId||null);return j(r,r.ok?200:r.status||400);
       }
@@ -467,7 +470,7 @@ export default{
         const x=await body(request),r=await room.agentEnqueue(h,action==='agent-action'?'action':'observe',x,request.headers.get('X-Aaris-Instance'));return j(r,r.ok?202:r.status||400);
       }
       if(request.method==='GET'&&action==='agent-result'){
-        const r=await room.agentResult(h,u.searchParams.get('requestId'),request.headers.get('X-Aaris-Instance'));return j(r,r.ok?200:r.status||400);
+        const r=await room.agentResult(h,u.searchParams.get('requestId'),request.headers.get('X-Aaris-Instance'));return j({...r,result:withoutImageData(r.result)},r.ok?200:r.status||400);
       }
 
       if(request.method==="GET"&&action===""){

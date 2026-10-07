@@ -293,7 +293,7 @@ class ScreenShareService : Service() {
                         connected: Boolean
                     ) {
                         if (browserLink) BrowserLinkRuntime.update(if (connected)
-                            "AI link connected • tap Stop AI Link any time" else "AI browser reconnecting • control paused")
+                            "AI link connected • tap Stop AI Link any time" else "AI link ready • live video reconnecting • screenshot mode available")
                     }
 
                     override fun onProjectionStopped() {

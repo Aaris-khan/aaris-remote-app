@@ -1312,7 +1312,7 @@ class AssistAccessibilityService : AccessibilityService() {
                                     } finally { child.recycle() }
                                 }
                                 val truncated = local.isNotEmpty(); while (local.isNotEmpty()) local.removeFirst().recycle()
-                                val joined = parts.joinToString("\n")
+                                val joined = if (text.contains(com.aaris.remoteassist.ai.BrowserAgentCommand.END)) text else parts.distinct().joinToString("\n")
                                 if (assistant && !user && !truncated && joined.length <= 16384 && joined.contains(com.aaris.remoteassist.ai.BrowserAgentCommand.END)) {
                                     candidate = pkg to joined
                                     return@repeat

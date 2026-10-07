@@ -16,7 +16,7 @@ class Storage {
   values = new Map(); queue = Promise.resolve();
   async get(k) { return structuredClone(this.values.get(k)); }
   async put(k,v) { this.values.set(k,structuredClone(v)); }
-  async delete(k) { this.values.delete(k); }
+  async delete(k) { for(const key of Array.isArray(k)?k:[k])this.values.delete(key); }
   async deleteAll() { this.values.clear(); }
   async list({prefix}) { return new Map([...this.values].filter(([k])=>k.startsWith(prefix))); }
   async setAlarm(t) { this.alarm=t; }

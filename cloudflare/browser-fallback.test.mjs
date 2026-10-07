@@ -38,17 +38,17 @@ try{
   await page.waitForFunction(()=>document.getElementById('fallback').naturalWidth===360);
   const rect=await page.locator('#surface').boundingBox();
   await page.mouse.click(rect.x+rect.width/2,rect.y+rect.height/2);
-  await page.waitForFunction(()=>document.getElementById('status').textContent.includes('action applied'));
+  await page.waitForFunction(()=>{const i=document.getElementById('fallback');return i.src.includes('000000000002')&&i.complete&&i.naturalWidth>0});
   assert.equal(commands.length,1);assert.equal(commands[0].action,'tap');
   assert.ok(Math.abs(commands[0].x-.5)<.01&&Math.abs(commands[0].y-.5)<.01);
   assert.equal(commands[0].durationMs,undefined,'Tap payload must satisfy the strict Android schema');
   await page.waitForFunction(()=>document.getElementById('fallback').src.includes('000000000002'));
   await page.getByRole('button',{name:'Home',exact:true}).click();
-  await page.waitForFunction(()=>document.getElementById('fallback').src.includes('000000000003'));
+  await page.waitForFunction(()=>{const i=document.getElementById('fallback');return i.src.includes('000000000003')&&i.complete&&i.naturalWidth>0});
   assert.equal(commands.length,2);assert.equal(commands[1].action,'home');
   await page.mouse.click(rect.x+5,rect.y+rect.height/2);await page.waitForTimeout(400);
   assert.equal(commands.length,2,'Letterbox clicks must never reach the phone');
   await page.reload();await page.locator('#fallback').waitFor({state:'visible'});
   assert.equal(new URL(page.url()).searchParams.get('client'),client);
   assert.deepEqual(errors,[]);console.log('PASS: no WebRTC video -> HTTPS screenshot -> exact click/Home -> fresh result -> stateless refresh');
-}finally{await browser.close()}
+}catch(error){console.error('Fallback diagnostic',JSON.stringify({commands,errors,state:await page.evaluate(()=>({status:document.getElementById('status')?.textContent,src:document.getElementById('fallback')?.src,loaded:document.getElementById('fallback')?.complete}))}));throw error}finally{await browser.close()}
