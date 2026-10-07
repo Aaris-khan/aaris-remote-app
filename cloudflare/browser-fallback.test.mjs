@@ -27,7 +27,7 @@ await page.route('https://remote.test/**',async route=>{
   if(path.endsWith('/agent-action')){
     assert.equal(req.headers()['x-aaris-instance'],instance);
     const c=req.postDataJSON();assert.equal(c.nonce,'nonce');assert.equal(c.observationId,current.observationId);
-    commands.push(c);current=observation(current.screenVersion+1);result={...current,actionId:c.actionId,applied:true};await reply({ok:true,requestId:c.actionId});return;
+    commands.push(c);current=observation(current.screenVersion+1);result={...current,actionId:c.actionId,applied:commands.length!==3,...(commands.length===3?{error:'STALE_SCREEN'}:{})};await reply({ok:true,requestId:c.actionId});return;
   }
   if(path.endsWith('/agent-result')){await reply({ok:true,result});return}
   await route.fulfill({status:404,json:{error:'NOT_FOUND'}});
@@ -48,6 +48,12 @@ try{
   assert.equal(commands.length,2);assert.equal(commands[1].action,'home');
   await page.mouse.click(rect.x+5,rect.y+rect.height/2);await page.waitForTimeout(400);
   assert.equal(commands.length,2,'Letterbox clicks must never reach the phone');
+  await page.mouse.click(rect.x+rect.width/2,rect.y+rect.height/2);
+  await page.waitForFunction(()=>{const i=document.getElementById('fallback');return i.src.includes('000000000004')&&i.complete&&i.naturalWidth>0});
+  assert.equal(commands.length,3);assert.equal(result.applied,false,'Stale-screen refusal still returns an inspectable fresh frame');
+  await page.mouse.click(rect.x+rect.width/2,rect.y+rect.height/2);
+  await page.waitForFunction(()=>document.getElementById('fallback').src.includes('000000000005'));
+  assert.equal(commands[3].screenVersion,4,'Next decision must use the replacement observation');
   await page.reload();await page.locator('#fallback').waitFor({state:'visible'});
   assert.equal(new URL(page.url()).searchParams.get('client'),client);
   assert.deepEqual(errors,[]);console.log('PASS: no WebRTC video -> HTTPS screenshot -> exact click/Home -> fresh result -> stateless refresh');

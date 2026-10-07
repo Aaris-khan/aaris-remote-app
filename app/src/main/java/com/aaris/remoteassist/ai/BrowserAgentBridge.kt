@@ -111,28 +111,34 @@ class BrowserAgentBridge(
         val id = args.getString("actionId"); val digest = args.toString()
         outcomes[id]?.let { return if (it.first == digest) JSONObject(it.second.toString()) else failure("ACTION_ID_CONFLICT", false) }
         val action = args.getString("action")
-        val seen = latest ?: return failure("OBSERVATION_REQUIRED", false)
-        if (!engine.ledger.valid(args.getString("observationId"), args.getLong("screenVersion"), SystemClock.elapsedRealtime())) return failure("STALE_SCREEN", false)
-        val lease = acquireLease() ?: return failure("CONTROL_UNAVAILABLE", false)
+        val seen = latest ?: return finish(id, digest, false, "OBSERVATION_REQUIRED")
+        if (!engine.ledger.valid(args.getString("observationId"), args.getLong("screenVersion"), SystemClock.elapsedRealtime())) return finish(id, digest, false, "STALE_SCREEN")
+        val lease = acquireLease() ?: return finish(id, digest, false, "CONTROL_UNAVAILABLE")
         var resumed = false
         if (chatPackage != null && action !in setOf("home", "open_app")) {
             val target = seen.optString("currentPackage")
-            if (target.isBlank() || target == context.packageName || target in BrowserAgentCommand.chatPackages) return failure("TARGET_SCREEN_REQUIRED", false)
+            if (target.isBlank() || target == context.packageName || target in BrowserAgentCommand.chatPackages) return finish(id, digest, false, "TARGET_SCREEN_REQUIRED")
             val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
             val homePackage = context.packageManager.resolveActivity(home, 0)?.activityInfo?.packageName
             resumed = if (target == homePackage) dispatch(JSONObject().put("action", "home"), lease, 1) == true else AiAppLauncher.launch(context, target)
-            if (!resumed) return failure("TARGET_APP_UNAVAILABLE", false)
+            if (!resumed) return finish(id, digest, false, "TARGET_APP_UNAVAILABLE")
             delay(350)
         }
         val validation = engine.validate(args, exactCoordinates = true, allowWindowResume = resumed)
-        if (validation.error != null) return failure(validation.error, false)
+        if (validation.error != null) return finish(id, digest, false, validation.error)
         engine.ledger.consume()
         outcomes[id] = digest to failure("OUTCOME_UNKNOWN", null)
+        while (outcomes.size > 64) outcomes.remove(outcomes.keys.first())
         val valid = { isActive() && validation.stillValid() && SessionRuntime.isAuthorized(lease.sessionId, lease.leaseSecret, lease.displayGeneration) }
         val applied = if (action == "open_app") valid() && AiAppLauncher.launch(context, args.getString("app")) else dispatch(args, lease, if (resumed) 2 else 1, valid)
+        return finish(id, digest, applied)
+    }
+    private suspend fun finish(id: String, digest: String, applied: Boolean?, reason: String? = null): JSONObject {
         engine.invalidate(); latest = null
-        val result = engine.observe().put("commandNonce", nonce).put("actionId", id).put("applied", applied ?: JSONObject.NULL)
-        if (result.has("observationId")) latest = JSONObject(result.toString())
+        val result = runCatching { engine.observe() }.getOrElse { failure("CAPTURE_UNAVAILABLE", applied) }
+            .put("commandNonce", nonce).put("actionId", id).put("applied", applied ?: JSONObject.NULL)
+        if (reason != null) result.put("error", reason)
+        if (result.has("observationId")) latest = JSONObject(result.toString()).apply { remove("error"); remove("actionId"); remove("applied") }
         outcomes[id] = digest to JSONObject(result.toString())
         while (outcomes.size > 64) outcomes.remove(outcomes.keys.first())
         return result
@@ -160,7 +166,7 @@ class BrowserAgentBridge(
                 if (!isActive()) return@withLock
                 val result = runCatching { execute(args, candidate.first) }.getOrElse { failure("ACTION_FAILED", null) }
                 runCatching { publish(result) }
-                BrowserLinkRuntime.update(if (result.optBoolean("applied")) "AI command applied • next screenshot ready" else "AI command paused • ${result.optString("error", "inspect the result")}")
+                BrowserLinkRuntime.update(if (result.optBoolean("applied") && result.has("observationId")) "AI command applied • next screenshot ready" else "AI command paused • ${result.optString("error", "inspect the result")}")
                 // Return to the AI after caching the target screen; hidden chat windows cannot be read.
                 if (isActive()) AiAppLauncher.launch(context, candidate.first)
             } } finally { chatExecuting = false }

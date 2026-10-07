@@ -200,7 +200,7 @@ export class AarisSession extends DurableObject{
       if(result.observationId)await t.delete('agent:status');
       if(result.actionId&&!result.observationId)await t.delete('agent:observation');
       if(result.observationId&&result.image?.mimeType==='image/jpeg'&&typeof result.image.data==='string')
-        await t.put('agent:observation',{...result,receivedAtMs:Date.now()});
+        {const observation={...result,receivedAtMs:Date.now()};delete observation.error;delete observation.actionId;delete observation.applied;await t.put('agent:observation',observation)}
       outcome={ok:true};
     });return outcome;
   }

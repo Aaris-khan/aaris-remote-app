@@ -20,7 +20,7 @@ export function observationResponse(u,state){
 export async function agentPage(u,state){
   const response=browserResponse('/remote/');let html=await response.text();
   const o=state.ok?state.observation:null;
-  const captureError=state.error==='SCREENSHOT_ADAPTER_UNAVAILABLE'?'Screenshot adapter unavailable • update Aaris on the phone':state.error==='DEVICE_LOCKED_OR_ACCESSIBILITY_OFF'?'Unlock the phone or restore Accessibility':state.error&&state.error!=='OBSERVATION_PENDING'&&state.error!=='PHONE_OFFLINE'?`Phone screenshot unavailable • ${state.error}`:null;
+  const captureError=o?null:state.error==='SCREENSHOT_ADAPTER_UNAVAILABLE'?'Screenshot adapter unavailable • update Aaris on the phone':state.error==='DEVICE_LOCKED_OR_ACCESSIBILITY_OFF'?'Unlock the phone or restore Accessibility':state.error&&state.error!=='OBSERVATION_PENDING'&&state.error!=='PHONE_OFFLINE'?`Phone screenshot unavailable • ${state.error}`:null;
   const status=!state.ok?'Session ended. Create a new link on the phone.':!state.phoneOnline?'Phone offline • finish screen sharing on the phone.':captureError?captureError:o?'Phone screen ready • connecting live video…':'Phone connected • preparing a fresh screenshot…';
   const frame=new URL('/remote/frame',u);frame.search=u.search;frame.searchParams.set('observationId',o?.observationId||'');
   const observe=new URL('/remote/observe',u);observe.search=u.search;
