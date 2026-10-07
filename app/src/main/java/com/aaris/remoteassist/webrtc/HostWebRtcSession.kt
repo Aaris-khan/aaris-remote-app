@@ -108,6 +108,7 @@ class HostWebRtcSession(
     private val passiveMotionPriority = PassiveMotionPriority()
     private val motionVideoBudget = MotionVideoBudget()
     private val receiverFeedback = ReceiverVideoFeedback()
+    private val photonGovernor = PhotonFreshnessGovernor()
     private var lastSlowVideoCheckMs = 0L
     // Evidence is taken while the producer is quiet, BEFORE fresh motion.
     // A short-lived snapshot is enough to safely probe one FPS rung.
@@ -534,6 +535,7 @@ class HostWebRtcSession(
         transportReady = false
         policyHandler.post {
             passiveMotionPriority.reset()
+            photonGovernor.reset()
             updateInteractionPriority(false)
         }
         displayHandler.removeCallbacks(startupControlRecovery)
@@ -563,6 +565,7 @@ class HostWebRtcSession(
         transportReady = false
         policyHandler.post {
             passiveMotionPriority.reset()
+            photonGovernor.reset()
             updateInteractionPriority(false)
         }
         transport.onControlChannelClosed()
@@ -816,6 +819,25 @@ class HostWebRtcSession(
                     receiverFeedback.accept(packet, current.leaseSecret, current.displayGeneration, android.os.SystemClock.elapsedRealtime())
                 }
             }
+            is ControlPacket.PhotonFeedback -> policyHandler.post {
+                val current = lease
+                if (
+                    !closed.get() &&
+                    current != null &&
+                    SessionRuntime.isAuthorized(
+                        sessionId,
+                        current.leaseSecret,
+                        current.displayGeneration
+                    )
+                ) {
+                    receiverFeedback.accept(
+                        packet,
+                        current.leaseSecret,
+                        current.displayGeneration,
+                        android.os.SystemClock.elapsedRealtime()
+                    )
+                }
+            }
             is ControlPacket.CommandResult,
             is ControlPacket.Hello -> Unit
         }
@@ -924,6 +946,14 @@ class HostWebRtcSession(
                     profile.motionFps,
                     deviceFpsLimit
                 ).coerceAtLeast(1)
+            val photonPolicy =
+                photonGovernor.observe(
+                    outbound = snapshot,
+                    receiver = receiver,
+                    targetFps = motionTargetFps,
+                    interactionActive = interactionActive,
+                    nowMs = now
+                )
             val resolutionChanged = motionVideoBudget.observe(
                 outbound = snapshot,
                 receiver = receiver,
@@ -937,7 +967,8 @@ class HostWebRtcSession(
                 // gesture; active control values fresh motion over extra detail.
                 allowResolutionRecovery =
                     !cadenceGovernor.probingHighCadence &&
-                    !interactionActive
+                    !interactionActive &&
+                    photonPolicy.allowResolutionRecovery
             )
             val requestedFps = effectiveCaptureProfile(profile).fps
             val cadencePressureChanged =
@@ -954,7 +985,10 @@ class HostWebRtcSession(
                     ),
                     producerFps = sourceFps,
                     maximumFps = deviceFpsLimit,
-                    allowHighCadenceProbe = motionActive && !resolutionChanged
+                    allowHighCadenceProbe =
+                        motionActive &&
+                            !resolutionChanged &&
+                            photonPolicy.allowCadencePromotion
                 )
             val interactionProbeChanged =
                 cadenceGovernor.tryProbeDuringInteraction(
@@ -1165,6 +1199,10 @@ class HostWebRtcSession(
                     )
                     append(" gap=")
                     append(metric(receiver?.maxRenderGapMs, "ms"))
+                    append('\n')
+
+                    append("PHOTON • ")
+                    append(photonPolicy.compact())
                     append('\n')
 
                     append("NET • rtt=")
