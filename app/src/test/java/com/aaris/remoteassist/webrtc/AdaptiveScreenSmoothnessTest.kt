@@ -40,7 +40,7 @@ class AdaptiveScreenSmoothnessTest {
         )
 
     @Test
-    fun startupCadenceBeginsAtThirtyButCanRecoverOneRungAtATime() {
+    fun startupCadenceBeginsAtThirtyAndRecoversThroughFineCadenceSteps() {
         val governor =
             VideoCadenceGovernor(
                 maxFps = 60,
@@ -89,7 +89,7 @@ class AdaptiveScreenSmoothnessTest {
                 producerFps = 60.0
             )
         )
-        assertEquals(45, governor.cap)
+        assertEquals(33, governor.cap)
     }
 
     @Test
