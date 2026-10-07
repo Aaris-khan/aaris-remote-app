@@ -83,7 +83,7 @@ internal class HighCadencePressureGate(
         val ageMs = nowMs - lane.lastVoteAtMs
         if (ageMs > maxEvidenceGapMs) {
             lane.votes = 0
-        } else if (ageMs in 0 until minVoteSpacingMs) {
+        } else if (ageMs >= 0L && ageMs < minVoteSpacingMs) {
             return false
         }
 
