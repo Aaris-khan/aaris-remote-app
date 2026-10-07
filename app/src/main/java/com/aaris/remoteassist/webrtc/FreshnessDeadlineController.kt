@@ -18,6 +18,7 @@ internal object FreshnessDeadlineController {
         CLEAN,
         WATCH,
         PRESSURE,
+        URGENT,
         SEVERE
     }
 
@@ -30,10 +31,13 @@ internal object FreshnessDeadlineController {
         val complete: Boolean
     ) {
         val pressure: Boolean
-            get() = state == State.PRESSURE || state == State.SEVERE
+            get() =
+                state == State.PRESSURE ||
+                    state == State.URGENT ||
+                    state == State.SEVERE
 
         val urgent: Boolean
-            get() = complete && (utilization ?: 0.0) >= URGENT_UTILIZATION
+            get() = state == State.URGENT || state == State.SEVERE
 
         val severe: Boolean
             get() = state == State.SEVERE
@@ -81,6 +85,7 @@ internal object FreshnessDeadlineController {
         val state =
             when {
                 utilization >= SEVERE_UTILIZATION -> State.SEVERE
+                utilization >= URGENT_UTILIZATION -> State.URGENT
                 utilization >= PRESSURE_UTILIZATION -> State.PRESSURE
                 utilization >= WATCH_UTILIZATION -> State.WATCH
                 else -> State.CLEAN
