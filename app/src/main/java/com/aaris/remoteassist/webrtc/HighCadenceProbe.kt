@@ -143,8 +143,10 @@ internal class HighCadenceProbe {
                             .toInt()
                     )
                 } == true &&
-                (receiver.dropped ?: 0) <= toleratedDrops(receiver.frames) &&
-                (receiver.freezes ?: 0) == 0
+                receiver.dropped?.let {
+                    it <= toleratedDrops(receiver.frames)
+                } == true &&
+                receiver.freezes == 0
 
         if (trialFrom != null) {
             if (overloaded) {
@@ -203,13 +205,13 @@ internal class HighCadenceProbe {
                 } == true &&
                 receiver?.processingMs.valid()?.let {
                     it <= nextBudgetMs * MAX_CODEC_BUDGET_RATIO
-                } != false &&
+                } == true &&
                 sender?.sendQueueMs.valid()?.let {
                     it <= MAX_PROBE_QUEUE_MS
-                } != false &&
+                } == true &&
                 receiver?.jitterMs.valid()?.let {
                     it <= MAX_PROBE_JITTER_MS
-                } != false &&
+                } == true &&
                 outbound.qualityLimitationReason.equals("none", ignoreCase = true) &&
                 outbound.roundTripTimeMs?.let { it in 0..MAX_PROBE_RTT_MS } == true &&
                 outbound.packetLossRatio.valid()?.let {
