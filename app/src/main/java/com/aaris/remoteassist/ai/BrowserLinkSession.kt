@@ -12,9 +12,13 @@ data class BrowserLinkTicket(
     val sessionId: String,
     val controllerToken: String,
     val expiresAtMs: Long,
-    val browserBaseUrl: String = CloudflareBackend.BASE_URL
+    val browserBaseUrl: String = CloudflareBackend.BASE_URL,
+    val browserClientId: String? = null
 ) {
-    val link: String get() = "${browserBaseUrl.trimEnd('/')}/remote/#$sessionId.$controllerToken"
+    val link: String
+        get() =
+            "${browserBaseUrl.trimEnd('/')}/remote/#$sessionId.$controllerToken" +
+                browserClientId?.let { ".$it" }.orEmpty()
 }
 
 /** Process-local: killing the capture process must never silently restore consent. */
@@ -71,7 +75,10 @@ object BrowserLinkBackend {
                     expiresAtMs = root.getLong("expiresAtMs"),
                     browserBaseUrl = validatedBrowserBaseUrl(
                         root.optString("browserBaseUrl", CloudflareBackend.BASE_URL)
-                    )
+                    ),
+                    browserClientId =
+                        root.optString("browserClientId")
+                            .takeIf { it.matches(Regex("[a-f0-9-]{36}")) }
                 ).also { created = it }
             }
         } catch (error: Exception) {
