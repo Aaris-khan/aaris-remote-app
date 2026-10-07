@@ -41,6 +41,25 @@ internal class HighCadenceProbe {
 
     val probing: Boolean get() = trialFrom != null
 
+    /**
+     * Lightweight control-plane state for the existing on-screen realtime QD.
+     * No RTCStats call or media work is triggered here.
+     */
+    fun debugSummary(nowMs: Long): String {
+        fun remainingSeconds(deadlineMs: Long): String {
+            val remaining = (deadlineMs - nowMs).coerceAtLeast(0L)
+            return if (remaining == 0L) "ready" else "${(remaining + 999L) / 1_000L}s"
+        }
+
+        val trial =
+            trialFrom?.let {
+                "$it→$previousCap good=$trialGood bad=$trialBad"
+            } ?: "idle"
+
+        return "highProbe=$trial " +
+            "45=${remainingSeconds(retry45AtMs)}($failed45Trials) " +
+            "60=${remainingSeconds(retry60AtMs)}($failed60Trials)"
+    }
     fun observe(
         outbound: VideoHealthSnapshot,
         receiver: VideoHealthWindow?,
