@@ -388,12 +388,38 @@ class HostWebRtcSession(
         }
     }
 
+    /*
+     * Some fullscreen games/OEMs coalesce or delay display callbacks while
+     * immersive mode owns the screen. A cheap logical-geometry poll is the
+     * backstop: identical profiles are a no-op, so steady-state work is just
+     * one metrics read per interval. This avoids a permanent portrait capture
+     * surface after a missed 90-degree rotation.
+     */
+    private val displayGeometryWatchdog =
+        object : Runnable {
+            override fun run() {
+                if (closed.get()) return
+                refreshDisplayProfile()
+                displayHandler.postDelayed(
+                    this,
+                    DISPLAY_GEOMETRY_WATCHDOG_MS
+                )
+            }
+        }
+
     fun start() {
         check(!closed.get())
 
         displayManager.registerDisplayListener(
             displayListener,
             displayHandler
+        )
+        displayHandler.removeCallbacks(
+            displayGeometryWatchdog
+        )
+        displayHandler.postDelayed(
+            displayGeometryWatchdog,
+            DISPLAY_GEOMETRY_WATCHDOG_MS
         )
 
         captureRecoveryAttempts = 0
@@ -1716,6 +1742,7 @@ class HostWebRtcSession(
         displayHandler.removeCallbacks(iceRestart)
         displayHandler.removeCallbacks(startupControlRecovery)
         displayHandler.removeCallbacks(captureFrameWatchdog)
+        displayHandler.removeCallbacks(displayGeometryWatchdog)
         displayHandler.removeCallbacks(interactionRefreshProbe)
         interactionRefreshProbeScheduled.set(false)
         displayHandler.removeCallbacks(
@@ -1812,6 +1839,7 @@ class HostWebRtcSession(
         private const val BROWSER_CONNECT_TIMEOUT_MS = 300_000L
         private const val BROWSER_RECONNECT_GRACE_MS = 60_000L
         private const val CONTROL_CHANNEL_GRACE_MS = 5_000L
+        private const val DISPLAY_GEOMETRY_WATCHDOG_MS = 750L
         private const val ICE_RESTART_DELAY_MS = 1_500L
         private const val STARTUP_CONTROL_RECOVERY_INITIAL_DELAY_MS = 8_000L
         private const val STARTUP_CONTROL_RECOVERY_INTERVAL_MS = 8_000L
