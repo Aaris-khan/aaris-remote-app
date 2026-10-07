@@ -50,6 +50,69 @@ class HighCadenceProbeTest {
         assertFalse(g.probingHighCadence)
     }
 
+    @Test fun retainedPresentationBridgesStatsPhaseWithoutDoubleVoting() {
+        val g = VideoCadenceGovernor(60, 30)
+        val first =
+            receiver(30).copy(
+                presentationSampleSequence = 100,
+                presentationSampleAgeMs = 50,
+                presentationSampleFresh = true
+            )
+        val held =
+            first.copy(
+                presentationSampleAgeMs = 550,
+                presentationSampleFresh = false
+            )
+        val second =
+            receiver(30).copy(
+                presentationSampleSequence = 101,
+                presentationSampleAgeMs = 50,
+                presentationSampleFresh = true
+            )
+
+        assertFalse(sample(g, 1_000L, recv = first))
+        // Same EGL window remains visible to this independently-phased stats
+        // tick, but cannot count as the second proof.
+        assertFalse(sample(g, 1_500L, recv = held))
+        assertEquals(30, g.cap)
+
+        // A genuinely new glass window supplies the second vote.
+        assertTrue(sample(g, 2_000L, recv = second))
+        assertEquals(45, g.cap)
+    }
+
+    @Test fun retainedTrialWindowCannotValidateFortyFiveTwice() {
+        val g = VideoCadenceGovernor(60, 30)
+        promote45(g)
+
+        val trialFresh =
+            receiver(45).copy(
+                presentationSampleSequence = 200,
+                presentationSampleAgeMs = 50,
+                presentationSampleFresh = true
+            )
+        val trialHeld =
+            trialFresh.copy(
+                presentationSampleAgeMs = 550,
+                presentationSampleFresh = false
+            )
+
+        assertFalse(sample(g, 3_000L, fps = 45, recv = trialFresh))
+        assertTrue(g.probingHighCadence)
+        assertFalse(sample(g, 3_500L, fps = 45, recv = trialHeld))
+        assertFalse(sample(g, 4_000L, fps = 45, recv = trialHeld))
+        assertTrue(g.probingHighCadence)
+
+        val nextFresh =
+            receiver(45).copy(
+                presentationSampleSequence = 201,
+                presentationSampleAgeMs = 50,
+                presentationSampleFresh = true
+            )
+        assertFalse(sample(g, 4_500L, fps = 45, recv = nextFresh))
+        assertFalse(g.probingHighCadence)
+    }
+
     @Test fun slowRecordedEncoderDoesNotEarnFortyFiveFromFastCaptureAlone() {
         val g = VideoCadenceGovernor(60, 30)
         repeat(30) { sample(g, (it + 1) * 1000L, encode = 22.0) }

@@ -17,7 +17,19 @@ data class VideoHealthWindow(
     val maxRenderGapMs: Int? = null,
     val presentationAgeMs: Int? = null,
     val displayRefreshRateHz: Double? = null,
-    val jitterTargetMs: Double? = null
+    val jitterTargetMs: Double? = null,
+    /**
+     * Sequence/age of the actual EGL cadence sample carried by this window.
+     * A retained sample may be reused briefly to bridge phase skew between the
+     * 500 ms render-feedback clock and the independent WebRTC stats clock.
+     *
+     * presentationSampleFresh=false means this exact cadence sample was already
+     * exposed by an earlier consume(). It remains useful for diagnostics/liveness
+     * but must not be counted twice as new adaptation proof or pressure.
+     */
+    val presentationSampleSequence: Long? = null,
+    val presentationSampleAgeMs: Int? = null,
+    val presentationSampleFresh: Boolean = true
 ) {
     val fps: Double get() = frames * 1000.0 / intervalMs
 
@@ -50,7 +62,12 @@ data class VideoHealthWindow(
 
     fun compact(): String {
         val presentation = presentedFps?.roundToInt()?.let {
-            " present=${it}fps gap=${maxRenderGapMs}ms"
+            val sampleAge =
+                presentationSampleAgeMs?.let { age ->
+                    " sampleAge=${age}ms" +
+                        if (presentationSampleFresh) "" else "(held)"
+                }.orEmpty()
+            " present=${it}fps gap=${maxRenderGapMs}ms$sampleAge"
         } ?: presentationAgeMs?.let {
             " present=alive age=${it}ms"
         }.orEmpty()

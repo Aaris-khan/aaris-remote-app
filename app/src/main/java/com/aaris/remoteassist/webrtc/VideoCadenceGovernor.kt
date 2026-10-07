@@ -503,8 +503,18 @@ class VideoCadenceGovernor(
             } else 1.0
         val renderGapMs = receiver?.maxRenderGapMs?.toDouble() ?: 0.0
         val renderGapPressureMs = maxOf(MIN_RENDER_GAP_PRESSURE_MS, budgetMs * RENDER_GAP_BUDGET_MULTIPLIER)
+        /*
+         * A retained presentation sample bridges stats/render phase skew, but
+         * it is not a second pressure event. Fast presentation handling already
+         * reacts immediately when the real packet arrives; the full governor
+         * must not cascade another downshift by re-counting the same EGL window.
+         */
+        val presentationCadenceFresh =
+            receiver?.presentationSampleFresh != false
         val presentationMeasured =
-            presentedFrames >= MIN_PRESENTED_FRAMES && expectedPresentationFps >= MIN_PRESENTATION_EXPECTED_FPS
+            presentationCadenceFresh &&
+                presentedFrames >= MIN_PRESENTED_FRAMES &&
+                expectedPresentationFps >= MIN_PRESENTATION_EXPECTED_FPS
         val presentationAgeMs = receiver?.presentationAgeMs
         val presentationHeartbeatStalled =
             receiverMeasured &&

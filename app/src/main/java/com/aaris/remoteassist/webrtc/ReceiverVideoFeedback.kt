@@ -2,7 +2,15 @@ package com.aaris.remoteassist.webrtc
 
 import com.aaris.remoteassist.control.ControlPacket
 
-/** One-use, lease-bound feedback. Old generations and buffered/replayed reports cannot tune video. */
+/**
+ * Lease-bound receiver feedback.
+ *
+ * Decoder/stat windows remain one-use. The most recent measured EGL cadence
+ * may be retained for a short bounded interval solely to bridge independent
+ * render/getStats clock phases; sequence + fresh/held metadata prevents that
+ * retained sample from tuning video twice. Old generations and replayed packets
+ * still cannot tune video.
+ */
 class ReceiverVideoFeedback {
     private var identity: Pair<Long, Int>? = null
     private var lastSequence = 0L
@@ -15,6 +23,9 @@ class ReceiverVideoFeedback {
     private var presentationReceivedAt = 0L
     private var lastPresentedAtMs: Long? = null
     private var pendingPresentation: PresentationCadenceWindow? = null
+    private var retainedPresentation: PresentationCadenceWindow? = null
+    private var retainedPresentationAtMs = 0L
+    private var retainedPresentationSequence = 0L
     private var lastCapabilitiesSequence = 0L
     private var capabilitiesAtMs = 0L
     private var displayRefreshRateHz: Double? = null
@@ -32,6 +43,9 @@ class ReceiverVideoFeedback {
         presentationReceivedAt = 0L
         lastPresentedAtMs = null
         pendingPresentation = null
+        retainedPresentation = null
+        retainedPresentationAtMs = 0L
+        retainedPresentationSequence = 0L
         lastCapabilitiesSequence = 0L
         capabilitiesAtMs = 0L
         displayRefreshRateHz = null
@@ -133,16 +147,60 @@ class ReceiverVideoFeedback {
 
         val video = pending?.takeIf { nowMs - receivedAt in 0..MAX_AGE_MS }
         pending = null
-        val presentation = pendingPresentation?.takeIf {
-            nowMs - presentationReceivedAt in 0..MAX_AGE_MS
-        }
+
+        /*
+         * Render feedback and getStats() both run around 500 ms but are not
+         * phase-locked. Clearing the cadence sample after one consume made the
+         * next stats tick frequently see present=null/gap=null even though EGL
+         * was swapping normally. Retain the latest measured cadence briefly so
+         * every stats phase can observe it.
+         *
+         * The fresh flag + sequence prevent governors from counting the same
+         * retained sample twice as new proof or repeated pressure.
+         */
+        val newlyConsumedPresentation =
+            pendingPresentation?.takeIf {
+                nowMs - presentationReceivedAt in 0..MAX_AGE_MS
+            }
         pendingPresentation = null
+
+        if (newlyConsumedPresentation != null) {
+            retainedPresentation = newlyConsumedPresentation
+            retainedPresentationAtMs = presentationReceivedAt
+            retainedPresentationSequence = lastPresentationSequence
+        }
+
+        val presentation =
+            newlyConsumedPresentation
+                ?: retainedPresentation?.takeIf {
+                    nowMs - retainedPresentationAtMs in
+                        0L..MAX_RETAINED_PRESENTATION_AGE_MS
+                }
+        val presentationIsFresh = newlyConsumedPresentation != null
+        val presentationSampleAgeMs =
+            presentation?.let {
+                (nowMs - retainedPresentationAtMs)
+                    .takeIf { age ->
+                        age in 0L..MAX_RETAINED_PRESENTATION_AGE_MS
+                    }
+                    ?.toInt()
+            }
+        val presentationSampleSequence =
+            presentation?.let { retainedPresentationSequence.takeIf { it > 0L } }
+
         val presentationAgeMs = lastPresentedAtMs
             ?.let { nowMs - it }
             ?.takeIf { it in 0L..MAX_PRESENTATION_LIVENESS_AGE_MS }
             ?.toInt()
 
-        if (video == null && presentation == null && presentationAgeMs == null) return null
+        if (
+            video == null &&
+            presentation == null &&
+            presentationAgeMs == null
+        ) {
+            return null
+        }
+
         val base = video ?: VideoHealthWindow(
             intervalMs = presentation?.intervalMs ?: 1_000,
             frames = 0,
@@ -157,14 +215,20 @@ class ReceiverVideoFeedback {
                 nowMs - capabilitiesAtMs in 0L..MAX_CAPABILITIES_AGE_MS
             }
         return if (presentation == null) {
-            base.copy(presentationAgeMs = presentationAgeMs, displayRefreshRateHz = refreshRate)
+            base.copy(
+                presentationAgeMs = presentationAgeMs,
+                displayRefreshRateHz = refreshRate
+            )
         } else {
             base.copy(
                 presentationIntervalMs = presentation.intervalMs,
                 presentedFrames = presentation.renderedFrames,
                 maxRenderGapMs = presentation.maxGapMs,
                 presentationAgeMs = presentationAgeMs,
-                displayRefreshRateHz = refreshRate
+                displayRefreshRateHz = refreshRate,
+                presentationSampleSequence = presentationSampleSequence,
+                presentationSampleAgeMs = presentationSampleAgeMs,
+                presentationSampleFresh = presentationIsFresh
             )
         }
     }
@@ -172,6 +236,9 @@ class ReceiverVideoFeedback {
     private companion object {
         const val MAX_AGE_MS = 3_000L
         const val MAX_CAPABILITIES_AGE_MS = 15_000L
+        // Long enough to bridge independent 500 ms stats/render phases, short
+        // enough that high-cadence promotion still requires current glass proof.
+        const val MAX_RETAINED_PRESENTATION_AGE_MS = 1_500L
         const val MAX_PRESENTATION_INTERVAL_MS = 6_000
         const val MAX_PRESENTED_FRAMES = 2_048
         const val MAX_PRESENTATION_LIVENESS_AGE_MS = 30_000L

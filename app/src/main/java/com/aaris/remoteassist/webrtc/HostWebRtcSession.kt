@@ -1094,6 +1094,11 @@ class HostWebRtcSession(
                     append(metric(receiver?.maxRenderGapMs, "ms"))
                     append(" age=")
                     append(metric(receiver?.presentationAgeMs, "ms"))
+                    append(" glassSample=")
+                    append(metric(receiver?.presentationSampleAgeMs, "ms"))
+                    append(if (receiver?.presentationSampleFresh == false) "(held)" else "")
+                    append(" glassSeq=")
+                    append(receiver?.presentationSampleSequence ?: "-")
                     append('\n')
 
                     append("NET • rtt=")
