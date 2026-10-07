@@ -41,7 +41,9 @@ test('GET previews load a token-free console without claiming or consuming a ses
   assert.equal(r.status,200);assert.equal(touched,false);
   const html=await r.text(); assert.match(html,/autoplay muted playsinline/); assert.doesNotMatch(html,/getUserMedia|captcha|password|Sign in/);
   assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.equal(r.headers.get('Cache-Control'),'no-store');
-  assert.match(await browserResponse('/remote/client.js').text(),/browser_ping/);
+  const clientScript=await browserResponse('/remote/client.js').text();
+  assert.match(clientScript,/browser_ping/);
+  assert.match(clientScript,/linkClientId/);
 });
 test('browser public origin accepts only a clean HTTPS origin and otherwise falls back safely',()=>{
   const request=new Request('https://worker.example/v1/browser-sessions');
