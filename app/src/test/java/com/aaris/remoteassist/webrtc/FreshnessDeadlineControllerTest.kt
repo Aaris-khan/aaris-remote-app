@@ -43,8 +43,8 @@ class FreshnessDeadlineControllerTest {
 
         assertTrue(a.complete)
         assertEquals(50.0, a.deadlineMs, 0.001)
-        assertEquals(40.0, a.controllableDebtMs ?: -1.0, 0.001)
-        assertEquals(FreshnessDeadlineController.State.WATCH, a.state)
+        assertEquals(30.0, a.controllableDebtMs ?: -1.0, 0.001)
+        assertEquals(FreshnessDeadlineController.State.CLEAN, a.state)
         assertFalse(a.pressure)
     }
 
@@ -64,6 +64,18 @@ class FreshnessDeadlineControllerTest {
         assertTrue(at60.pressure)
         assertEquals(FreshnessDeadlineController.State.CLEAN, at30.state)
         assertFalse(at30.pressure)
+    }
+
+    @Test
+    fun codecWithinFramePeriodDoesNotMasqueradeAsBacklog() {
+        val a = FreshnessDeadlineController.assess(
+            targetFps = 60,
+            sender = sender(queueMs = 0.0, encodeMs = 5.0),
+            receiver = receiver(playoutMs = 20.0, decodeMs = 25.0, fps = 30)
+        )
+
+        assertEquals(FreshnessDeadlineController.State.CLEAN, a.state)
+        assertFalse(a.pressure)
     }
 
     @Test
