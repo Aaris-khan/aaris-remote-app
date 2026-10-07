@@ -1,6 +1,15 @@
 package com.aaris.remoteassist.control
 
 /** One-clock, bounded command send-to-ACK timings. This is NOT input-to-photon. */
+internal data class AppliedCommandAck(
+    val sequence: Long,
+    val sentAtMs: Long,
+    val acknowledgedAtMs: Long
+) {
+    val ackLatencyMs: Long
+        get() = acknowledgedAtMs - sentAtMs
+}
+
 internal class CommandLatencyTracker {
     private val pending = LinkedHashMap<Long, Long>()
     private val samples = ArrayDeque<Long>()
@@ -10,12 +19,22 @@ internal class CommandLatencyTracker {
         while (pending.size > 128) pending.remove(pending.keys.first())
     }
 
-    @Synchronized fun acknowledged(sequence: Long, applied: Boolean, nowMs: Long) {
-        val started = pending.remove(sequence) ?: return
+    @Synchronized
+    fun acknowledged(
+        sequence: Long,
+        applied: Boolean,
+        nowMs: Long
+    ): AppliedCommandAck? {
+        val started = pending.remove(sequence) ?: return null
         val elapsed = nowMs - started
-        if (!applied || elapsed !in 0..30_000) return
+        if (!applied || elapsed !in 0..30_000) return null
         samples.addLast(elapsed)
         while (samples.size > 128) samples.removeFirst()
+        return AppliedCommandAck(
+            sequence = sequence,
+            sentAtMs = started,
+            acknowledgedAtMs = nowMs
+        )
     }
 
     @Synchronized fun summary(): String {
