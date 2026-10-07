@@ -82,7 +82,7 @@ class HighCadenceProbeTest {
         return time
     }
 
-    @Test fun cleanPathWalksFineCadenceStepsFromThirtyToSixty() {
+    @Test fun cleanPathUsesFastPromotionAndFineReliefHysteresis() {
         val g = VideoCadenceGovernor(60, 30)
         val seen = linkedSetOf(g.cap)
         var time = 1_000L
@@ -97,8 +97,10 @@ class HighCadenceProbeTest {
         assertEquals(60, g.cap)
         assertFalse(g.probingHighCadence)
         assertTrue(
-            "Expected fine cadence ladder, saw $seen",
-            seen.containsAll(listOf(30, 33, 36, 40, 45, 50, 55, 58, 60))
+            "Expected evidence-backed promotion ladder, saw $seen",
+            seen.containsAll(listOf(30, 36, 40, 45, 50, 55, 60)) &&
+                !seen.contains(33) &&
+                !seen.contains(58)
         )
     }
 
@@ -193,7 +195,7 @@ class HighCadenceProbeTest {
         assertEquals(30, g.cap)
 
         assertTrue(sample(g, 2_000L, recv = second))
-        assertEquals(33, g.cap)
+        assertEquals(36, g.cap)
         assertTrue(g.probingHighCadence)
     }
 
@@ -202,28 +204,28 @@ class HighCadenceProbeTest {
 
         assertFalse(sample(g, 1_000L, recv = receiver(30, sequence = 1)))
         assertTrue(sample(g, 2_000L, recv = receiver(30, sequence = 2)))
-        assertEquals(33, g.cap)
+        assertEquals(36, g.cap)
         assertTrue(g.probingHighCadence)
 
         val fresh =
-            receiver(33, sequence = 3, fresh = true)
+            receiver(36, sequence = 3, fresh = true)
         val held =
             fresh.copy(
                 presentationSampleAgeMs = 550,
                 presentationSampleFresh = false
             )
 
-        assertFalse(sample(g, 3_000L, fps = 33, recv = fresh))
-        assertFalse(sample(g, 3_500L, fps = 33, recv = held))
-        assertFalse(sample(g, 4_000L, fps = 33, recv = held))
+        assertFalse(sample(g, 3_000L, fps = 36, recv = fresh))
+        assertFalse(sample(g, 3_500L, fps = 36, recv = held))
+        assertFalse(sample(g, 4_000L, fps = 36, recv = held))
         assertTrue(g.probingHighCadence)
 
         assertFalse(
             sample(
                 g,
                 4_500L,
-                fps = 33,
-                recv = receiver(33, sequence = 4, fresh = true)
+                fps = 36,
+                recv = receiver(36, sequence = 4, fresh = true)
             )
         )
         assertFalse(g.probingHighCadence)
@@ -301,14 +303,14 @@ class HighCadenceProbeTest {
 
         assertFalse(sample(g, 1_000L))
         assertTrue(sample(g, 2_000L))
-        assertEquals(33, g.cap)
+        assertEquals(36, g.cap)
 
-        // 25fps is below the allowed delivery proof for a 33fps trial.
+        // 25fps is below the allowed delivery proof for a 36fps trial.
         assertFalse(sample(g, 3_000L, fps = 25, recv = receiver(25)))
         assertTrue(sample(g, 4_000L, fps = 25, recv = receiver(25)))
         assertEquals(30, g.cap)
 
-        // Retry is bounded; no immediate 30<->33 oscillation.
+        // Retry is bounded; no immediate 30<->36 oscillation.
         for (time in 5_000L..7_000L step 1_000L) {
             assertFalse(sample(g, time))
             assertEquals(30, g.cap)
@@ -316,16 +318,16 @@ class HighCadenceProbeTest {
 
         assertFalse(sample(g, 8_000L))
         assertTrue(sample(g, 9_000L))
-        assertEquals(33, g.cap)
+        assertEquals(36, g.cap)
     }
 
     @Test fun trialPressureRollsBackImmediately() {
         val g = VideoCadenceGovernor(60, 30)
         assertFalse(sample(g, 1_000L))
         assertTrue(sample(g, 2_000L))
-        assertEquals(33, g.cap)
+        assertEquals(36, g.cap)
 
-        assertTrue(sample(g, 3_000L, fps = 33, queue = 100.0))
+        assertTrue(sample(g, 3_000L, fps = 36, queue = 100.0))
         assertEquals(30, g.cap)
     }
 
@@ -333,19 +335,19 @@ class HighCadenceProbeTest {
         val deviceLimited = VideoCadenceGovernor(60, 30)
         assertFalse(sample(deviceLimited, 1_000L))
         assertTrue(sample(deviceLimited, 2_000L))
-        assertEquals(33, deviceLimited.cap)
+        assertEquals(36, deviceLimited.cap)
         assertTrue(sample(deviceLimited, 3_000L, maximum = 24))
         assertEquals(24, deviceLimited.cap)
 
         val displayLimited = VideoCadenceGovernor(60, 30)
         assertFalse(sample(displayLimited, 1_000L))
         assertTrue(sample(displayLimited, 2_000L))
-        assertEquals(33, displayLimited.cap)
+        assertEquals(36, displayLimited.cap)
         assertTrue(
             sample(
                 displayLimited,
                 3_000L,
-                recv = receiver(33, refresh = 24.0)
+                recv = receiver(36, refresh = 24.0)
             )
         )
         assertEquals(24, displayLimited.cap)

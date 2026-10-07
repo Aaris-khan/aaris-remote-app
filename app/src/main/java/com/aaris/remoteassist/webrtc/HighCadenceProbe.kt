@@ -272,19 +272,28 @@ internal class HighCadenceProbe {
         return fallback
     }
 
+    /*
+     * Promotion and relief are intentionally asymmetric.
+     *
+     * On a proven-clean interactive path, climbing every tiny rung keeps a
+     * capable 60 Hz phone visibly stuck in 30-45 fps for too long. Promotion
+     * therefore uses moderately spaced evidence-backed steps.
+     *
+     * Relief remains finer grained: when pressure appears at 60 fps we still
+     * trim to 58, then 55, etc. That preserves smoothness instead of turning a
+     * small transient into a visible cliff.
+     */
     private fun nextHigher(currentFps: Int, limit: Int): Int? =
-        FINE_CADENCE_STEPS.firstOrNull {
+        ASCENDING_CADENCE_STEPS.firstOrNull {
             it > currentFps && it <= limit
         }
 
     private fun previousLower(currentFps: Int): Int? =
-        FINE_CADENCE_STEPS
-            .asReversed()
+        DESCENDING_CADENCE_STEPS
             .firstOrNull { it < currentFps }
 
     private fun nearestAtOrBelow(limit: Int): Int =
-        FINE_CADENCE_STEPS
-            .asReversed()
+        DESCENDING_CADENCE_STEPS
             .firstOrNull { it <= limit }
             ?: minOf(limit, MIN_FINE_CADENCE_FPS)
 
@@ -330,8 +339,10 @@ internal class HighCadenceProbe {
         this?.takeIf { it.isFinite() && it >= 0.0 }
 
     private companion object {
-        val FINE_CADENCE_STEPS =
-            listOf(30, 33, 36, 40, 45, 50, 55, 58, 60)
+        val ASCENDING_CADENCE_STEPS =
+            listOf(30, 36, 40, 45, 50, 55, 60)
+        val DESCENDING_CADENCE_STEPS =
+            listOf(60, 58, 55, 50, 45, 40, 36, 33, 30)
 
         const val MIN_FINE_CADENCE_FPS = 30
         const val MIN_SAMPLE_INTERVAL_MS = 500L
