@@ -139,14 +139,18 @@ export class AarisSession extends DurableObject{
     return{ok:true};
   }
   // Read-only observation does not claim the browser or consume the link.
-  async agentObservation(h) {
+  async agentObservation(h,refresh=true,frameId=null) {
     const s=await this.session();
     if(!s?.browserLink||!this.role(s,h))return{ok:false,status:401,error:'unauthorized'};
     if(s.state==='CLOSED'||deadline(s)<=Date.now())return{ok:false,status:410,error:'session_ended'};
-    const observation=await this.ctx.storage.get('agent:observation');
+    let observation=await this.ctx.storage.get('agent:observation');
+    if(!refresh&&frameId&&frameId!==observation?.observationId){
+      const previous=await this.ctx.storage.get('agent:previous');
+      if(previous?.observationId===frameId&&previous.expiresAtMs>Date.now())observation=previous;
+    }
     const online=this.ctx.getWebSockets('host-agent').length>0,nativeOnline=this.ctx.getWebSockets('host').length>0;
     const captureStatus=await this.ctx.storage.get('agent:status');
-    if(online&&(!observation||Date.now()-observation.receivedAtMs>85000))await this.agentEnqueue(h,'observe',{},null);
+    if(refresh&&online&&(!observation||Date.now()-observation.receivedAtMs>2500))await this.agentEnqueue(h,'observe',{},null);
     return{ok:true,phoneOnline:online||nativeOnline,agentOnline:online,state:s.state,observation:observation&&Date.now()-observation.receivedAtMs<90000?observation:null,
       error:online?(captureStatus?.error||'OBSERVATION_PENDING'):nativeOnline?'SCREENSHOT_ADAPTER_UNAVAILABLE':'PHONE_OFFLINE'};
   }
@@ -198,9 +202,11 @@ export class AarisSession extends DurableObject{
       if(requestId){const r=await t.get('agent:r:'+requestId);if(!r?.dispatched||r.result){outcome={ok:false,status:409,error:'REQUEST_EXPIRED_OR_USED'};return}r.result=result;await t.put('agent:r:'+requestId,r)}
       if(result.error&&!result.observationId)await t.put('agent:status',{error:String(result.error).slice(0,100),receivedAtMs:Date.now()});
       if(result.observationId)await t.delete('agent:status');
-      if(result.actionId&&!result.observationId)await t.delete('agent:observation');
+      if(result.actionId&&!result.observationId){await t.delete('agent:observation');await t.delete('agent:previous')}
       if(result.observationId&&result.image?.mimeType==='image/jpeg'&&typeof result.image.data==='string')
-        {const observation={...result,receivedAtMs:Date.now()};delete observation.error;delete observation.actionId;delete observation.applied;await t.put('agent:observation',observation)}
+        {const previous=await t.get('agent:observation');
+         if(previous&&previous.observationId!==result.observationId)await t.put('agent:previous',{...previous,expiresAtMs:Date.now()+15000});
+         const observation={...result,receivedAtMs:Date.now()};delete observation.error;delete observation.actionId;delete observation.applied;await t.put('agent:observation',observation)}
       outcome={ok:true};
     });return outcome;
   }
@@ -399,7 +405,7 @@ export default{
       if(request.method==='GET'&&['/remote','/remote/','/remote/frame','/remote/observe'].includes(u.pathname)){
         const params=agentParameters(u);
         if(!params)return u.pathname.startsWith('/remote/f')||u.pathname==='/remote/observe'?fail(401,'unauthorized','Open the complete phone link.'):browserResponse(u.pathname);
-        const state=await sessions(env,params.sessionId).agentObservation(await sha(params.access));
+        const state=await sessions(env,params.sessionId).agentObservation(await sha(params.access),u.pathname!=='/remote/frame',u.searchParams.get('observationId'));
         if(u.pathname==='/remote/frame'||u.pathname==='/remote/observe')return observationResponse(u,state);
         return agentPage(u,state);
       }

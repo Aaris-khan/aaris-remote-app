@@ -226,3 +226,24 @@ test('a connected host exposes capture failures instead of a permanent Connectin
   await f.room.closeSession(f.h,f.now+1);
   assert.equal([...f.storage.values.keys()].filter(k=>k.startsWith('agent:')).length,0);
 });
+
+test('observation reads refresh old frames once; image downloads do not invalidate their coordinates',async()=>{
+  const f=await fixture(),sent=[];f.sockets.push({a:{role:'host-agent'},send:x=>sent.push(JSON.parse(x))});
+  const id=crypto.randomUUID(),image={mimeType:'image/jpeg',width:2,height:2,data:btoa('jpeg')};
+  await f.room.agentPublish(f.h,{observationId:id,screenVersion:1,commandNonce:'nonce',image});
+  const stored=await f.storage.get('agent:observation');stored.receivedAtMs=Date.now()-5000;await f.storage.put('agent:observation',stored);
+  const query=`?session=${sid}&access=${controller}`;
+  const frame=await worker.fetch(new Request(`https://remote.test/remote/frame${query}&observationId=${id}`),f.env);
+  assert.equal(frame.status,200);assert.equal(await frame.text(),'jpeg');assert.equal(sent.length,0);
+  const observation=await worker.fetch(new Request(`https://remote.test/remote/observe${query}`),f.env);
+  assert.equal((await observation.json()).observation.observationId,id);assert.equal(sent.length,1);assert.equal(sent[0].operation,'observe');
+  await Promise.all([f.room.agentObservation(f.c),f.room.agentObservation(f.c)]);
+  assert.equal(sent.length,1,'Concurrent reads coalesce while the phone captures');
+  await f.room.agentStart(f.h,'observe');
+  const next=crypto.randomUUID();await f.room.agentPublish(f.h,{observationId:next,screenVersion:2,commandNonce:'nonce',image},'observe');
+  assert.equal((await f.room.agentObservation(f.c)).observation.observationId,next);assert.equal(sent.length,1);
+  const prior=await worker.fetch(new Request(`https://remote.test/remote/frame${query}&observationId=${id}`),f.env);
+  assert.equal(prior.status,200);assert.equal(prior.headers.get('X-Aaris-Observation'),id,'A slow image download retains exactly its requested frame');
+  const previous=await f.storage.get('agent:previous');previous.expiresAtMs=Date.now()-1;await f.storage.put('agent:previous',previous);
+  assert.equal((await worker.fetch(new Request(`https://remote.test/remote/frame${query}&observationId=${id}`),f.env)).status,409);
+});
