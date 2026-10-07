@@ -5,7 +5,7 @@ import { createBrowserProtocol } from './browser-protocol.js';
 export function browserMain(protocolFactory) {
   const wire = protocolFactory(), $ = id => document.getElementById(id);
   const video = $('screen'), status = $('status'), surface = $('surface'), shot = $('snapshot');
-  const match = location.hash.match(/^#([a-f0-9]{64})\.([A-Za-z0-9_-]{43})$/);
+  const match = location.hash.match(/^#([a-f0-9]{64})\.([A-Za-z0-9_-]{43})(?:\.([a-f0-9-]{36}))?$/);
   let stopped = false, ws, pc, control, hello, sequence = 0n, after = 0;
   let remoteId, localId, localReady = false, localCandidates = [], remoteCandidates = new Map();
   let signalChain = Promise.resolve(), publishChain = Promise.resolve(), reconnectTimer, retry = 0;
@@ -13,7 +13,7 @@ export function browserMain(protocolFactory) {
   let lastStats, lastPresented = 0, telemetrySequence = 0n, telemetry;
   const seenSignals = new Set();
   const timers = [], instanceId = crypto.randomUUID();
-  let clientId = crypto.randomUUID();
+  let clientId;
   const message = text => { status.textContent = text; };
   function invalidateControls() {
     hello = null; pointer = null; videoReadyGeneration = -1;
@@ -25,11 +25,14 @@ export function browserMain(protocolFactory) {
     ws?.close(); pc?.close(); video.srcObject = null; shot.removeAttribute('src'); message(text);
   }
   if (!match) { end('Open the complete link copied by Aaris Remote on your phone.'); return; }
-  const [, sessionId, capability] = match;
-  try {
-    const key = `aaris-browser-${sessionId}`;
-    clientId = sessionStorage.getItem(key) || clientId; sessionStorage.setItem(key, clientId);
-  } catch { /* A browser that disables storage can still connect once. */ }
+  const [, sessionId, capability, linkClientId] = match;
+  clientId = linkClientId || crypto.randomUUID();
+  if (!linkClientId) {
+    try {
+      const key = `aaris-browser-${sessionId}`;
+      clientId = sessionStorage.getItem(key) || clientId; sessionStorage.setItem(key, clientId);
+    } catch { /* Legacy links still connect once when browser storage is unavailable. */ }
+  }
   const base = `/v1/sessions/${sessionId}`;
   async function api(action, data) {
     const response = await fetch(base + (action ? `/${action}` : ''), {

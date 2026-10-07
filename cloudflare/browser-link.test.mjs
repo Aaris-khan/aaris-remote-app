@@ -35,13 +35,26 @@ async function fixture() {
   const call=(path,token=controller,data,extra={})=>worker.fetch(new Request(`https://remote.test${path}`,{method:data===undefined?'GET':'POST',headers:{Authorization:`Bearer ${token}`,...(data===undefined?{}:{'Content-Type':'application/json'}),...extra},body:data===undefined?undefined:JSON.stringify(data)}),env);
   return {room,storage,h,c,now,call,sockets,env};
 }
+test('browser session allocation returns a stable client identity for stateless AI browsers',async()=>{
+  const sockets=[],storage=new Storage();
+  const ctx={storage,getWebSockets:role=>sockets.filter(s=>!role||s.a?.role===role),setWebSocketAutoResponse(){}};
+  const room=new AarisSession(ctx,{});
+  const env={SESSIONS:{getByName:()=>room}};
+  const r=await worker.fetch(new Request('https://remote.test/v1/browser-sessions',{method:'POST'}),env);
+  const value=await r.json();
+  assert.equal(r.status,201);
+  assert.match(value.browserClientId,/^[a-f0-9-]{36}$/);
+  assert.equal((await storage.get('session')).browserLink,true);
+});
 test('GET previews load a token-free console without claiming or consuming a session',async()=>{
   let touched=false;
   const r=await worker.fetch(new Request('https://remote.test/remote/'),{SESSIONS:{get(){touched=true;}}});
   assert.equal(r.status,200);assert.equal(touched,false);
   const html=await r.text(); assert.match(html,/autoplay muted playsinline/); assert.doesNotMatch(html,/getUserMedia|captcha|password|Sign in/);
   assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.equal(r.headers.get('Cache-Control'),'no-store');
-  assert.match(await browserResponse('/remote/client.js').text(),/browser_ping/);
+  const clientScript=await browserResponse('/remote/client.js').text();
+  assert.match(clientScript,/browser_ping/);
+  assert.match(clientScript,/linkClientId/);
 });
 test('browser public origin accepts only a clean HTTPS origin and otherwise falls back safely',()=>{
   const request=new Request('https://worker.example/v1/browser-sessions');

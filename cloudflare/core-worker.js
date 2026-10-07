@@ -317,9 +317,9 @@ export default{
       const u=new URL(request.url);
       if(request.method==='GET'&&['/remote','/remote/','/remote/client.js'].includes(u.pathname))return browserResponse(u.pathname);
       if(request.method==='POST'&&u.pathname==='/v1/browser-sessions'){
-        const id=hex(rb(32)),hostToken=token(),controllerToken=token(),now=Date.now();
+        const id=hex(rb(32)),hostToken=token(),controllerToken=token(),browserClientId=crypto.randomUUID(),now=Date.now();
         const r=await sessions(env,id).initBrowser(id,await sha(hostToken),await sha(controllerToken),now);
-        return r.created?j({ok:true,sessionId:id,hostToken,controllerToken,expiresAtMs:now+BROWSER_SESSION_MS,browserBaseUrl:browserPublicOrigin(request,env)},201):fail(503,'allocation_failed','Try creating the link again.');
+        return r.created?j({ok:true,sessionId:id,hostToken,controllerToken,browserClientId,expiresAtMs:now+BROWSER_SESSION_MS,browserBaseUrl:browserPublicOrigin(request,env)},201):fail(503,'allocation_failed','Try creating the link again.');
       }
       if(request.method==="GET"&&u.pathname==="/healthz"){
         return j({ok:true,service:"aaris-remote-ice",backend:"cloudflare-durable-objects",version:3});
