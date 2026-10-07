@@ -103,6 +103,7 @@ export function browserMain(protocolFactory) {
   }
   async function connectPeer() {
     const ice = await api('ice', {});
+    if (stopped) return;
     pc = new RTCPeerConnection({ iceServers: ice.iceServers, bundlePolicy: 'max-bundle' });
     pc.ondatachannel = event => bindChannel(event.channel);
     pc.ontrack = event => {
@@ -257,10 +258,18 @@ export function browserMain(protocolFactory) {
   });
   // Deliberately no unload disconnect: refresh must be able to resume the link.
   message('Connecting to phone…');
-  (async () => {
-    const claimed = await api('browser-claim', { clientId, instanceId }); after = claimed.afterSequence;
-    await connectPeer(); if (!stopped) socket();
-  })().catch(report);
+  async function start() {
+    try {
+      const claimed = await api('browser-claim', { clientId, instanceId }); after = claimed.afterSequence;
+      if (stopped) return;
+      await connectPeer(); if (!stopped) socket();
+    } catch (error) {
+      if (stopped) return;
+      message('Connection unavailable • retrying automatically…');
+      reconnectTimer = setTimeout(start, Math.min(8000, 500 * 2 ** Math.min(retry++, 4)));
+    }
+  }
+  start();
 }
 
 export function browserResponse(path) {

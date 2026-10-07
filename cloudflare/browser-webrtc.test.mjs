@@ -12,7 +12,7 @@ const context = await browser.newContext({viewport:{width:1000,height:900}});
 const host = await context.newPage(), page = await context.newPage();
 const errors=[];page.on('pageerror',error=>errors.push(error.message));
 const sid='a'.repeat(64), token='b'.repeat(43), events=[];
-let socket, epoch=0, seq=0, ended=false;
+let socket, epoch=0, seq=0, ended=false, claimedInstance, claimCursor=0, iceRequests=0;
 await host.exposeFunction('publishHost',payload=>{
   const event={seq:++seq,senderRole:'host',...payload};events.push(event);
   socket?.send(JSON.stringify({kind:'signal_event',event}));
@@ -55,10 +55,15 @@ await page.route('https://remote.test/**',async route=>{
   }
   const reply=data=>route.fulfill({json:data});
   if(url.pathname.endsWith('/browser-claim')){
-    const cursor=seq;await reply({ok:true,afterSequence:cursor,browserEpoch:++epoch});
-    await host.evaluate(e=>window.startHost(e),epoch);return;
+    const instance=req.postDataJSON().instanceId,newDocument=instance!==claimedInstance;
+    if(newDocument){claimedInstance=instance;claimCursor=seq;epoch++;}
+    await reply({ok:true,afterSequence:claimCursor,browserEpoch:epoch});
+    if(newDocument)await host.evaluate(e=>window.startHost(e),epoch);return;
   }
-  if(url.pathname.endsWith('/ice')){await reply({iceServers:[]});return;}
+  if(url.pathname.endsWith('/ice')){
+    if(++iceRequests===1){await route.fulfill({status:503,json:{error:'temporary_upstream_failure'}});return;}
+    await reply({iceServers:[]});return;
+  }
   if(url.pathname.endsWith('/events')){
     const {kind,payload}=req.postDataJSON();const event={seq:++seq,senderRole:'controller',kind,payload};events.push(event);
     socket?.send(JSON.stringify({kind:'signal_event',event}));
@@ -81,6 +86,7 @@ const actionCount=()=>host.evaluate(()=>window.received.length);
 const waitActions=async n=>host.waitForFunction(n=>window.received.length>=n,n,{timeout:10000});
 try {
   await page.goto(`https://remote.test/remote/#${sid}.${token}`);await waitLive();
+  assert.equal(iceRequests,2,'Transient relay configuration failure must recover automatically');
   const rect=await page.locator('#surface').boundingBox();
   await page.mouse.click(rect.x+rect.width/2,rect.y+rect.height/2);await waitActions(1);
   const tap=await host.evaluate(()=>window.received[0]);assert.equal(tap.type,3);assert.ok(Math.abs(tap.x-.5)<.003);assert.ok(Math.abs(tap.y-.5)<.003);
@@ -98,5 +104,5 @@ try {
   assert.equal(await host.evaluate(()=>window.received.at(-1).sequence),'1');
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();assert.equal(ended,true);
   assert.deepEqual(errors,[]);
-  console.log('PASS: actual WebRTC video, binary tap/back/swipe/drag/long press/text, letterbox exclusion, fresh screenshot, refresh and disconnect');
+  console.log('PASS: startup retry, actual WebRTC video, binary tap/back/swipe/drag/long press/text, letterbox exclusion, fresh screenshot, refresh and disconnect');
 } finally { await browser.close(); }

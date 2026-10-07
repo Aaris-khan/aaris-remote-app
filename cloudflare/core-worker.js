@@ -263,10 +263,16 @@ export class AarisSession extends DurableObject{
     return new Response(null,{status:101,webSocket:client,...(instanceId?{headers:{'Sec-WebSocket-Protocol':'aaris-remote'}}:{})});
   }
   async webSocketMessage(ws,m){if(m==="ping"||m==="browser_ping"){
-    const a=ws.deserializeAttachment(),s=await this.session();
-    if(s?.browserLink&&a?.role==='controller'){
-      if(s.state==='CLOSED'||s.browser?.instanceId!==a.instanceId){ws.close(4009,'Controller replaced');return}
-      s.browser.lastSeen=Date.now();await this.ctx.storage.put('session',s);
+    const a=ws.deserializeAttachment();
+    if(a?.role==='controller'){
+      let valid=true;
+      await this.ctx.storage.transaction(async t=>{
+        const s=await t.get('session');
+        if(!s?.browserLink)return;
+        if(s.state==='CLOSED'||deadline(s)<=Date.now()||s.browser?.instanceId!==a.instanceId){valid=false;return}
+        s.browser.lastSeen=Date.now();await t.put('session',s);
+      });
+      if(!valid){ws.close(4009,'Controller replaced');return}
     }
     ws.send('pong');
   }}

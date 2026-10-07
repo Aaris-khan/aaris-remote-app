@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var browserLinkStatus: TextView
     private var browserSetupJob: Job? = null
     private var browserProjectionPending = false
+    private var browserProjectionSessionId: String? = null
     private val browserLinkListener: () -> Unit = {
         runOnUiThread {
             if (::browserLinkButton.isInitialized) {
@@ -101,9 +102,12 @@ class MainActivity : ComponentActivity() {
         }
     }
     private val browserScreenLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val expectedSessionId = browserProjectionSessionId
+        browserProjectionSessionId = null
         browserProjectionPending = false
         val ticket = BrowserLinkRuntime.ticket
-        if (ticket != null && result.resultCode == RESULT_OK && result.data != null) {
+        if (ticket == null || ticket.sessionId != expectedSessionId) return@registerForActivityResult
+        if (result.resultCode == RESULT_OK && result.data != null) {
             runCatching {
                 startForegroundService(Intent(this, ScreenShareService::class.java)
                     .setAction(ScreenShareService.ACTION_START)
@@ -213,6 +217,7 @@ class MainActivity : ComponentActivity() {
         aiProjectionPending = savedInstanceState?.getBoolean("aiProjectionPending") ?: false
         aiLinkRegistered = savedInstanceState?.getBoolean("aiLinkRegistered") ?: false
         browserProjectionPending = savedInstanceState?.getBoolean("browserProjectionPending") == true && BrowserLinkRuntime.ticket != null
+        browserProjectionSessionId = savedInstanceState?.getString("browserProjectionSessionId")
         // A registration coroutine does not survive Activity recreation. Do
         // not restore a disabled Connect button with no job able to finish it.
         if (!aiLinkRegistered && !aiProjectionPending) aiSetupPending = false
@@ -2401,6 +2406,7 @@ class MainActivity : ComponentActivity() {
         outState.putBoolean("aiProjectionPending", aiProjectionPending)
         outState.putBoolean("aiLinkRegistered", aiLinkRegistered)
         outState.putBoolean("browserProjectionPending", browserProjectionPending)
+        outState.putString("browserProjectionSessionId", browserProjectionSessionId)
         super.onSaveInstanceState(outState)
     }
 
@@ -2447,6 +2453,7 @@ class MainActivity : ComponentActivity() {
                     cancelBrowserLink("Accessibility is still starting. Try the AI link button again."); return@launch
                 }
                 browserProjectionPending = true
+                browserProjectionSessionId = ticket.sessionId
                 BrowserLinkRuntime.update("Link copied • allow entire-screen sharing, then paste the link into your AI")
                 val manager = getSystemService(MediaProjectionManager::class.java)
                 browserScreenLauncher.launch(if (Build.VERSION.SDK_INT >= 34)
@@ -2471,6 +2478,7 @@ class MainActivity : ComponentActivity() {
         SessionCoordinator.close(id)
         BackendSessionCloser.close(this, id)
         browserProjectionPending = false
+        browserProjectionSessionId = null
         refreshIdleUi()
     }
 

@@ -185,6 +185,7 @@ class HostWebRtcSession(
         listener = this
     )
     @Volatile private var peer = createPeer()
+    private val peerSwapLock = Any()
     private var browserEpoch = 0L
     private var browserOfflineAtMs = 0L
 
@@ -649,7 +650,12 @@ class HostWebRtcSession(
                  */
                 noteRemoteInteraction()
 
+                val commandPeer = peer
                 AssistAccessibilityService.dispatch(command) { applied ->
+                    // An asynchronous gesture from the previous browser must
+                    // never ACK a recycled sequence number on its replacement.
+                    if (browserLink && (closed.get() || peer !== commandPeer ||
+                        !SessionRuntime.isAuthorized(sessionId, command.leaseSecret, command.generation))) return@dispatch
                     if (applied) {
                         /*
                          * Arm a causal refresh at the exact applied-input point.
@@ -1660,16 +1666,18 @@ class HostWebRtcSession(
             browserOfflineAtMs = 0L
             // Recreate only transport. Never consume the projection grant twice
             // or allocate another capture/encoder pipeline on browser refresh.
-            policyHandler.post {
-                if (closed.get()) return@post
-                peer.close()
-                if (closed.get()) return@post
-                peer = createPeer()
-                val effective = effectiveCaptureProfile(profile)
-                val policy = InteractiveVideoPolicy.forState(profile.tier, false)
-                peer.addLocalVideoTrack(capture.videoTrack, profile.maxVideoBitrateBps, effective.fps,
-                    policy.preserveResolution, policy.motionPriority)
-                peer.start()
+            policyHandler.post replaceTransport@{
+                synchronized(peerSwapLock) {
+                    if (closed.get()) return@replaceTransport
+                    peer.close()
+                    if (closed.get()) return@replaceTransport
+                    peer = createPeer()
+                    val effective = effectiveCaptureProfile(profile)
+                    val policy = InteractiveVideoPolicy.forState(profile.tier, false)
+                    peer.addLocalVideoTrack(capture.videoTrack, profile.maxVideoBitrateBps, effective.fps,
+                        policy.preserveResolution, policy.motionPriority)
+                    peer.start()
+                }
                 displayHandler.post {
                     if (!closed.get()) {
                         displayHandler.removeCallbacks(connectionWatchdog)
@@ -1702,7 +1710,7 @@ class HostWebRtcSession(
             capture.videoTrack.removeSink(captureProbe)
         }
         runCatching { fallbackStreamer.close() }
-        runCatching { peer.close() }
+        synchronized(peerSwapLock) { runCatching { peer.close() } }
         runCatching { capture.close() }
         runCatching { policyThread.quitSafely() }
 

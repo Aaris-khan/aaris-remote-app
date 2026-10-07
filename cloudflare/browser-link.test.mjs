@@ -64,6 +64,14 @@ test('concurrent claims admit one controller and browser heartbeat protects its 
   await f.room.webSocketMessage({deserializeAttachment:()=>({role:'controller',instanceId:instance}),send:v=>pong=v},'browser_ping');
   assert.equal(pong,'pong'); assert.ok((await f.storage.get('session')).browser.lastSeen>=f.now);
 });
+test('a concurrent old socket heartbeat cannot restore the replaced controller',async()=>{
+  const f=await fixture();await f.room.claimBrowser(f.c,client,instance,f.now);
+  const next=crypto.randomUUID();let closed;
+  const old={deserializeAttachment:()=>({role:'controller',instanceId:instance}),send(){},close:code=>closed=code};
+  await Promise.all([f.room.claimBrowser(f.c,client,next,f.now+1),f.room.webSocketMessage(old,'browser_ping')]);
+  assert.equal((await f.storage.get('session')).browser.instanceId,next);
+  assert.equal((await f.storage.get('session')).browser.epoch,2);assert.equal(closed,4009);
+});
 test('expired owner can be replaced but expired or stopped sessions cannot be resumed',async()=>{
   const f=await fixture(); await f.room.claimBrowser(f.c,client,instance,f.now);
   assert.equal((await f.room.claimBrowser(f.c,crypto.randomUUID(),crypto.randomUUID(),f.now+46_000)).ok,true);
