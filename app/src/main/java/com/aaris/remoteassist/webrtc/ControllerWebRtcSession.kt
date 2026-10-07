@@ -175,10 +175,7 @@ class ControllerWebRtcSession(
                     renderedFrames = window.renderedFrames,
                     maxGapMs = window.maxGapMs
                 )
-            ),
-            // Presentation telemetry is freshness-only: stale retransmits must
-            // never sit ahead of the user's next authoritative control packet.
-            freshnessSensitive = true
+            )
         )
     }
 
@@ -205,8 +202,7 @@ class ControllerWebRtcSession(
                     feedbackSequence.incrementAndGet(),
                     refresh
                 )
-            ),
-            freshnessSensitive = true
+            )
         )
     }
 
@@ -244,10 +240,7 @@ class ControllerWebRtcSession(
                     generation = display.generation,
                     sequence = feedbackSequence.incrementAndGet()
                 )
-            ),
-            // Tiny proof-of-glass packet. Losing an old heartbeat is harmless;
-            // retransmitting it ahead of touch input would be actively harmful.
-            freshnessSensitive = true
+            )
         )
     }
 
@@ -694,8 +687,7 @@ class ControllerWebRtcSession(
                             commandAckMs = sample.commandAckMs,
                             postAckPresentMs = sample.postAckPresentMs
                         )
-                    ),
-                freshnessSensitive = true
+                    )
             )
 
             val now = SystemClock.elapsedRealtime()
@@ -757,10 +749,7 @@ class ControllerWebRtcSession(
                         recent.dropped ?: -1,
                         recent.freezes ?: -1
                     )
-                ),
-                // Decoder health is periodic freshness telemetry. Once the live lane
-                // exists, dropping an old sample beats head-of-line blocking input.
-                freshnessSensitive = true
+                )
             )
         }
         val now = android.os.SystemClock.elapsedRealtime()
