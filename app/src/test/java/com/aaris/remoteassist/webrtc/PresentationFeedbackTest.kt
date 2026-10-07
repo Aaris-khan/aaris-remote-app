@@ -96,9 +96,15 @@ class PresentationFeedbackTest {
         assertEquals(38, merged.presentedFrames)
         assertEquals(38.0, merged.presentedFps!!, 0.001)
         assertEquals(72, merged.maxRenderGapMs)
-        val liveness = checkNotNull(feedback.consume(42, 2, 201))
-        assertEquals(81, liveness.presentationAgeMs)
-        assertNull(liveness.presentedFps)
+        val held = checkNotNull(feedback.consume(42, 2, 201))
+        assertEquals(81, held.presentationAgeMs)
+        // The same measured EGL window is retained briefly to bridge the
+        // independent render/stats clocks, but is explicitly marked held so
+        // adaptation cannot count it as a second proof or pressure event.
+        assertEquals(38.0, held.presentedFps!!, 0.001)
+        assertEquals(1L, held.presentationSampleSequence)
+        assertEquals(81, held.presentationSampleAgeMs)
+        assertFalse(held.presentationSampleFresh)
         assertFalse(feedback.accept(display, 42, 3, 300))
     }
 
