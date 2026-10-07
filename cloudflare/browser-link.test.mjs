@@ -10,7 +10,7 @@ const source = (await fs.readFile(new URL('./core-worker.js', import.meta.url), 
   .replace('import { DurableObject } from "cloudflare:workers";', 'class DurableObject { constructor(ctx, env) { this.ctx=ctx; this.env=env; } }')
   .replace('"./browser-console.js"', JSON.stringify(new URL('./browser-console.js', import.meta.url).href));
 globalThis.WebSocketRequestResponsePair = class {};
-const { default: worker, AarisSession } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { default: worker, AarisSession, browserPublicOrigin } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 class Storage {
   values = new Map(); queue = Promise.resolve();
   async get(k) { return structuredClone(this.values.get(k)); }
@@ -42,6 +42,18 @@ test('GET previews load a token-free console without claiming or consuming a ses
   const html=await r.text(); assert.match(html,/autoplay muted playsinline/); assert.doesNotMatch(html,/getUserMedia|captcha|password|Sign in/);
   assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.equal(r.headers.get('Cache-Control'),'no-store');
   assert.match(await browserResponse('/remote/client.js').text(),/browser_ping/);
+});
+test('browser public origin accepts only a clean HTTPS origin and otherwise falls back safely',()=>{
+  const request=new Request('https://worker.example/v1/browser-sessions');
+  assert.equal(browserPublicOrigin(request,{}),'https://worker.example');
+  assert.equal(browserPublicOrigin(request,{BROWSER_PUBLIC_ORIGIN:'https://remote.example/'}),'https://remote.example');
+  for(const value of [
+    'http://remote.example',
+    'https://user:pass@remote.example',
+    'https://remote.example/path',
+    'https://remote.example/?query=1',
+    'not a url'
+  ]) assert.equal(browserPublicOrigin(request,{BROWSER_PUBLIC_ORIGIN:value}),'https://worker.example');
 });
 test('claim is idempotent, refresh rotates epoch, another controller is refused while owner is live',async()=>{
   const f=await fixture();
