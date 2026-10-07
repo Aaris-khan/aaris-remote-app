@@ -182,8 +182,33 @@ data class VideoHealthSnapshot(
                     (it.members["selected"] == true || it.members["nominated"] == true) }
             val localCandidate = pair?.members?.get("localCandidateId")?.toString()?.let(stats::get)
             val remoteCandidate = pair?.members?.get("remoteCandidateId")?.toString()?.let(stats::get)
-            val candidatePath = localCandidate?.let {
-                "${it.members["candidateType"] ?: "?"}/${remoteCandidate?.members?.get("candidateType") ?: "?"} ${it.members["protocol"] ?: "?"}"
+            val candidatePath = localCandidate?.let { local ->
+                buildString {
+                    append(local.members["candidateType"] ?: "?")
+                    append("/")
+                    append(
+                        remoteCandidate
+                            ?.members
+                            ?.get("candidateType")
+                            ?: "?"
+                    )
+                    append(" ")
+                    append(local.members["protocol"] ?: "?")
+                    local.members["relayProtocol"]
+                        ?.toString()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let {
+                            append(" relay=")
+                            append(it)
+                        }
+                    local.members["networkType"]
+                        ?.toString()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let {
+                            append(" net=")
+                            append(it)
+                        }
+                }
             }
             fun meanMs(total: String, count: String): Double? {
                 val seconds = decimal(members[total]) ?: return null
