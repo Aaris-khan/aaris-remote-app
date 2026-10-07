@@ -32,6 +32,9 @@ export function browserMain(protocolFactory) {
       const key = `aaris-browser-${sessionId}`;
       clientId = sessionStorage.getItem(key) || clientId; sessionStorage.setItem(key, clientId);
     } catch { /* Legacy links still connect once when browser storage is unavailable. */ }
+    // Canonicalize old two-part links immediately. Stateless/cloud browsers can
+    // retain the upgraded URL and reclaim the same controller identity later.
+    try { history.replaceState(null, '', `#${sessionId}.${capability}.${clientId}`); } catch {}
   }
   const base = `/v1/sessions/${sessionId}`;
   async function api(action, data) {
