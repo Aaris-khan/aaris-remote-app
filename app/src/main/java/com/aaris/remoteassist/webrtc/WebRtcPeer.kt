@@ -61,6 +61,7 @@ class WebRtcPeer(
     private val handler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val connectivity = PeerConnectivityTracker()
+    private val liveIceRecoveryPolicy = LiveIceRecoveryPolicy()
     private val connectivityManager =
         appContext.getSystemService(ConnectivityManager::class.java)
     private val networkLock = Any()
@@ -1124,8 +1125,20 @@ class WebRtcPeer(
             peerConnection.signalingState() ==
             PeerConnection.SignalingState.STABLE
         ) {
+            val nowMs = monotonicNowMs()
+            val mode = liveIceRecoveryPolicy.next(nowMs)
+            val relayOnly =
+                mode == LiveIceRecoveryMode.RELAY_ONLY
+            listener.onDiagnostic(
+                when (mode) {
+                    LiveIceRecoveryMode.ALL_PATHS ->
+                        "Live ICE recovery → ALL paths • direct UDP preferred, TURN fallback armed"
+                    LiveIceRecoveryMode.RELAY_ONLY ->
+                        "Live ICE recovery → RELAY escalation • repeated transport failure"
+                }
+            )
             requestIceRestart(
-                forceRelay = true
+                forceRelay = relayOnly
             )
         }
     }
@@ -1369,6 +1382,7 @@ class WebRtcPeer(
         lastRemoteAnswerAppliedAtMs = 0L
         remoteDescriptionInFlight.set(false)
         remoteCandidates.reset()
+        liveIceRecoveryPolicy.reset()
     }
 
     private fun disposeDataChannel(channel: DataChannel) {
