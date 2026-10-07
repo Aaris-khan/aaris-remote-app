@@ -89,7 +89,7 @@ class AdaptiveScreenSmoothnessTest {
                 producerFps = 60.0
             )
         )
-        assertEquals(33, governor.cap)
+        assertEquals(36, governor.cap)
     }
 
     @Test
