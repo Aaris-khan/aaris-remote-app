@@ -43,6 +43,8 @@ class GamingSmoothnessLabTest {
         val minFinalCap: Int,
         val minRecoveredCap: Int,
         val recoveryDeadlineMs: Long?,
+        val milestoneCap: Int? = null,
+        val milestoneDeadlineMs: Long? = null,
         val maxPostRecoveryLagWindows: Int,
         val minTailPresentFps: Double
     )
@@ -101,6 +103,8 @@ class GamingSmoothnessLabTest {
                     minFinalCap = 55,
                     minRecoveredCap = 55,
                     recoveryDeadlineMs = null,
+                    milestoneCap = 60,
+                    milestoneDeadlineMs = 16_000,
                     maxPostRecoveryLagWindows = 1,
                     minTailPresentFps = 50.0
                 ),
@@ -119,6 +123,8 @@ class GamingSmoothnessLabTest {
                     minFinalCap = 45,
                     minRecoveredCap = 45,
                     recoveryDeadlineMs = null,
+                    milestoneCap = 50,
+                    milestoneDeadlineMs = 14_000,
                     maxPostRecoveryLagWindows = 2,
                     minTailPresentFps = 40.0
                 ),
@@ -218,6 +224,26 @@ class GamingSmoothnessLabTest {
                     failures +=
                         "${scenario.name}: recovery to ${scenario.minRecoveredCap}fps " +
                             "missed deadline ${deadline}ms (actual=$recoveredAt)"
+                }
+            }
+
+            if (
+                scenario.milestoneCap != null &&
+                scenario.milestoneDeadlineMs != null
+            ) {
+                val reachedAt =
+                    rows.firstOrNull {
+                        it.targetFps >= scenario.milestoneCap &&
+                            !it.lag
+                    }?.timeMs
+                if (
+                    reachedAt == null ||
+                    reachedAt > scenario.milestoneDeadlineMs
+                ) {
+                    failures +=
+                        "${scenario.name}: ${scenario.milestoneCap}fps clean-ramp " +
+                            "missed ${scenario.milestoneDeadlineMs}ms deadline " +
+                            "(actual=$reachedAt)"
                 }
             }
         }
