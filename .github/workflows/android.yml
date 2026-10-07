@@ -9,6 +9,16 @@ on:
   pull_request:
 
 jobs:
+  browser-cloudflare-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: python3 -m pip install --quiet "websockets==15.0.1"
+      - run: python3 cloudflare/smoke-browser-link.py
+
   browser-webrtc:
     runs-on: ubuntu-latest
     timeout-minutes: 6

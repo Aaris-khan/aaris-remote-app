@@ -72,7 +72,13 @@ Checks:
   refresh/new epoch and disconnect. This is not an Android-device test.
 - Repository CI also runs Android tests, debug/release lint, APK builds, the
   gaming governor lab, the existing MCP tests and the live legacy backend smoke.
+- `python3 cloudflare/smoke-browser-link.py` checks the deployed browser page,
+  claims, native/browser WebSocket handshakes, SDP, TURN, refresh and revocation
+  with a synthetic host. Its temporary session is closed in `finally`.
 
 The Worker deployment must include `core-worker.js`, `browser-console.js` and
 `browser-protocol.js` as ES modules, preserving its existing Durable Object and
 TURN secret bindings. No namespace migration is required.
+Declare both existing exports as `{"type":"durable-object","storage":"sqlite"}`
+in upload metadata (`AarisSession` and `PairingDirectory`) and inherit the four
+existing bindings with strict validation. Do not create replacement namespaces.
