@@ -37,17 +37,27 @@ await host.evaluate(()=>{
     const peer=new RTCPeerConnection({iceServers:[]});window.peer=peer;
     const id=`host:${epoch}`,secret=-9007199254740997n+BigInt(epoch);
     peer.addTrack(track,new MediaStream([track]));
-    const dc=peer.createDataChannel('control-v1');peer.createDataChannel('control-telemetry-v1',{ordered:false,maxRetransmits:1});
-    dc.binaryType='arraybuffer';
+    const dc=peer.createDataChannel('control-v1');
+    const live=peer.createDataChannel('control-live-v1',{ordered:false,maxRetransmits:0});
+    peer.createDataChannel('control-telemetry-v1',{ordered:false,maxRetransmits:1});
+    dc.binaryType='arraybuffer';live.binaryType='arraybuffer';window.liveOpen=false;
+    live.onopen=()=>{window.liveOpen=true;};
     dc.onopen=()=>{const b=new ArrayBuffer(22),v=new DataView(b);v.setUint8(0,1);v.setUint8(1,1);v.setBigInt64(2,secret);v.setInt32(10,epoch);v.setInt32(14,1080);v.setInt32(18,2160);dc.send(b);};
-    dc.onmessage=e=>{
+    const receive=(e,lane)=>{
       const v=new DataView(e.data),type=v.getUint8(1);
       if([2,14,15,19,20,21,22,23].includes(type))return;
       if(v.getBigInt64(2)!==secret||v.getInt32(10)!==epoch)throw new Error('Stale lease reached synthetic host');
-      const sequence=v.getBigInt64(14);
-      window.received.push({epoch,type,sequence:sequence.toString(),x:type===3?v.getUint16(22)/65535:null,y:type===3?v.getUint16(24)/65535:null});
+      const sequence=v.getBigInt64(14),phase=type===17?v.getUint8(30):null;
+      window.received.push({
+        epoch,type,sequence:sequence.toString(),lane,phase,
+        x:type===3?v.getUint16(22)/65535:null,
+        y:type===3?v.getUint16(24)/65535:null
+      });
+      if(type===17&&phase===1)return;
       const b=new ArrayBuffer(11),a=new DataView(b);a.setUint8(0,1);a.setUint8(1,13);a.setBigInt64(2,sequence);a.setUint8(10,1);dc.send(b);
     };
+    dc.onmessage=e=>receive(e,'reliable');
+    live.onmessage=e=>receive(e,'live');
     peer.onicecandidate=e=>{if(e.candidate)window.publishHost({kind:'candidate',payload:{mid:e.candidate.sdpMid,mLine:e.candidate.sdpMLineIndex,sdp:e.candidate.candidate,negotiationId:id}});};
     await peer.setLocalDescription(await peer.createOffer());
     await window.publishHost({kind:'description',payload:{type:'offer',sdp:peer.localDescription.sdp,negotiationId:id}});
@@ -109,11 +119,27 @@ try {
   await page.mouse.click(rect.x+3,rect.y+rect.height/2);await page.waitForTimeout(150);assert.equal(await actionCount(),1,'Letterbox click must not reach phone');
   await page.getByRole('button',{name:'Back',exact:true}).click();await waitActions(2);
   await page.getByRole('button',{name:'Swipe up',exact:true}).click();await waitActions(3);
-  await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height*.7);await page.mouse.down();await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height*.3,{steps:12});await page.mouse.up();await waitActions(4);
-  await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height/2);await page.mouse.down();await page.waitForTimeout(600);await page.mouse.up();await waitActions(5);
-  await page.getByLabel('Text to enter on phone').fill('Hello phone');await page.getByRole('button',{name:'Send text',exact:true}).click();await waitActions(6);
+  await host.waitForFunction(()=>window.liveOpen===true,{}, {timeout:10000});
+  const beforeDrag=await actionCount();
+  await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height*.72);await page.mouse.down();
+  await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height*.62);await page.waitForTimeout(30);
+  await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height*.50);await page.waitForTimeout(30);
+  await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height*.38);await page.waitForTimeout(30);
+  await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height*.28);await page.mouse.up();
+  await host.waitForFunction(n=>window.received.slice(n).some(r=>r.type===17&&r.phase===2),beforeDrag,{timeout:10000});
+  const streamed=await host.evaluate(n=>window.received.slice(n).filter(r=>r.type===17),beforeDrag);
+  assert.equal(streamed[0].phase,0,'Gesture START must be first');
+  assert.equal(streamed[0].lane,'reliable','Gesture START must be reliable');
+  assert.equal(streamed.at(-1).phase,2,'Gesture END must be last');
+  assert.equal(streamed.at(-1).lane,'reliable','Gesture END must be reliable');
+  assert.ok(streamed.some(r=>r.phase===1&&r.lane==='live'),'Gesture CONTINUE must use freshness lane');
+  const afterDrag=await actionCount();
+  await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height/2);await page.mouse.down();await page.waitForTimeout(600);await page.mouse.up();await waitActions(afterDrag+1);
+  const afterLong=await actionCount();
+  await page.getByLabel('Text to enter on phone').fill('Hello phone');await page.getByRole('button',{name:'Send text',exact:true}).click();await waitActions(afterLong+1);
   await page.getByRole('button',{name:'Fresh screenshot',exact:true}).click();await page.locator('#snapshot').waitFor({state:'visible'});
-  assert.deepEqual(await host.evaluate(()=>window.received.map(r=>r.type)),[3,6,5,12,4,10]);
+  const nonStreamTypes=await host.evaluate(()=>window.received.filter(r=>r.type!==17).map(r=>r.type));
+  assert.deepEqual(nonStreamTypes,[3,6,5,4,10]);
 
   // Universal cloud-AI path: the model only pastes JSON and presses Execute.
   // No Accessibility semantic target is available; exact coordinates must still
@@ -137,10 +163,11 @@ try {
   assert.ok(Math.abs(agentActions[1].x-.5)<1e-9);
   assert.ok(Math.abs(agentActions[1].y-.5)<1e-9);
   await page.reload();await waitLive();
-  await page.getByRole('button',{name:'Home',exact:true}).click();await waitActions(7);
+  const beforeHome=await actionCount();
+  await page.getByRole('button',{name:'Home',exact:true}).click();await waitActions(beforeHome+1);
   assert.equal(await host.evaluate(()=>window.received.at(-1).epoch),2,'Refresh must have a new control epoch');
   assert.equal(await host.evaluate(()=>window.received.at(-1).sequence),'1');
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();assert.equal(ended,true);
   assert.deepEqual(errors,[]);
-  console.log('PASS: startup retry, actual WebRTC video, binary tap/back/swipe/drag/long press/text, letterbox exclusion, universal AI JSON normalized/pixel taps, fresh screenshot, refresh and disconnect');
+  console.log('PASS: startup retry, actual WebRTC video, tap/back/swipe/long press/text, live START-CONTINUE-END gesture streaming, letterbox exclusion, universal AI JSON normalized/pixel taps, refresh and disconnect');
 } finally { await browser.close(); }
