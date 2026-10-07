@@ -21,6 +21,50 @@ jobs:
           node-version: "24"
       - run: node cloudflare/mcp-worker.test.mjs
 
+  gaming-smoothness-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager "platforms;android-36"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.6.0"
+      - name: Run production-governor gaming matrix
+        run: >
+          gradle :app:testDebugUnitTest
+          --tests com.aaris.remoteassist.webrtc.GamingSmoothnessLabTest
+          --stacktrace
+      - name: Render synthetic smoothness videos
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRACE="app/build/reports/gaming-smoothness-lab/trace.csv"
+          if [ ! -f "$TRACE" ]; then
+            echo "Smoothness trace was not produced"
+            exit 0
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y ffmpeg
+          fi
+          python3 tools/render_gaming_smoothness_lab.py             "$TRACE"             app/build/reports/gaming-smoothness-lab/videos
+          cat app/build/reports/gaming-smoothness-lab/summary.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: Aaris-Gaming-Smoothness-Lab
+          path: app/build/reports/gaming-smoothness-lab
+          if-no-files-found: warn
+
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 20
