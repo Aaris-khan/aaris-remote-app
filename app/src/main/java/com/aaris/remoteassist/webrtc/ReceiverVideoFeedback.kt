@@ -2,7 +2,15 @@ package com.aaris.remoteassist.webrtc
 
 import com.aaris.remoteassist.control.ControlPacket
 
-/** One-use, lease-bound feedback. Old generations and buffered/replayed reports cannot tune video. */
+/**
+ * Lease-bound receiver feedback.
+ *
+ * Decoder/stat windows remain one-use. The most recent measured EGL cadence
+ * may be retained for a short bounded interval solely to bridge independent
+ * render/getStats clock phases; sequence + fresh/held metadata prevents that
+ * retained sample from tuning video twice. Old generations and replayed packets
+ * still cannot tune video.
+ */
 class ReceiverVideoFeedback {
     private var identity: Pair<Long, Int>? = null
     private var lastSequence = 0L
