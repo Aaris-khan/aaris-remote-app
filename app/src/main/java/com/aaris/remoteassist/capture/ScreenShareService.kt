@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import com.aaris.remoteassist.ai.BrowserLinkRuntime
 import com.aaris.remoteassist.diagnostics.ConnectionFlightRecorder
 import com.aaris.remoteassist.pairing.BackendSessionCloser
 import com.aaris.remoteassist.pairing.CloudflarePairingGateway
@@ -36,6 +37,7 @@ class ScreenShareService : Service() {
     @Volatile
     private var activeSessionId: String? = null
     private var hostSession: HostWebRtcSession? = null
+    private var browserLink = false
 
     override fun onCreate() {
         super.onCreate()
@@ -58,6 +60,8 @@ class ScreenShareService : Service() {
         val id = activeSessionId
         activeSessionId = null
         ScreenShareRuntime.clear(id)
+        BrowserLinkRuntime.clear(id)
+        mainHandler.removeCallbacksAndMessages(null)
 
         hostSession?.close()
         hostSession = null
@@ -87,6 +91,12 @@ class ScreenShareService : Service() {
             return
         }
 
+        if (intent.getBooleanExtra(EXTRA_BROWSER_LINK, false) && BrowserLinkRuntime.ticket?.sessionId != sessionId) {
+            BackendSessionCloser.close(this, sessionId)
+            stopSelf()
+            return
+        }
+
         val resultCode = intent.getIntExtra(
             EXTRA_RESULT_CODE,
             Int.MIN_VALUE
@@ -110,6 +120,7 @@ class ScreenShareService : Service() {
         }
 
         activeSessionId = sessionId
+        browserLink = intent.getBooleanExtra(EXTRA_BROWSER_LINK, false)
         ConnectionFlightRecorder.pass(
             sessionId,
             "Screen-share permission result received"
@@ -125,11 +136,21 @@ class ScreenShareService : Service() {
                 "Foreground MediaProjection service could not start"
             )
             ScreenShareRuntime.clear(sessionId)
+            BrowserLinkRuntime.clear(sessionId)
             activeSessionId = null
             BackendSessionCloser.close(this, sessionId)
             SessionCoordinator.close(sessionId)
             stopSelf()
             return
+        }
+
+        if (browserLink) {
+            BrowserLinkRuntime.started(sessionId)
+            // Backend expiry and local expiry both work while the Activity is
+            // hidden. Network loss cannot extend this sharing grant indefinitely.
+            mainHandler.postDelayed({
+                if (activeSessionId == sessionId) stopActiveSession("ai_link_expired")
+            }, 2 * 60 * 60 * 1000L)
         }
 
         val grant = ProjectionGrant(
@@ -252,6 +273,7 @@ class ScreenShareService : Service() {
                 context = this,
                 sessionId = sessionId,
                 projectionGrant = grant,
+                browserLink = browserLink,
                 listener = object : HostWebRtcSession.Listener {
                     override fun onLive() {
                         ConnectionFlightRecorder.pass(
@@ -261,6 +283,7 @@ class ScreenShareService : Service() {
                         mainHandler.post {
                             if (activeSessionId == sessionId) {
                                 updateForegroundNotification(isLive = true)
+                                if (browserLink) BrowserLinkRuntime.update("AI link connected • tap Stop AI Link any time")
                             }
                         }
                         publishBackendLive(sessionId)
@@ -268,7 +291,10 @@ class ScreenShareService : Service() {
 
                     override fun onConnectivityChanged(
                         connected: Boolean
-                    ) = Unit
+                    ) {
+                        if (browserLink) BrowserLinkRuntime.update(if (connected)
+                            "AI link connected • tap Stop AI Link any time" else "AI browser reconnecting • control paused")
+                    }
 
                     override fun onProjectionStopped() {
                         mainHandler.post {
@@ -392,6 +418,8 @@ class ScreenShareService : Service() {
         val sessionId = activeSessionId
         activeSessionId = null
         ScreenShareRuntime.clear(sessionId)
+        BrowserLinkRuntime.clear(sessionId)
+        mainHandler.removeCallbacksAndMessages(null)
 
         hostSession?.close()
         hostSession = null
@@ -452,13 +480,17 @@ class ScreenShareService : Service() {
         )
 
         val title =
-            if (isLive) {
+            if (browserLink) {
+                "Aaris Remote • AI link sharing"
+            } else if (isLive) {
                 "Aaris Remote is sharing"
             } else {
                 "Aaris Remote is preparing"
             }
         val message =
-            if (isLive) {
+            if (browserLink) {
+                "Your AI link can view and control this phone. Tap STOP any time."
+            } else if (isLive) {
                 "Remote support is live. Tap STOP any time."
             } else {
                 "Setting up the secure connection. Tap STOP any time."
@@ -508,6 +540,7 @@ class ScreenShareService : Service() {
         const val EXTRA_SESSION_ID = "session_id"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_CAPTURE_DATA = "capture_data"
+        const val EXTRA_BROWSER_LINK = "browser_link"
 
         private const val CHANNEL_ID = "remote_session"
         private const val NOTIFICATION_ID = 4107
