@@ -199,6 +199,25 @@ class HostWebRtcSession(
             policyHandler.post {
                 if (!closed.get()) handleSourceMotionPulse()
             }
+        },
+        onSourceGeometryChanged = { observedWidth, observedHeight ->
+            /*
+             * Fullscreen games can rotate MediaProjection before some OEMs
+             * deliver DisplayManager.onDisplayChanged(). Use only an aspect
+             * transition as a self-heal trigger; the UI/display lane remains
+             * the sole owner that reads CaptureProfile and bumps generation.
+             */
+            val current = profile
+            val observedLandscape = observedWidth > observedHeight
+            val logicalLandscape =
+                current.displayWidthPx > current.displayHeightPx
+            if (observedLandscape != logicalLandscape) {
+                displayHandler.post {
+                    if (!closed.get()) {
+                        refreshDisplayProfile()
+                    }
+                }
+            }
         }
     )
 
