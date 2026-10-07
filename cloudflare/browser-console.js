@@ -9,7 +9,7 @@ export function browserMain(protocolFactory) {
   const query = new URLSearchParams(location.search);
   const linkValue = query.has('session') ? `${query.get('session')}.${query.get('access')}${query.get('client') ? '.' + query.get('client') : ''}` : location.hash.slice(1);
   const match = linkValue.match(/^([a-f0-9]{64})\.([A-Za-z0-9_-]{43})(?:\.([a-f0-9-]{36}))?$/);
-  let stopped = false, ws, pc, control, hello, sequence = 0n, after = 0;
+  let stopped = false, ws, pc, control, liveControl, hello, sequence = 0n, after = 0;
   let remoteId, localId, localReady = false, localCandidates = [], remoteCandidates = new Map();
   let signalChain = Promise.resolve(), publishChain = Promise.resolve(), reconnectTimer, retry = 0;
   let busy = false, pending = null, pointer = null, lastFrameAt = 0, rendered = 0, videoReadyGeneration = -1;
@@ -312,6 +312,11 @@ export function browserMain(protocolFactory) {
   const run = (action, args) => act(action, args).catch(report);
   function bindChannel(channel) {
     if (channel.label === 'control-telemetry-v1') { telemetry = channel; return; }
+    if (channel.label === 'control-live-v1') {
+      liveControl = channel; channel.binaryType = 'arraybuffer';
+      channel.onclose = () => { if (liveControl === channel) liveControl = null; };
+      return;
+    }
     if (channel.label !== 'control-v1') return;
     control = channel; channel.binaryType = 'arraybuffer';
     channel.onmessage = event => {
@@ -423,28 +428,101 @@ export function browserMain(protocolFactory) {
     requestAnimationFrame(capture);
   };
   $('disconnect').onclick = async () => { try { await api('close', {}); } catch (error) { report(error); } finally { end('Disconnected. Create a new link on the phone.'); } };
-  const point = event => wire.point(event.clientX, event.clientY, surface.getBoundingClientRect(), fresh() ? video.videoWidth : fallback.naturalWidth, fresh() ? video.videoHeight : fallback.naturalHeight);
+  const pointAt = (clientX, clientY) => wire.point(clientX, clientY, surface.getBoundingClientRect(), fresh() ? video.videoWidth : fallback.naturalWidth, fresh() ? video.videoHeight : fallback.naturalHeight);
+  const point = event => pointAt(event.clientX, event.clientY);
+  const nextSequence = () => (sequence += 1n);
+  const newGestureStreamId = () => (BigInt(Date.now()) << 16n) | BigInt(1 + Math.floor(Math.random() * 65534));
+  const segmentDuration = ms => Math.max(16, Math.min(56, Math.round(ms)));
+  function sendGestureSegment(state, phase, points, elapsedMs) {
+    if (!fresh() || state.hello !== hello || !control || control.readyState !== 'open') return false;
+    const seq = nextSequence();
+    const packet = wire.gestureStream(hello, seq, state.streamId, phase, points.slice(-8), segmentDuration(elapsedMs));
+    if (phase === 'continue') {
+      const lane = liveControl?.readyState === 'open' ? liveControl : control;
+      if (!lane || lane.bufferedAmount >= 512) return false;
+      lane.send(packet);
+      return true;
+    }
+    if (control.bufferedAmount >= 4096) return false;
+    control.send(packet);
+    return true;
+  }
+  function appendPointerSamples(state, event) {
+    const samples = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [event];
+    for (const sample of samples) {
+      const p = pointAt(sample.clientX, sample.clientY);
+      if (!p) continue;
+      state.distance = Math.max(state.distance, Math.hypot(sample.clientX - state.x, sample.clientY - state.y));
+      const previous = state.points.at(-1);
+      if (!previous || Math.hypot(p.x - previous.x, p.y - previous.y) > 0.0008) {
+        if (state.points.length < 96) state.points.push(p); else state.points[95] = p;
+      }
+      state.last = p;
+    }
+  }
+  function maybeStreamPointer(state, now) {
+    if (!fresh() || state.hello !== hello || state.distance < 7 || !state.last) return;
+    if (!state.streaming) {
+      state.streamId = newGestureStreamId();
+      if (sendGestureSegment(state, 'start', [state.points[0], state.last], now - state.at)) {
+        state.streaming = true;
+        state.lastSentAt = now;
+        state.lastSentIndex = state.points.length - 1;
+      }
+      return;
+    }
+    if (now - state.lastSentAt < 16) return;
+    const unsent = state.points.slice(Math.max(state.lastSentIndex, state.points.length - 8));
+    if (!unsent.length) return;
+    if (sendGestureSegment(state, 'continue', unsent, now - state.lastSentAt)) {
+      state.lastSentAt = now;
+      state.lastSentIndex = state.points.length - 1;
+    }
+  }
+  function endPointerStream(state, last, now) {
+    if (!state?.streaming || !last || state.hello !== hello) return false;
+    sendGestureSegment(state, 'end', [last], now - state.lastSentAt);
+    state.streaming = false;
+    return true;
+  }
   surface.onpointerdown = event => {
     if ((!fresh() && !snapshotFresh()) || busy || event.button !== 0 || pointer) return;
     const p = point(event); if (!p) return;
-    pointer = { id: event.pointerId, at: performance.now(), hello, observation, points: [p], x: event.clientX, y: event.clientY, distance: 0 };
+    pointer = {
+      id: event.pointerId, at: performance.now(), hello, observation, points: [p],
+      last: p, x: event.clientX, y: event.clientY, distance: 0,
+      streaming: false, streamId: 0n, lastSentAt: 0, lastSentIndex: 0
+    };
     surface.setPointerCapture(event.pointerId); event.preventDefault();
   };
   surface.onpointermove = event => {
     if (!pointer || pointer.id !== event.pointerId) return;
-    const p = point(event); if (!p) return;
-    pointer.distance = Math.max(pointer.distance, Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y));
-    if (pointer.points.length < 95) pointer.points.push(p); else pointer.points[94] = p;
+    appendPointerSamples(pointer, event);
+    maybeStreamPointer(pointer, performance.now());
+    event.preventDefault();
   };
   surface.onpointerup = event => {
-    const p = pointer; pointer = null;
-    if (!p || p.id !== event.pointerId || (fresh() ? p.hello !== hello : p.observation !== observation)) return;
-    const last = point(event); if (!last) return;
-    const durationMs = performance.now() - p.at;
-    if (p.distance < 7 && Math.hypot(event.clientX - p.x, event.clientY - p.y) < 7) run(durationMs >= 500 ? 'longPress' : 'tap', { ...last, durationMs });
-    else run('drag', { points: [...p.points, last], durationMs });
+    const p = pointer;
+    if (!p || p.id !== event.pointerId) return;
+    appendPointerSamples(p, event);
+    const last = p.last || point(event);
+    const now = performance.now();
+    pointer = null;
+    if (!last || (fresh() ? p.hello !== hello : p.observation !== observation)) return;
+    if (endPointerStream(p, last, now)) return;
+    const durationMs = now - p.at;
+    if (p.distance < 7 && Math.hypot(event.clientX - p.x, event.clientY - p.y) < 7) {
+      run(durationMs >= 500 ? 'longPress' : 'tap', { ...last, durationMs });
+    } else {
+      run('drag', { points: [...p.points, last].slice(-96), durationMs });
+    }
   };
-  surface.onpointercancel = () => { pointer = null; };
+  surface.onpointercancel = event => {
+    const p = pointer; pointer = null;
+    if (!p || p.id !== event.pointerId) return;
+    const last = p.last || point(event);
+    if (last) endPointerStream(p, last, performance.now());
+  };
   surface.oncontextmenu = event => event.preventDefault();
   surface.onwheel = event => { event.preventDefault(); if (!busy) run('swipe', { x: .5, y: event.deltaY > 0 ? .75 : .25, toX: .5, toY: event.deltaY > 0 ? .25 : .75, durationMs: 300 }); };
   // Application-level feedback shares Android's existing telemetry channel.
@@ -483,6 +561,7 @@ export function browserMain(protocolFactory) {
     } catch { /* Stats are advisory, never a session-ending condition. */ }
   }, 1000));
   document.addEventListener('visibilitychange', () => {
+    if (pointer?.streaming && pointer.last) endPointerStream(pointer, pointer.last, performance.now());
     pointer = null;
     if (!document.hidden && hello) { short(wire.heartbeat(hello)); short(wire.refresh(hello)); }
   });
@@ -512,7 +591,7 @@ export function browserResponse(path) {
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aaris Remote • AI Link</title>
 <style>*{box-sizing:border-box}body{margin:0;background:#10141c;color:#eef3fc;font:15px system-ui,sans-serif}main{max-width:980px;margin:auto;padding:18px}header{display:flex;align-items:center;gap:14px;flex-wrap:wrap}h1{font-size:20px;margin:0}#status{flex:1;color:#8ce7c0}#metrics{color:#9cadc6;font-size:12px}#surface{height:72vh;min-height:280px;background:#05080d;position:relative;margin:16px 0;touch-action:none;cursor:crosshair;border-radius:12px;overflow:hidden}#fallback{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}video{width:100%;height:100%;object-fit:contain;pointer-events:none}nav,.tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button,input{font:inherit;border:1px solid #40516a;border-radius:8px;padding:11px;color:inherit;background:#202c3d}button{cursor:pointer}button:hover{background:#324764}input[type=number]{width:92px}#text{flex:1;min-width:160px}details{color:#becbe0;margin:16px 0}label{display:flex;align-items:center;gap:6px}#snapshot{max-width:100%;max-height:75vh;border:1px solid #40516a}#aiCommand{width:100%;min-height:118px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #40516a;border-radius:8px;padding:11px;color:#eef3fc;background:#0b111b}#aiTargets{font-size:12px;color:#9cadc6;line-height:1.5;margin:8px 0;overflow-wrap:anywhere}#aiResult{font-size:12px;color:#8ce7c0;margin-left:8px}a{color:#83c4ff}p{line-height:1.5;color:#a9bad1}#disconnect{color:#ffb6ae}button:focus-visible,input:focus-visible{outline:3px solid #83c4ff}</style></head>
 <body><main><header><h1>Aaris Remote</h1><span id="status" role="status" aria-live="polite">Connecting…</span><span id="metrics"></span></header>
-<div id="surface" role="img" aria-label="Live phone screen. Click to tap, hold to long press, drag to swipe."><video id="screen" autoplay muted playsinline></video><img id="fallback" hidden alt="Current phone screen. Click this image to tap the same position on the phone."></div>
+<div id="surface" role="application" tabindex="0" aria-label="Interactive phone screen. Click any visible phone pixel to tap it, hold to long press, or drag directly to swipe and gesture on the phone."><video id="screen" autoplay muted playsinline></video><img id="fallback" hidden alt="Current phone screen. Click this image to tap the same position on the phone."></div>
 <button id="play" hidden>Show phone</button><nav aria-label="Phone controls"><button data-action="back">Back</button><button data-action="home">Home</button><button data-action="recents">Recent apps</button><button data-swipe="up">Swipe up</button><button data-swipe="down">Swipe down</button><button id="refresh">Fresh screenshot</button><button id="disconnect">Disconnect</button></nav>
 <div class="tools"><input id="text" aria-label="Text to enter on phone" placeholder="Type into the phone’s focused field"><button id="sendText">Send text</button></div>
 <details open><summary>AI Command JSON</summary>

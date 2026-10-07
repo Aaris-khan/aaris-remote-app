@@ -45,6 +45,28 @@ export function createBrowserProtocol() {
     if (encoded) { v.setUint16(offset, encoded.length); new Uint8Array(b, offset + 2).set(encoded); }
     return b;
   }
+  function gestureStream(hello, sequence, streamId, phase, points, durationMs) {
+    const phases = { start: 0, continue: 1, end: 2 };
+    const phaseValue = phases[phase];
+    if (!hello || typeof sequence !== 'bigint' || sequence <= 0n ||
+        typeof streamId !== 'bigint' || streamId <= 0n ||
+        phaseValue === undefined || !Array.isArray(points) ||
+        points.length < 1 || points.length > 16) {
+      throw new Error('Invalid live gesture segment');
+    }
+    const b = new ArrayBuffer(34 + points.length * 4), v = new DataView(b);
+    v.setUint8(0, 1); v.setUint8(1, 17); v.setBigInt64(2, hello.secret);
+    v.setInt32(10, hello.generation); v.setBigInt64(14, sequence);
+    v.setBigInt64(22, streamId); v.setUint8(30, phaseValue); v.setUint8(31, points.length);
+    let offset = 32;
+    for (const p of points) {
+      v.setUint16(offset, unit(p.x)); v.setUint16(offset + 2, unit(p.y)); offset += 4;
+    }
+    const ms = Number(durationMs);
+    if (!Number.isFinite(ms)) throw new Error('Invalid live gesture duration');
+    v.setUint16(offset, Math.round(Math.max(12, Math.min(1000, ms))));
+    return b;
+  }
   function point(clientX, clientY, rect, width, height) {
     if (!(width > 0 && height > 0 && rect.width > 0 && rect.height > 0)) return null;
     const scale = Math.min(rect.width / width, rect.height / height);
@@ -53,5 +75,5 @@ export function createBrowserProtocol() {
     const y = (clientY - rect.top - (rect.height - h) / 2) / h;
     return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
   }
-  return { decode, command, point, heartbeat: h => shortPacket(2, h), videoReady: h => shortPacket(15, h), refresh: h => shortPacket(14, h) };
+  return { decode, command, gestureStream, point, heartbeat: h => shortPacket(2, h), videoReady: h => shortPacket(15, h), refresh: h => shortPacket(14, h) };
 }
