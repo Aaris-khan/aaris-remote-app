@@ -221,6 +221,20 @@ class HostWebRtcSession(
         }
     )
 
+    private var agentBridge: com.aaris.remoteassist.ai.BrowserAgentBridge? = null
+
+    /** Snapshot/API and WebRTC share one lease, projection and gesture executor. */
+    @Synchronized
+    private fun acquireBrowserAgentLease(): LiveLease? {
+        if (!browserLink || closed.get() || !localCaptureFrameSeen.get() || !AssistAccessibilityService.isConnected()) return null
+        val firstLive = lease == null
+        val current = runCatching { SessionCoordinator.activateLive(sessionId) }.getOrNull() ?: return null
+        lease = current
+        if (firstLive) listener.onLive()
+        if (peerConnected && controlOpen) sendHello(current, profile)
+        return current
+    }
+
     private val fallbackStreamer =
         FallbackScreenStreamer(
             capture = capture,
@@ -281,7 +295,8 @@ class HostWebRtcSession(
     private val connectionWatchdog = Runnable {
         if (
             !closed.get() &&
-            (!peerConnected || !controlOpen || (browserLink && !transportReady))
+            (!peerConnected || !controlOpen || (browserLink && !transportReady)) &&
+            !(browserLink && agentBridge != null && localCaptureFrameSeen.get())
         ) {
             listener.onRemoteDisconnect()
         }
@@ -481,6 +496,12 @@ class HostWebRtcSession(
             if (browserLink) BROWSER_CONNECT_TIMEOUT_MS else CONNECT_TIMEOUT_MS
         )
         peer.start()
+        if (browserLink) {
+            agentBridge = com.aaris.remoteassist.ai.BrowserAgentBridge(
+                appContext, sessionId, capture, ::acquireBrowserAgentLease,
+                { !closed.get() && com.aaris.remoteassist.ai.BrowserLinkRuntime.sharing }, listener::onRemoteDisconnect
+            ).also { it.start() }
+        }
     }
 
     @Synchronized
@@ -1755,6 +1776,7 @@ class HostWebRtcSession(
         runCatching {
             capture.videoTrack.removeSink(captureProbe)
         }
+        runCatching { agentBridge?.close(); agentBridge = null }
         runCatching { fallbackStreamer.close() }
         synchronized(peerSwapLock) { runCatching { peer.close() } }
         runCatching { capture.close() }

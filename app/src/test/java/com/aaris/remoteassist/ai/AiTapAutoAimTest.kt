@@ -99,4 +99,16 @@ class AiTapAutoAimTest {
         assertEquals(0.80, args.getDouble("y"), 0.0001)
         assertTrue(validation.stillValid())
     }
+    @Test
+    fun browserCoordinatesRemainExactAndLocalResumeRequiresMatchingPixelsAndTargets() = runBlocking {
+        val observed = engine.observe()
+        val args = tap(observed, 0.72, 0.81)
+        ui = ui.copy(windowId = 99)
+        assertEquals("FOREGROUND_CHANGED", engine.validate(args, exactCoordinates = true).error)
+        assertNull(engine.validate(args, exactCoordinates = true, allowWindowResume = true).error)
+        assertEquals(0.72, args.getDouble("x"), 0.0001)
+        ui = ui.copy(packageName = "chat")
+        assertEquals("FOREGROUND_CHANGED", engine.validate(args, exactCoordinates = true, allowWindowResume = true).error)
+    }
+
 }

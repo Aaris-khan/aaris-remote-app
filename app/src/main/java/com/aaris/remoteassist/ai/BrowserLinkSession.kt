@@ -17,12 +17,13 @@ data class BrowserLinkTicket(
 ) {
     val link: String
         get() =
-            "${browserBaseUrl.trimEnd('/')}/remote/#$sessionId.$controllerToken" +
-                browserClientId?.let { ".$it" }.orEmpty()
+            "${browserBaseUrl.trimEnd('/')}/remote/?session=$sessionId&access=$controllerToken" +
+                browserClientId?.let { "&client=$it" }.orEmpty()
 }
 
 /** Process-local: killing the capture process must never silently restore consent. */
 object BrowserLinkRuntime {
+    @Volatile var screenChanged: (() -> Unit)? = null
     @Volatile var ticket: BrowserLinkTicket? = null
         private set
     @Volatile var sharing: Boolean = false

@@ -32,6 +32,7 @@ jobs:
       - run: npm install --no-save playwright
       - run: npx playwright install --with-deps chromium
       - run: node cloudflare/browser-webrtc.test.mjs
+      - run: node cloudflare/browser-fallback.test.mjs
 
   mcp-protocol:
     runs-on: ubuntu-latest
