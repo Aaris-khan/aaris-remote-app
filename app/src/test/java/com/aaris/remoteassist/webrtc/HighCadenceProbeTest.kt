@@ -351,10 +351,10 @@ class HighCadenceProbeTest {
 
         // One ordinary queue excursion blocks fresh proof but is not enough to
         // throw away the trial. A second consecutive overload confirms it.
-        assertFalse(sample(g, 3_000L, fps = 36, queue = 45.0))
+        assertFalse(sample(g, 3_000L, fps = 36, queue = 80.0))
         assertEquals(36, g.cap)
 
-        assertTrue(sample(g, 4_000L, fps = 36, queue = 45.0))
+        assertTrue(sample(g, 4_000L, fps = 36, queue = 80.0))
         assertEquals(30, g.cap)
     }
 
@@ -364,7 +364,7 @@ class HighCadenceProbeTest {
         assertTrue(sample(g, 2_000L))
         assertEquals(36, g.cap)
 
-        assertTrue(sample(g, 3_000L, fps = 36, queue = 100.0))
+        assertTrue(sample(g, 3_000L, fps = 36, queue = 180.0))
         assertEquals(30, g.cap)
     }
 
