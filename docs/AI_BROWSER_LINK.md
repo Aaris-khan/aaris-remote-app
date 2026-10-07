@@ -28,6 +28,42 @@ uses subprotocol headers with same-origin validation, not a query parameter.
 Only one browser owner is admitted. Each document refresh advances a controller
 epoch and replaces transport while retaining the original authorized capture.
 
+## Universal AI JSON control
+
+The browser link exposes a visible **AI Command JSON** box for cloud/browser AIs
+that can read the live phone video but do not reliably click arbitrary pixels on
+the video element. The AI pastes exactly one JSON action and presses **Execute AI
+command**. The page fills the session nonce, fresh observation id/version and
+action id, then routes the command through the existing validated phone
+Accessibility executor.
+
+Raw coordinates are the universal motor primitive and do not depend on Android
+Accessibility semantics, so canvas/OpenGL/game surfaces remain controllable:
+
+```json
+{"action":"tap","x":0.73,"y":0.41}
+```
+
+Coordinates default to normalized full-phone coordinates from 0 to 1. Pixel
+coordinates are also accepted when the phone geometry shown beside the command
+box is easier for the AI to use:
+
+```json
+{"action":"tap","x":742,"y":1180,"space":"pixel"}
+```
+
+Named Accessibility targets are optional shortcuts, not a requirement:
+
+```json
+{"action":"tap","target":"YouTube"}
+```
+
+Other compact commands include `type`, `back`, `home`, `recents` and
+directional `swipe`. Only one command is executed per fresh observation.
+After the phone changes, the AI must inspect the new screen before issuing the
+next command; this prevents a batch of stale coordinates from being replayed
+against a different UI.
+
 ## Background and reconnect behavior
 
 The foreground service owns video and input. Opening WhatsApp, Settings or

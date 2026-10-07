@@ -11,8 +11,17 @@ const browser = await chromium.launch({headless:true,...(process.env.BROWSER_TES
 const context = await browser.newContext({viewport:{width:1000,height:900}});
 const host = await context.newPage(), page = await context.newPage();
 const errors=[];page.on('pageerror',error=>errors.push(error.message));
-const sid='a'.repeat(64), token='b'.repeat(43), events=[];
-let socket, epoch=0, seq=0, ended=false, claimedInstance, claimCursor=0, iceRequests=0;
+const sid='a'.repeat(64), token='b'.repeat(43), events=[], agentActions=[];
+let socket, epoch=0, seq=0, ended=false, claimedInstance, claimCursor=0, iceRequests=0, observationVersion=1;
+const makeObservation=()=>({
+  observationId:`11111111-1111-4111-8111-${String(observationVersion).padStart(12,'0')}`,
+  screenVersion:observationVersion,
+  commandNonce:'nonce_test_123',
+  currentPackage:'com.example.canvas',
+  display:{width:1080,height:2160,coordinateSpace:'full-upright-display-normalized-0-to-1'},
+  uiHints:[],
+  image:{mimeType:'image/jpeg',width:360,height:720}
+});
 await host.exposeFunction('publishHost',payload=>{
   const event={seq:++seq,senderRole:'host',...payload};events.push(event);
   socket?.send(JSON.stringify({kind:'signal_event',event}));
@@ -54,6 +63,13 @@ await page.route('https://remote.test/**',async route=>{
     const r=browserResponse(url.pathname);await route.fulfill({status:r.status,headers:Object.fromEntries(r.headers),body:await r.text()});return;
   }
   const reply=data=>route.fulfill({json:data});
+  if(url.pathname.endsWith('/agent-observe')&&req.method()==='GET'){
+    await reply({ok:true,observation:makeObservation(),phoneOnline:true});return;
+  }
+  if(url.pathname.endsWith('/agent-action')&&req.method()==='POST'){
+    const body=req.postDataJSON();agentActions.push(body);observationVersion++;
+    await reply({ok:true,result:{...makeObservation(),actionId:body.actionId,applied:true}});return;
+  }
   if(url.pathname.endsWith('/browser-claim')){
     const instance=req.postDataJSON().instanceId,newDocument=instance!==claimedInstance;
     if(newDocument){claimedInstance=instance;claimCursor=seq;epoch++;}
@@ -98,11 +114,33 @@ try {
   await page.getByLabel('Text to enter on phone').fill('Hello phone');await page.getByRole('button',{name:'Send text',exact:true}).click();await waitActions(6);
   await page.getByRole('button',{name:'Fresh screenshot',exact:true}).click();await page.locator('#snapshot').waitFor({state:'visible'});
   assert.deepEqual(await host.evaluate(()=>window.received.map(r=>r.type)),[3,6,5,12,4,10]);
+
+  // Universal cloud-AI path: the model only pastes JSON and presses Execute.
+  // No Accessibility semantic target is available; exact coordinates must still
+  // be forwarded through the observation-backed agent executor.
+  await page.getByLabel('AI command JSON').fill('{"action":"tap","x":0.73,"y":0.41}');
+  await page.getByRole('button',{name:'Execute AI command',exact:true}).click();
+  await page.waitForFunction(()=>document.getElementById('aiResult').textContent==='Applied');
+  assert.equal(agentActions.length,1);
+  assert.equal(agentActions[0].protocol,'aaris-link-v1');
+  assert.equal(agentActions[0].action,'tap');
+  assert.equal(agentActions[0].x,0.73);
+  assert.equal(agentActions[0].y,0.41);
+  assert.equal(agentActions[0].nonce,'nonce_test_123');
+  assert.equal(agentActions[0].screenVersion,1);
+
+  // Pixel-space input is converted against the phone geometry before dispatch.
+  await page.getByLabel('AI command JSON').fill('{"action":"tap","x":540,"y":1080,"space":"pixel"}');
+  await page.getByRole('button',{name:'Execute AI command',exact:true}).click();
+  await page.waitForFunction(()=>document.getElementById('aiResult').textContent==='Applied');
+  assert.equal(agentActions.length,2);
+  assert.ok(Math.abs(agentActions[1].x-.5)<1e-9);
+  assert.ok(Math.abs(agentActions[1].y-.5)<1e-9);
   await page.reload();await waitLive();
   await page.getByRole('button',{name:'Home',exact:true}).click();await waitActions(7);
   assert.equal(await host.evaluate(()=>window.received.at(-1).epoch),2,'Refresh must have a new control epoch');
   assert.equal(await host.evaluate(()=>window.received.at(-1).sequence),'1');
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();assert.equal(ended,true);
   assert.deepEqual(errors,[]);
-  console.log('PASS: startup retry, actual WebRTC video, binary tap/back/swipe/drag/long press/text, letterbox exclusion, fresh screenshot, refresh and disconnect');
+  console.log('PASS: startup retry, actual WebRTC video, binary tap/back/swipe/drag/long press/text, letterbox exclusion, universal AI JSON normalized/pixel taps, fresh screenshot, refresh and disconnect');
 } finally { await browser.close(); }

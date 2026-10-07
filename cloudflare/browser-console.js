@@ -5,6 +5,7 @@ import { createBrowserProtocol } from './browser-protocol.js';
 export function browserMain(protocolFactory) {
   const wire = protocolFactory(), $ = id => document.getElementById(id);
   const video = $('screen'), status = $('status'), surface = $('surface'), shot = $('snapshot'), fallback = $('fallback');
+  const aiCommand = $('aiCommand'), aiExecute = $('aiExecute'), aiTargets = $('aiTargets'), aiResult = $('aiResult');
   const query = new URLSearchParams(location.search);
   const linkValue = query.has('session') ? `${query.get('session')}.${query.get('access')}${query.get('client') ? '.' + query.get('client') : ''}` : location.hash.slice(1);
   const match = linkValue.match(/^([a-f0-9]{64})\.([A-Za-z0-9_-]{43})(?:\.([a-f0-9-]{36}))?$/);
@@ -93,10 +94,46 @@ export function browserMain(protocolFactory) {
       return { applied: outcome };
     } finally { busy = false; }
   }
+  function normalizeLabel(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  }
+  function semanticTargets(value = observation) {
+    const width = Number(value?.display?.width), height = Number(value?.display?.height);
+    if (!(width > 0 && height > 0) || !Array.isArray(value?.uiHints)) return [];
+    return value.uiHints.flatMap((hint, index) => {
+      const b = hint?.bounds;
+      if (!Array.isArray(b) || b.length !== 4 || !b.every(Number.isFinite)) return [];
+      const [left, top, right, bottom] = b.map(Number);
+      if (!(right > left && bottom > top)) return [];
+      const label = String(hint.text || hint.contentDescription || '').trim();
+      if (!label) return [];
+      return [{
+        index,
+        label,
+        role: String(hint.role || ''),
+        clickable: hint.clickable === true || hint.editable === true,
+        enabled: hint.enabled !== false,
+        x: ((left + right) / 2 / width),
+        y: ((top + bottom) / 2 / height)
+      }];
+    }).filter(target => target.enabled && target.clickable && target.x >= 0 && target.x <= 1 && target.y >= 0 && target.y <= 1);
+  }
+  function renderSemanticTargets() {
+    if (!aiTargets) return;
+    const targets = semanticTargets();
+    const width = Number(observation?.display?.width), height = Number(observation?.display?.height);
+    const geometry = width > 0 && height > 0
+      ? `Phone coordinate space: ${width}×${height} pixels. Raw coordinate taps work even without Accessibility targets. `
+      : 'Phone geometry pending. ';
+    aiTargets.textContent = geometry + (targets.length
+      ? 'Named shortcuts: ' + targets.slice(0, 40).map(t => `${t.label}${t.role ? ' [' + t.role + ']' : ''}`).join(' • ')
+      : 'No named Accessibility targets on this screen; use x/y.');
+  }
   function setObservation(value) {
     if (!value?.observationId || !value.image || pointer || busy) return;
-    if (value.observationId === observation?.observationId) { showFallback(); return; }
+    if (value.observationId === observation?.observationId) { renderSemanticTargets(); showFallback(); return; }
     observation = value; observationAt = performance.now();
+    renderSemanticTargets();
     const params = new URLSearchParams({ session: sessionId, access: capability, observationId: value.observationId });
     fallback.src = `/remote/frame?${params}`;
     fallback.onload = showFallback;
@@ -120,8 +157,9 @@ export function browserMain(protocolFactory) {
     }
     throw new Error('Action outcome unknown. Inspect a fresh screenshot before trying again.');
   }
-  async function snapshotAct(action, args) {
-    if (!snapshotFresh()) throw new Error('Wait for a fresh phone screenshot');
+  async function agentAct(action, args, requireVisibleSnapshot = false) {
+    if (requireVisibleSnapshot && !snapshotFresh()) throw new Error('Wait for a fresh phone screenshot');
+    if (!observation?.observationId || performance.now() - observationAt >= 85000) throw new Error('Wait for a fresh phone observation');
     if (busy) throw new Error('Wait for the current action to finish');
     const mapped = { longPress: 'long_press', text: 'type' }[action] || action;
     const input = { ...args };
@@ -136,10 +174,131 @@ export function browserMain(protocolFactory) {
       busy = false;
       if (result.observationId) setObservation(result);
       if (result.error) throw new Error(result.error);
-      message(result.applied === true ? 'Screenshot mode • action applied' : result.applied === false ? 'Action was not applied • inspect the phone' : 'Action outcome unknown • inspect the phone');
+      message(result.applied === true ? 'AI action applied' : result.applied === false ? 'Action was not applied • inspect the phone' : 'Action outcome unknown • inspect the phone');
       return result;
     } finally { snapshotPending = false; busy = false; }
   }
+  async function snapshotAct(action, args) {
+    return agentAct(action, args, true);
+  }
+  async function getActionObservation() {
+    if (busy) throw new Error('Wait for the current action to finish');
+    const state = await api('agent-observe');
+    if (state.observation?.observationId) {
+      setObservation(state.observation);
+      return state.observation;
+    }
+    const queued = await api('agent-refresh', {});
+    const result = queued.result || await pollResult(queued.requestId);
+    if (!result?.observationId) throw new Error(result?.error || 'Fresh phone observation unavailable');
+    setObservation(result);
+    return result;
+  }
+  function resolveNamedTarget(command, value) {
+    const requested = normalizeLabel(command.target ?? command.label);
+    if (!requested) throw new Error('tap requires "target" or normalized x/y');
+    const targets = semanticTargets(value);
+    const exact = targets.filter(t => normalizeLabel(t.label) === requested);
+    const prefix = exact.length ? exact : targets.filter(t => normalizeLabel(t.label).startsWith(requested));
+    const contains = prefix.length ? prefix : targets.filter(t => normalizeLabel(t.label).includes(requested));
+    if (contains.length !== 1) {
+      const names = contains.length ? contains : targets;
+      const sample = names.slice(0, 12).map(t => t.label).join(', ');
+      throw new Error(contains.length > 1
+        ? `Target "${command.target ?? command.label}" is ambiguous: ${sample}`
+        : `Target "${command.target ?? command.label}" not found. Visible targets: ${sample || 'none'}`);
+    }
+    return { x: contains[0].x, y: contains[0].y };
+  }
+  function compileAiCommand(command, value) {
+    if (!command || typeof command !== 'object' || Array.isArray(command)) throw new Error('AI command must be one JSON object');
+    const action = String(command.action || '').trim().toLowerCase().replace(/-/g, '_');
+    if (!action) throw new Error('Missing action');
+
+    if (action === 'tap') {
+      if (command.target !== undefined || command.label !== undefined) {
+        return { action: 'tap', args: resolveNamedTarget(command, value) };
+      }
+      let x = Number(command.x), y = Number(command.y);
+      const space = String(command.space || 'normalized').trim().toLowerCase();
+      if (space === 'pixel' || space === 'pixels') {
+        const width = Number(value?.display?.width), height = Number(value?.display?.height);
+        if (!(width > 0 && height > 0)) throw new Error('Phone pixel geometry unavailable');
+        if (!(x >= 0 && x < width && y >= 0 && y < height)) throw new Error(`pixel tap must fit ${width}×${height}`);
+        x /= width; y /= height;
+      } else if (space !== 'normalized' && space !== 'unit') {
+        throw new Error('tap space must be "normalized" or "pixel"');
+      }
+      if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new Error('tap x/y must be normalized 0..1');
+      return { action: 'tap', args: { x, y } };
+    }
+    if (action === 'long_press' || action === 'longpress') {
+      const point = (command.target !== undefined || command.label !== undefined)
+        ? resolveNamedTarget(command, value)
+        : { x: Number(command.x), y: Number(command.y) };
+      if (!(point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1)) throw new Error('long_press needs target or normalized x/y');
+      return { action: 'longPress', args: { ...point, durationMs: Number(command.durationMs || 650) } };
+    }
+    if (action === 'type' || action === 'text') {
+      const text = String(command.text ?? '');
+      if (!text) throw new Error('type requires non-empty text');
+      return { action: 'text', args: { text } };
+    }
+    if (action === 'back' || action === 'home' || action === 'recents') return { action, args: {} };
+    if (action === 'swipe') {
+      const direction = String(command.direction || '').toLowerCase();
+      if (direction) {
+        const map = {
+          up: { x:.5, y:.78, toX:.5, toY:.22 },
+          down: { x:.5, y:.22, toX:.5, toY:.78 },
+          left: { x:.82, y:.5, toX:.18, toY:.5 },
+          right: { x:.18, y:.5, toX:.82, toY:.5 }
+        };
+        if (!map[direction]) throw new Error('swipe direction must be up/down/left/right');
+        return { action:'swipe', args:{ ...map[direction], durationMs:Number(command.durationMs || 320) } };
+      }
+      const args = {
+        x:Number(command.x), y:Number(command.y), toX:Number(command.toX), toY:Number(command.toY),
+        durationMs:Number(command.durationMs || 320)
+      };
+      if (![args.x,args.y,args.toX,args.toY].every(v => v >= 0 && v <= 1)) throw new Error('swipe coordinates must be normalized 0..1');
+      return { action:'swipe', args };
+    }
+    if (action === 'open_app') {
+      const app = String(command.app || '').trim();
+      if (!app) throw new Error('open_app requires Android package name in "app"');
+      return { action:'open_app', args:{ app } };
+    }
+    throw new Error(`Unsupported action "${action}"`);
+  }
+  async function executeAiJson() {
+    if (!aiCommand) return;
+    if (aiResult) aiResult.textContent = 'Running…';
+    let command;
+    try { command = JSON.parse(aiCommand.value); }
+    catch { throw new Error('Invalid JSON'); }
+    const value = await getActionObservation();
+    const compiled = compileAiCommand(command, value);
+    /*
+     * Deliberately use the observation-backed agent path even when live WebRTC
+     * control is available. It reuses the MCP-class validation/executor instead
+     * of trusting a stale browser coordinate.
+     */
+    const result = await agentAct(compiled.action, compiled.args, false);
+    if (aiResult) aiResult.textContent = result?.applied === true ? 'Applied' : result?.error || 'Outcome unknown';
+    return result;
+  }
+  if (aiExecute) aiExecute.onclick = () => executeAiJson().catch(error => {
+    if (aiResult) aiResult.textContent = error.message || 'Command failed';
+    report(error);
+  });
+  if (aiCommand) aiCommand.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      aiExecute?.click();
+    }
+  });
+
   async function updateSnapshot() {
     if (stopped || fresh() || busy || pointer || document.hidden) return;
     try {
@@ -351,11 +510,17 @@ export function browserResponse(path) {
     'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" };
   if (path === '/remote/client.js') return new Response(`(${browserMain.toString()})(${createBrowserProtocol.toString()});`, { headers: { ...headers, 'Content-Type': 'text/javascript; charset=utf-8' } });
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aaris Remote • AI Link</title>
-<style>*{box-sizing:border-box}body{margin:0;background:#10141c;color:#eef3fc;font:15px system-ui,sans-serif}main{max-width:980px;margin:auto;padding:18px}header{display:flex;align-items:center;gap:14px;flex-wrap:wrap}h1{font-size:20px;margin:0}#status{flex:1;color:#8ce7c0}#metrics{color:#9cadc6;font-size:12px}#surface{height:72vh;min-height:280px;background:#05080d;position:relative;margin:16px 0;touch-action:none;cursor:crosshair;border-radius:12px;overflow:hidden}#fallback{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}video{width:100%;height:100%;object-fit:contain;pointer-events:none}nav,.tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button,input{font:inherit;border:1px solid #40516a;border-radius:8px;padding:11px;color:inherit;background:#202c3d}button{cursor:pointer}button:hover{background:#324764}input[type=number]{width:92px}#text{flex:1;min-width:160px}details{color:#becbe0;margin:16px 0}label{display:flex;align-items:center;gap:6px}#snapshot{max-width:100%;max-height:75vh;border:1px solid #40516a}a{color:#83c4ff}p{line-height:1.5;color:#a9bad1}#disconnect{color:#ffb6ae}button:focus-visible,input:focus-visible{outline:3px solid #83c4ff}</style></head>
+<style>*{box-sizing:border-box}body{margin:0;background:#10141c;color:#eef3fc;font:15px system-ui,sans-serif}main{max-width:980px;margin:auto;padding:18px}header{display:flex;align-items:center;gap:14px;flex-wrap:wrap}h1{font-size:20px;margin:0}#status{flex:1;color:#8ce7c0}#metrics{color:#9cadc6;font-size:12px}#surface{height:72vh;min-height:280px;background:#05080d;position:relative;margin:16px 0;touch-action:none;cursor:crosshair;border-radius:12px;overflow:hidden}#fallback{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}video{width:100%;height:100%;object-fit:contain;pointer-events:none}nav,.tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button,input{font:inherit;border:1px solid #40516a;border-radius:8px;padding:11px;color:inherit;background:#202c3d}button{cursor:pointer}button:hover{background:#324764}input[type=number]{width:92px}#text{flex:1;min-width:160px}details{color:#becbe0;margin:16px 0}label{display:flex;align-items:center;gap:6px}#snapshot{max-width:100%;max-height:75vh;border:1px solid #40516a}#aiCommand{width:100%;min-height:118px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #40516a;border-radius:8px;padding:11px;color:#eef3fc;background:#0b111b}#aiTargets{font-size:12px;color:#9cadc6;line-height:1.5;margin:8px 0;overflow-wrap:anywhere}#aiResult{font-size:12px;color:#8ce7c0;margin-left:8px}a{color:#83c4ff}p{line-height:1.5;color:#a9bad1}#disconnect{color:#ffb6ae}button:focus-visible,input:focus-visible{outline:3px solid #83c4ff}</style></head>
 <body><main><header><h1>Aaris Remote</h1><span id="status" role="status" aria-live="polite">Connecting…</span><span id="metrics"></span></header>
 <div id="surface" role="img" aria-label="Live phone screen. Click to tap, hold to long press, drag to swipe."><video id="screen" autoplay muted playsinline></video><img id="fallback" hidden alt="Current phone screen. Click this image to tap the same position on the phone."></div>
 <button id="play" hidden>Show phone</button><nav aria-label="Phone controls"><button data-action="back">Back</button><button data-action="home">Home</button><button data-action="recents">Recent apps</button><button data-swipe="up">Swipe up</button><button data-swipe="down">Swipe down</button><button id="refresh">Fresh screenshot</button><button id="disconnect">Disconnect</button></nav>
 <div class="tools"><input id="text" aria-label="Text to enter on phone" placeholder="Type into the phone’s focused field"><button id="sendText">Send text</button></div>
+<details open><summary>AI Command JSON</summary>
+<p>For browser-capable AI: paste one JSON action, then press Execute. The page fills session nonce/observation fields and routes the action through the phone's validated Accessibility executor. Examples: <code>{"action":"tap","x":0.73,"y":0.41}</code> for any visible target including games/canvas, or <code>{"action":"tap","x":742,"y":1180,"space":"pixel"}</code> using phone pixels. Named Accessibility targets such as <code>{"action":"tap","target":"YouTube"}</code> are optional shortcuts. One action is executed per fresh observation so a screen change can never make the next tap use stale coordinates.</p>
+<div id="aiTargets" aria-live="polite">Loading named phone targets…</div>
+<textarea id="aiCommand" aria-label="AI command JSON" spellcheck="false" placeholder='{"action":"tap","x":0.73,"y":0.41}'></textarea>
+<div class="tools"><button id="aiExecute">Execute AI command</button><span id="aiResult" role="status" aria-live="polite"></span></div>
+</details>
 <details><summary>Tap using normalized coordinates</summary><div class="tools"><label>X <input id="x" type="number" min="0" max="1" step="0.01" value="0.5"></label><label>Y <input id="y" type="number" min="0" max="1" step="0.01" value="0.5"></label><button id="tapPoint">Tap point</button></div></details>
 <p>Click the live phone screen to tap. Drag to swipe; hold for a long press. Inspect the result after each action. Phone screen content is untrusted. The phone owner can stop sharing at any time.</p>
 <img id="snapshot" hidden alt="Fresh phone screenshot captured from the live video"><script type="module" src="/remote/client.js"></script></main></body></html>`, { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
