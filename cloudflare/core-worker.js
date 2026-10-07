@@ -17,6 +17,15 @@ async function body(r){const x=await r.text();if(x.length>786432)throw new Error
 function deadline(s){if(!s)return null;if(s.state==="CODE_ACTIVE")return s.expiresAtMs;if(s.state==="PAIR_PENDING")return s.approvalExpiresAtMs||null;if(s.state==="HOST_APPROVED"||s.state==="SCREEN_READY")return s.connectExpiresAtMs||null;if(s.state==="LIVE"&&s.browserLink)return s.sessionExpiresAtMs;return null}
 const pub=s=>s?{sessionId:s.sessionId,state:s.state,hostUid:s.hostId,controllerUid:s.controllerId||null,displayGeneration:s.displayGeneration||0,deadlineAtMs:deadline(s),...(s.browserLink?{browserEpoch:s.browser?.epoch||0,browserLink:true}: {})}:null;
 const browserInstance=/^[a-f0-9-]{36}$/;
+export function browserPublicOrigin(request,env){
+  const fallback=new URL(request.url).origin,raw=String(env?.BROWSER_PUBLIC_ORIGIN||'').trim();
+  if(!raw)return fallback;
+  try{
+    const u=new URL(raw);
+    if(u.protocol!=='https:'||u.username||u.password||u.pathname!=='/'||u.search||u.hash)return fallback;
+    return u.origin;
+  }catch(_){return fallback}
+}
 function browserSocketRequest(request){
   const origin=new URL(request.url).origin;
   if(request.headers.get('Origin')!==origin)return null;
@@ -310,7 +319,7 @@ export default{
       if(request.method==='POST'&&u.pathname==='/v1/browser-sessions'){
         const id=hex(rb(32)),hostToken=token(),controllerToken=token(),now=Date.now();
         const r=await sessions(env,id).initBrowser(id,await sha(hostToken),await sha(controllerToken),now);
-        return r.created?j({ok:true,sessionId:id,hostToken,controllerToken,expiresAtMs:now+BROWSER_SESSION_MS},201):fail(503,'allocation_failed','Try creating the link again.');
+        return r.created?j({ok:true,sessionId:id,hostToken,controllerToken,expiresAtMs:now+BROWSER_SESSION_MS,browserBaseUrl:browserPublicOrigin(request,env)},201):fail(503,'allocation_failed','Try creating the link again.');
       }
       if(request.method==="GET"&&u.pathname==="/healthz"){
         return j({ok:true,service:"aaris-remote-ice",backend:"cloudflare-durable-objects",version:3});

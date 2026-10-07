@@ -79,6 +79,14 @@ Checks:
 The Worker deployment must include `core-worker.js`, `browser-console.js` and
 `browser-protocol.js` as ES modules, preserving its existing Durable Object and
 TURN secret bindings. No namespace migration is required.
+
+The browser URL origin is intentionally independent from the Android API origin.
+Set optional `BROWSER_PUBLIC_ORIGIN` to a clean HTTPS origin such as
+`https://remote.example.com` when the default `workers.dev` hostname is blocked
+by an AI/browser network policy. The session-creation response returns that
+validated origin to Android, which uses it only for the copied browser URL; host
+signaling and the existing WebRTC engine remain unchanged. Invalid values fall
+back to the request origin.
 Declare both existing exports as `{"type":"durable-object","storage":"sqlite"}`
 in upload metadata (`AarisSession` and `PairingDirectory`) and inherit the four
 existing bindings with strict validation. Do not create replacement namespaces.
