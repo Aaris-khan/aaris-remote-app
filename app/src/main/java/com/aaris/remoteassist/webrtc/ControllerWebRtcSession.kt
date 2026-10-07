@@ -5,6 +5,7 @@ import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
 import com.aaris.remoteassist.control.CommandLatencyTracker
+import com.aaris.remoteassist.control.InputToGlassTracker
 import android.os.SystemClock
 import com.aaris.remoteassist.control.ControlPacket
 import com.aaris.remoteassist.control.ControlPathPoint
@@ -45,7 +46,9 @@ class ControllerWebRtcSession(
     private val screenReadyArmed = AtomicBoolean(false)
     private val sequence = AtomicLong(0L)
     private val commandLatency = CommandLatencyTracker()
+    private val inputToGlass = InputToGlassTracker()
     private var lastLatencyReportMs = 0L
+    private var lastPhotonReportMs = 0L
     private val feedbackSequence = AtomicLong(0L)
     private var lastVideoLivenessMs = 0L
     private val gestureStreamIds = AtomicLong(0L)
@@ -616,7 +619,10 @@ class ControllerWebRtcSession(
                     heightPx = packet.heightPx
                 )
                 this.geometry = geometry
-                if (resetLatency) commandLatency.reset()
+                if (resetLatency) {
+                    commandLatency.reset()
+                    inputToGlass.reset()
+                }
 
                 handler.removeCallbacks(heartbeat)
                 handler.post(heartbeat)
@@ -636,7 +642,13 @@ class ControllerWebRtcSession(
 
             is ControlPacket.CommandResult -> {
                 val now = SystemClock.elapsedRealtime()
-                commandLatency.acknowledged(packet.sequence, packet.applied, now)
+                commandLatency
+                    .acknowledged(
+                        packet.sequence,
+                        packet.applied,
+                        now
+                    )
+                    ?.let(inputToGlass::applied)
                 if (now - lastLatencyReportMs >= 1000) {
                     lastLatencyReportMs = now
                     listener.onDiagnostic(commandLatency.summary())
@@ -648,6 +660,49 @@ class ControllerWebRtcSession(
             }
 
             else -> Unit
+        }
+    }
+
+    /**
+     * Called from EglRenderer's render thread after a real buffer swap.
+     * The synchronized tracker does O(1) work and normally returns null. Only
+     * when an authoritative applied-input probe completes do we hop to the
+     * main/session lane and emit one tiny freshness telemetry packet.
+     */
+    fun onFramePresented(presentedAtMs: Long) {
+        val sample = inputToGlass.onPresented(presentedAtMs) ?: return
+        val lease = leaseSecret ?: return
+        val display = geometry ?: return
+
+        handler.post {
+            if (
+                closed.get() ||
+                leaseSecret != lease ||
+                geometry?.generation != display.generation
+            ) {
+                return@post
+            }
+
+            peer.sendControl(
+                bytes =
+                    ControlProtocol.encode(
+                        ControlPacket.PhotonFeedback(
+                            leaseSecret = lease,
+                            generation = display.generation,
+                            sequence = feedbackSequence.incrementAndGet(),
+                            inputToGlassUpperBoundMs = sample.upperBoundMs,
+                            commandAckMs = sample.commandAckMs,
+                            postAckPresentMs = sample.postAckPresentMs
+                        )
+                    ),
+                freshnessSensitive = true
+            )
+
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastPhotonReportMs >= 1_000L) {
+                lastPhotonReportMs = now
+                listener.onDiagnostic(inputToGlass.summary())
+            }
         }
     }
 
@@ -758,6 +813,8 @@ class ControllerWebRtcSession(
         handler.removeCallbacks(helloWatchdog)
         handler.removeCallbacks(heartbeat)
         inboundVideoLiveness.reset()
+        commandLatency.reset()
+        inputToGlass.reset()
         if (notifyRemote) {
             runCatching {
                 peer.sendControl(
