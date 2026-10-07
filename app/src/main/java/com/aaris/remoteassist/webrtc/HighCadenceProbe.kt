@@ -38,6 +38,7 @@ internal class HighCadenceProbe {
     private var trialGood = 0
     private var trialBad = 0
     private var lastProofAtMs: Long? = null
+    private var lastPresentationSequenceSeen = 0L
 
     val probing: Boolean get() = trialFrom != null
 
@@ -96,8 +97,34 @@ internal class HighCadenceProbe {
             receiver.presentationIntervalMs?.let { it in 500..6000 } == true &&
             presented != null &&
             receiver.presentationAgeMs?.let { it in 0..1_000 } == true &&
+            receiver.presentationSampleAgeMs?.let { it in 0..1_000 } != false &&
             refresh != null
-        if (freshProof) lastProofAtMs = nowMs
+
+        /*
+         * ReceiverVideoFeedback may retain one recent EGL cadence sample so the
+         * independent ~500 ms stats and presentation clocks cannot phase-miss
+         * each other. Retention must not turn one glass sample into two votes.
+         */
+        val presentationSequence =
+            receiver?.presentationSampleSequence
+                ?.takeIf { it > 0L }
+        val newPresentationProof =
+            freshProof &&
+                (
+                    presentationSequence == null ||
+                        presentationSequence != lastPresentationSequenceSeen
+                    )
+        if (newPresentationProof) {
+            presentationSequence?.let {
+                lastPresentationSequenceSeen = it
+            }
+            val sampleAge =
+                receiver?.presentationSampleAgeMs
+                    ?.coerceAtLeast(0)
+                    ?.toLong()
+                    ?: 0L
+            lastProofAtMs = nowMs - sampleAge
+        }
         if (currentFps > 30 && lastProofAtMs?.let { nowMs - it > 3_000L } == true) {
             return rollback(currentFps, nowMs, 30)
         }
@@ -119,8 +146,15 @@ internal class HighCadenceProbe {
             }
             // Allow one window for reports covering the previous cap to drain.
             if (nowMs - trialAtMs >= 1_000L) {
-                trialGood = if (delivered) trialGood + 1 else 0
-                trialBad = if (delivered) 0 else trialBad + 1
+                /*
+                 * Count only a newly-arrived EGL cadence window. A retained
+                 * sample is still useful liveness evidence, but cannot validate
+                 * or fail the same trial twice.
+                 */
+                if (newPresentationProof) {
+                    trialGood = if (delivered) trialGood + 1 else 0
+                    trialBad = if (delivered) 0 else trialBad + 1
+                }
                 if (trialBad >= 2 || nowMs - trialAtMs >= 6_000L) {
                     return rollback(
                         currentFps = currentFps,
@@ -152,9 +186,17 @@ internal class HighCadenceProbe {
             outbound.roundTripTimeMs?.let { it in 0..300 } == true &&
             outbound.packetLossRatio.valid()?.let { it < 0.025 } == true
         if (!eligible) {
-            healthyWindows = 0
+            /*
+             * Missing/asynchronous retained proof must not erase a candidate
+             * built from the previous real EGL window. A newly-arrived bad
+             * presentation window, overload, or genuinely missing proof does.
+             */
+            if (newPresentationProof || !freshProof || overloaded) {
+                healthyWindows = 0
+            }
             return null
         }
+        if (!newPresentationProof) return null
         if (healthyWindows++ == 0) candidateSinceMs = nowMs
         /*
          * Promotion already requires end-to-end proof: producer headroom,
