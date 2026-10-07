@@ -37,6 +37,12 @@ internal object FreshnessDeadlineController {
 
         val severe: Boolean
             get() = state == State.SEVERE
+
+        fun compact(): String {
+            val debt = controllableDebtMs?.let { "${Math.round(it)}ms" } ?: "-"
+            val util = utilization?.let { "${Math.round(it * 100.0)}%" } ?: "-"
+            return "deadline=${state.name.lowercase()} debt=$debt budget=${Math.round(deadlineMs)}ms util=$util"
+        }
     }
 
     fun assess(
