@@ -14,7 +14,7 @@ const errors=[];page.on('pageerror',error=>errors.push(error.message));
 const sid='a'.repeat(64), token='b'.repeat(43), events=[], agentActions=[];
 let socket, epoch=0, seq=0, ended=false, claimedInstance, claimCursor=0, iceRequests=0, observationVersion=1;
 const makeObservation=()=>({
-  observationId:'11111111-1111-4111-8111-111111111111',
+  observationId:`11111111-1111-4111-8111-${String(observationVersion).padStart(12,'0')}`,
   screenVersion:observationVersion,
   commandNonce:'nonce_test_123',
   currentPackage:'com.example.canvas',
