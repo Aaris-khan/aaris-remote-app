@@ -15,7 +15,8 @@ import java.util.concurrent.CopyOnWriteArraySet
 object ConnectionFlightRecorder {
     private data class Trace(
         val startedAtMs: Long,
-        val lines: ArrayDeque<String>
+        val lines: ArrayDeque<String>,
+        val live: LinkedHashMap<String, String> = LinkedHashMap()
     )
 
     private val traces = ConcurrentHashMap<String, Trace>()
@@ -38,7 +39,11 @@ object ConnectionFlightRecorder {
     }
 
     fun pass(sessionId: String, message: String) {
-        append(sessionId, message, false)
+        if (message.startsWith(LIVE_PREFIX)) {
+            updateLive(sessionId, message)
+        } else {
+            append(sessionId, message, false)
+        }
     }
 
     fun fail(sessionId: String, message: String) {
@@ -48,8 +53,7 @@ object ConnectionFlightRecorder {
     fun snapshot(sessionId: String): String =
         synchronized(this) {
             traces[sessionId]
-                ?.lines
-                ?.joinToString("\n")
+                ?.let(::render)
                 .orEmpty()
         }
 
@@ -64,6 +68,55 @@ object ConnectionFlightRecorder {
     ) {
         listeners -= listener
     }
+
+    /**
+     * Replace one live debug lane in-place instead of appending another history
+     * event. HostWebRtcSession emits these from the already-running WebRTC health
+     * callback, so the on-screen QD gains detail without another polling loop.
+     *
+     * Wire format: QD|<lane>|<one-or-multi-line text>
+     */
+    @Synchronized
+    private fun updateLive(
+        sessionId: String,
+        message: String
+    ) {
+        val first = message.indexOf('|')
+        val second = message.indexOf('|', first + 1)
+        if (first < 0 || second <= first + 1 || second >= message.lastIndex) {
+            append(sessionId, message, false)
+            return
+        }
+
+        val lane = message.substring(first + 1, second).take(24)
+        val value = message.substring(second + 1).take(MAX_LIVE_CHARS)
+        val trace = traces.getOrPut(sessionId) {
+            Trace(
+                startedAtMs = SystemClock.elapsedRealtime(),
+                lines = ArrayDeque()
+            )
+        }
+        if (trace.live[lane] == value) return
+        trace.live[lane] = value
+
+        val report = render(trace)
+        listeners.forEach { listener ->
+            runCatching { listener(sessionId, report) }
+        }
+    }
+
+    private fun render(trace: Trace): String =
+        buildString {
+            append(trace.lines.joinToString("\n"))
+            if (trace.live.isNotEmpty()) {
+                if (isNotEmpty()) append('\n')
+                append("── REALTIME QD ──")
+                trace.live.values.forEach { value ->
+                    append('\n')
+                    append(value)
+                }
+            }
+        }
 
     @Synchronized
     private fun append(
@@ -100,11 +153,13 @@ object ConnectionFlightRecorder {
             trace.lines.removeFirst()
         }
 
-        val report = trace.lines.joinToString("\n")
+        val report = render(trace)
         listeners.forEach { listener ->
             runCatching { listener(sessionId, report) }
         }
     }
 
     private const val MAX_LINES = 12
+    private const val LIVE_PREFIX = "QD|"
+    private const val MAX_LIVE_CHARS = 2_000
 }
