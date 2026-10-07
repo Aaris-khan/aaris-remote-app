@@ -165,7 +165,7 @@ class ControllerWebRtcSession(
         if (displayRefreshRateHz != null) {
             publishDisplayCapabilities(displayRefreshRateHz)
         }
-        return peer.sendControl(
+        return peer.sendTelemetry(
             bytes = ControlProtocol.encode(
                 ControlPacket.PresentationFeedback(
                     leaseSecret = lease,
@@ -197,7 +197,7 @@ class ControllerWebRtcSession(
                 ?.takeIf { it.isFinite() && it in 1f..240f }
                 ?: return false
 
-        return peer.sendControl(
+        return peer.sendTelemetry(
             ControlProtocol.encode(
                 ControlPacket.DisplayCapabilities(
                     lease,
@@ -237,7 +237,7 @@ class ControllerWebRtcSession(
         if (closed.get()) return false
         val lease = leaseSecret ?: return false
         val display = geometry ?: return false
-        return peer.sendControl(
+        return peer.sendTelemetry(
             bytes = ControlProtocol.encode(
                 ControlPacket.PresentationHeartbeat(
                     leaseSecret = lease,
@@ -683,7 +683,7 @@ class ControllerWebRtcSession(
                 return@post
             }
 
-            peer.sendControl(
+            peer.sendTelemetry(
                 bytes =
                     ControlProtocol.encode(
                         ControlPacket.PhotonFeedback(
@@ -737,7 +737,7 @@ class ControllerWebRtcSession(
         val display = geometry
         val recent = snapshot.recent
         if (lease != null && display != null && recent != null) {
-            peer.sendControl(
+            peer.sendTelemetry(
                 bytes = ControlProtocol.encode(
                     ControlPacket.VideoFeedback(
                         lease,
