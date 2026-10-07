@@ -121,9 +121,13 @@ export function browserMain(protocolFactory) {
   function renderSemanticTargets() {
     if (!aiTargets) return;
     const targets = semanticTargets();
-    aiTargets.textContent = targets.length
-      ? targets.slice(0, 40).map(t => `${t.label}${t.role ? ' [' + t.role + ']' : ''}`).join(' • ')
-      : 'No named Accessibility targets on the current screen. Use normalized x/y coordinates instead.';
+    const width = Number(observation?.display?.width), height = Number(observation?.display?.height);
+    const geometry = width > 0 && height > 0
+      ? `Phone coordinate space: ${width}×${height} pixels. Raw coordinate taps work even without Accessibility targets. `
+      : 'Phone geometry pending. ';
+    aiTargets.textContent = geometry + (targets.length
+      ? 'Named shortcuts: ' + targets.slice(0, 40).map(t => `${t.label}${t.role ? ' [' + t.role + ']' : ''}`).join(' • ')
+      : 'No named Accessibility targets on this screen; use x/y.');
   }
   function setObservation(value) {
     if (!value?.observationId || !value.image || pointer || busy) return;
