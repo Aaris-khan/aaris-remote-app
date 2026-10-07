@@ -6,12 +6,39 @@ val codemagicKeystorePath = System.getenv("CM_KEYSTORE_PATH")
 val codemagicKeystorePassword = System.getenv("CM_KEYSTORE_PASSWORD")
 val codemagicKeyAlias = System.getenv("CM_KEY_ALIAS")
 val codemagicKeyPassword = System.getenv("CM_KEY_PASSWORD")
-val hasCodemagicSigning = listOf(
+val signingInputs = listOf(
     codemagicKeystorePath,
     codemagicKeystorePassword,
     codemagicKeyAlias,
     codemagicKeyPassword
-).all { !it.isNullOrBlank() }
+)
+val hasCodemagicSigning = signingInputs.all { !it.isNullOrBlank() }
+val hasAnyCodemagicSigningInput = signingInputs.any { !it.isNullOrBlank() }
+val requireReleaseSigning =
+    providers.gradleProperty("requireReleaseSigning")
+        .orNull
+        ?.toBooleanStrictOrNull()
+        ?: false
+
+if (hasAnyCodemagicSigningInput && !hasCodemagicSigning) {
+    throw GradleException(
+        "Incomplete release signing configuration. All CM_KEYSTORE_* " +
+            "variables must be present together."
+    )
+}
+
+if (requireReleaseSigning && !hasCodemagicSigning) {
+    throw GradleException(
+        "A signed release was required, but Codemagic signing is not configured. " +
+            "Refusing to produce an installable release artifact."
+    )
+}
+
+if (requireReleaseSigning && codemagicKeyAlias != "upload") {
+    throw GradleException(
+        "Unexpected release key alias. The permanent Aaris release alias must be 'upload'."
+    )
+}
 
 android {
     namespace = "com.aaris.remoteassist"
@@ -20,8 +47,8 @@ android {
         applicationId = "com.aaris.remoteassist"
         minSdk = 26
         targetSdk = 36
-        versionCode = 142
-        versionName = "1.9.54"
+        versionCode = 143
+        versionName = "1.9.55"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { buildConfig = true }
@@ -45,6 +72,7 @@ android {
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
+            isDebuggable = false
             if (hasCodemagicSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }

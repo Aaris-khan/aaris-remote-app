@@ -32,26 +32,68 @@ workflows:
       - name: Build signed release APK
         script: |
           set -euo pipefail
+          rm -rf "$CM_BUILD_DIR/app/build/outputs/apk/release"
+          rm -rf "$CM_BUILD_DIR/release-artifacts"
           GRADLE_HOME="/tmp/gradle-$GRADLE_VERSION"
           if [ ! -x "$GRADLE_HOME/bin/gradle" ]; then
             curl -fsSL "https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip" -o /tmp/gradle.zip
             unzip -q /tmp/gradle.zip -d /tmp
           fi
-          "$GRADLE_HOME/bin/gradle" :app:testDebugUnitTest :app:lintRelease :app:assembleRelease --stacktrace
-      - name: Verify signed APK
+          "$GRADLE_HOME/bin/gradle"             :app:testDebugUnitTest             :app:lintRelease             :app:assembleRelease             -PrequireReleaseSigning=true             --stacktrace
+      - name: Verify and stage installable APK
         script: |
           set -euo pipefail
-          APK="$(find "$CM_BUILD_DIR/app/build/outputs/apk/release" -type f -name '*.apk' ! -name '*unsigned*' | head -1)"
-          test -n "$APK"
-          APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | head -1)"
-          AAPT="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name aapt | head -1)"
-          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+          APK="$CM_BUILD_DIR/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK" || {
+            echo "Signed app-release.apk was not produced."
+            find "$CM_BUILD_DIR/app/build/outputs/apk/release" -maxdepth 1 -type f -print || true
+            exit 1
+          }
+
+          APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | sort | tail -1)"
+          AAPT="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name aapt | sort | tail -1)"
+          ZIPALIGN="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name zipalign | sort | tail -1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          test -x "$ZIPALIGN"
+
+          VERIFY_LOG="$CM_BUILD_DIR/apksigner-verify.txt"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$VERIFY_LOG"
+
+          # Android 11+ requires APK Signature Scheme v2 or newer for normal
+          # install/update flows. Refuse a release that only has legacy v1.
+          grep -Eq 'Verified using v(2|3|4) scheme.*true' "$VERIFY_LOG" || {
+            echo "APK is not verified with v2/v3/v4 signing."
+            exit 1
+          }
+
+          "$ZIPALIGN" -c -v 4 "$APK"
+
           PACKAGE_LINE="$("$AAPT" dump badging "$APK" | head -1)"
+          printf '%s\n' "$PACKAGE_LINE"
           echo "$PACKAGE_LINE" | grep -F "package: name='$PACKAGE_NAME'" >/dev/null
+
+          VERSION_CODE="$(printf '%s\n' "$PACKAGE_LINE" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
           VERSION_NAME="$(printf '%s\n' "$PACKAGE_LINE" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
-          FINAL_APK="$CM_BUILD_DIR/app/build/outputs/apk/release/AarisRemote-$VERSION_NAME-release.apk"
-          if [ "$APK" != "$FINAL_APK" ]; then mv "$APK" "$FINAL_APK"; fi
-          shasum -a 256 "$FINAL_APK"
+          test -n "$VERSION_CODE"
+          test -n "$VERSION_NAME"
+
+          FINAL_DIR="$CM_BUILD_DIR/release-artifacts"
+          mkdir -p "$FINAL_DIR"
+          FINAL_APK="$FINAL_DIR/AarisRemote-$VERSION_NAME-release.apk"
+          cp "$APK" "$FINAL_APK"
+
+          # Verify the exact bytes that Codemagic will publish, not just the
+          # intermediate Gradle output.
+          "$APKSIGNER" verify --verbose --print-certs "$FINAL_APK" >/dev/null
+          "$ZIPALIGN" -c 4 "$FINAL_APK"
+          shasum -a 256 "$FINAL_APK" | tee "$FINAL_APK.sha256"
+
+          echo "Installable release staged: $FINAL_APK"
+          echo "versionName=$VERSION_NAME versionCode=$VERSION_CODE"
+
     artifacts:
-      - app/build/outputs/apk/release/*.apk
+      - release-artifacts/AarisRemote-*-release.apk
+      - release-artifacts/AarisRemote-*-release.apk.sha256
       - app/build/reports/lint-results-release.*
