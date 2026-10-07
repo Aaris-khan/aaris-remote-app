@@ -3,12 +3,18 @@ package com.aaris.remoteassist.ai
 import android.content.Context
 import com.aaris.remoteassist.backend.CloudflareBackend
 import com.aaris.remoteassist.pairing.BackendSessionCloser
+import java.net.URI
 import java.util.concurrent.CopyOnWriteArraySet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class BrowserLinkTicket(val sessionId: String, val controllerToken: String, val expiresAtMs: Long) {
-    val link: String get() = "${CloudflareBackend.BASE_URL}/remote/#$sessionId.$controllerToken"
+data class BrowserLinkTicket(
+    val sessionId: String,
+    val controllerToken: String,
+    val expiresAtMs: Long,
+    val browserBaseUrl: String = CloudflareBackend.BASE_URL
+) {
+    val link: String get() = "${browserBaseUrl.trimEnd('/')}/remote/#$sessionId.$controllerToken"
 }
 
 /** Process-local: killing the capture process must never silently restore consent. */
@@ -35,6 +41,23 @@ object BrowserLinkRuntime {
 }
 
 object BrowserLinkBackend {
+    private fun validatedBrowserBaseUrl(value: String): String {
+        val uri = runCatching { URI(value.trim()) }.getOrNull()
+            ?: return CloudflareBackend.BASE_URL
+        val pathOk = uri.rawPath.isNullOrEmpty() || uri.rawPath == "/"
+        if (
+            !uri.scheme.equals("https", ignoreCase = true) ||
+            uri.host.isNullOrBlank() ||
+            uri.rawUserInfo != null ||
+            uri.rawQuery != null ||
+            uri.rawFragment != null ||
+            !pathOk
+        ) {
+            return CloudflareBackend.BASE_URL
+        }
+        return "https://${uri.rawAuthority}"
+    }
+
     suspend fun create(context: Context): BrowserLinkTicket {
         var created: BrowserLinkTicket? = null
         try {
@@ -42,8 +65,14 @@ object BrowserLinkBackend {
                 val root = CloudflareBackend.publicRequest("POST", "/v1/browser-sessions")
                 val id = root.getString("sessionId")
                 CloudflareBackend.rememberToken(context, id, root.getString("hostToken"))
-                BrowserLinkTicket(id, root.getString("controllerToken"), root.getLong("expiresAtMs"))
-                    .also { created = it }
+                BrowserLinkTicket(
+                    sessionId = id,
+                    controllerToken = root.getString("controllerToken"),
+                    expiresAtMs = root.getLong("expiresAtMs"),
+                    browserBaseUrl = validatedBrowserBaseUrl(
+                        root.optString("browserBaseUrl", CloudflareBackend.BASE_URL)
+                    )
+                ).also { created = it }
             }
         } catch (error: Exception) {
             // Cancellation may happen after the server creates a session but
