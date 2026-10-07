@@ -136,7 +136,7 @@ class HighCadenceProbeTest {
                 gap = 50
             )
 
-        assertTrue(
+        assertFalse(
             g.observe(
                 outbound = sender(fps = 60),
                 receiver = recv,
@@ -145,18 +145,40 @@ class HighCadenceProbeTest {
                 producerFps = 60.0
             )
         )
+        assertEquals(60, g.cap)
+
+        assertTrue(
+            g.observe(
+                outbound = sender(fps = 60),
+                receiver = recv,
+                requestedFps = 60,
+                nowMs = 1_500L,
+                producerFps = 60.0
+            )
+        )
         assertEquals(58, g.cap)
     }
 
-    @Test fun ordinaryQueuePressureUsesFineReliefStep() {
+    @Test fun ordinaryQueuePressureNeedsConfirmationBeforeFineRelief() {
         val g = VideoCadenceGovernor(60, 60)
+
+        assertFalse(
+            g.observe(
+                outbound = sender(fps = 60, queue = 45.0),
+                receiver = receiver(60),
+                requestedFps = 60,
+                nowMs = 1_000L,
+                producerFps = 60.0
+            )
+        )
+        assertEquals(60, g.cap)
 
         assertTrue(
             g.observe(
                 outbound = sender(fps = 60, queue = 45.0),
                 receiver = receiver(60),
                 requestedFps = 60,
-                nowMs = 1_000L,
+                nowMs = 1_500L,
                 producerFps = 60.0
             )
         )
@@ -321,7 +343,22 @@ class HighCadenceProbeTest {
         assertEquals(36, g.cap)
     }
 
-    @Test fun trialPressureRollsBackImmediately() {
+    @Test fun highCadenceTrialIgnoresOneSoftBlipButRollsBackWhenItPersists() {
+        val g = VideoCadenceGovernor(60, 30)
+        assertFalse(sample(g, 1_000L))
+        assertTrue(sample(g, 2_000L))
+        assertEquals(36, g.cap)
+
+        // One ordinary queue excursion blocks fresh proof but is not enough to
+        // throw away the trial. A second consecutive overload confirms it.
+        assertFalse(sample(g, 3_000L, fps = 36, queue = 45.0))
+        assertEquals(36, g.cap)
+
+        assertTrue(sample(g, 4_000L, fps = 36, queue = 45.0))
+        assertEquals(30, g.cap)
+    }
+
+    @Test fun highCadenceTrialStillRollsBackImmediatelyForUrgentPressure() {
         val g = VideoCadenceGovernor(60, 30)
         assertFalse(sample(g, 1_000L))
         assertTrue(sample(g, 2_000L))
