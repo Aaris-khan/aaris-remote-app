@@ -22,6 +22,7 @@ class VideoCadenceGovernor(
     private var lastDecision = "startup"
     private var lastDeadlineSummary = "deadline=unknown"
     private val highCadenceProbe = HighCadenceProbe()
+    private val highCadencePressureGate = HighCadencePressureGate()
     val probingHighCadence: Boolean get() = highCadenceProbe.probing
 
     /**
@@ -381,7 +382,21 @@ class VideoCadenceGovernor(
                         maxGapMs >= fullCadenceGapMs
                     )
 
-        if (!severe && !fullCadencePressure) {
+        /*
+         * A single moderate full-cadence hitch is evidence, not yet proof of a
+         * sustainable overload. Require a second distinct EGL window before
+         * trimming 60 fps. Severe presentation pressure bypasses confirmation,
+         * but still receives only the bounded one-rung presentation relief
+         * below. The gate keeps this render-clock evidence separate from the
+         * getStats lane so the same physical hitch cannot be double-counted.
+         */
+        if (
+            !highCadencePressureGate.observePresentation(
+                nowMs = nowMs,
+                softPressure = fullCadencePressure,
+                severePressure = severe
+            )
+        ) {
             return false
         }
 
@@ -423,6 +438,15 @@ class VideoCadenceGovernor(
         allowHighCadenceProbe: Boolean = true
     ): Boolean {
         val sender = outbound.recent ?: return false
+
+        if (
+            cap < HIGH_CADENCE_FAST_RELIEF_FPS ||
+            requestedFps < HIGH_CADENCE_FAST_RELIEF_FPS
+        ) {
+            // Soft full-cadence evidence must never survive a downshift and
+            // become a stale vote after a later promotion back to 60 fps.
+            highCadencePressureGate.reset()
+        }
 
         // A still producer emits very few fresh frames. Old jitter, loss, or
         // RTT must not ratchet the FPS ceiling downward during silence.
@@ -613,22 +637,42 @@ class VideoCadenceGovernor(
                     )
 
         /*
-         * Full-cadence remoting has the smallest frame budget. At 60 fps an
-         * ordinary, measured queue/jitter/render-pressure crossing already means
-         * multiple old frames can sit between the user's finger and the pixels
-         * they see. Waiting for a second one-second stats window makes a fast
-         * swipe feel sticky even when the control command was applied promptly.
-         *
-         * Allow exactly one early soft 60 -> 45 relief step. Requiring both the
-         * current cap and requested cadence to remain at 60 prevents this signal
-         * from cascading below 45; lower rungs retain the established two-window
-         * hysteresis unless pressure is urgent or severe.
+         * Full-cadence remoting has the smallest frame budget, but one ordinary
+         * mobile-network or scheduler excursion is not enough to prove that 60
+         * fps is unsustainable. Keep this signal scoped to full cadence, then
+         * let the confidence gate distinguish isolated evidence from sustained
+         * pressure. Confirmed soft pressure earns only the next fine rung
+         * (normally 60 -> 58); urgent/severe evidence still bypasses the gate.
          */
+        val highCadenceResidencePressure =
+            pipelineResidencePressure || fallbackLayerPressure
         val highCadenceFreshnessPressure =
             !severePressure &&
+                !urgentFreshnessPressure &&
                 cap >= HIGH_CADENCE_FAST_RELIEF_FPS &&
                 requestedFps >= HIGH_CADENCE_FAST_RELIEF_FPS &&
-                (pipelineResidencePressure || fallbackLayerPressure || presentationPressure)
+                (highCadenceResidencePressure || presentationPressure)
+
+        /*
+         * One ordinary 60-fps queue/render crossing is allowed to be transient.
+         * Two fresh telemetry windows confirm it. If residence and actual glass
+         * presentation are both bad inside the same stats snapshot, independent
+         * domains corroborate the event and one fine relief step may happen
+         * immediately. Urgent/severe pressure never waits on this soft gate.
+         */
+        val highCadenceFreshnessConfirmed =
+            if (severePressure || urgentFreshnessPressure) {
+                highCadencePressureGate.reset()
+                false
+            } else {
+                highCadencePressureGate.observeTelemetry(
+                    nowMs = nowMs,
+                    softPressure = highCadenceFreshnessPressure,
+                    corroborated =
+                        highCadenceResidencePressure &&
+                            presentationPressure
+                )
+            }
 
         val cpuPressure = outbound.qualityLimitationReason == "cpu"
 
@@ -636,9 +680,27 @@ class VideoCadenceGovernor(
             codecPressure || receiverDrops || congestion || presentationPressure ||
                 cpuPressure || senderDeliveryCollapse
 
+        /*
+         * A high-cadence trial must not roll back on one ordinary mobile-network
+         * blip. Promotion eligibility already rejects that sample, so the trial
+         * simply stops accumulating proof. Roll back immediately only for true
+         * emergency/device collapse, corroborated high-cadence staleness, or a
+         * second consecutive ordinary overload window.
+         */
+        val probeOverloadConfirmed =
+            severePressure ||
+                urgentFreshnessPressure ||
+                cpuPressure ||
+                senderDeliveryCollapse ||
+                highCadenceFreshnessConfirmed ||
+                (
+                    overloaded &&
+                        pressure >= PRESSURE_SAMPLES_TO_REDUCE - 1
+                    )
+
         highCadenceProbe.observe(
             outbound, receiver, producerFps, cap, minOf(maxFps, maximumFps),
-            allowHighCadenceProbe, overloaded, nowMs
+            allowHighCadenceProbe, probeOverloadConfirmed, nowMs
         )?.let { next ->
             val before = cap
             cap = next
@@ -664,13 +726,13 @@ class VideoCadenceGovernor(
                 if (
                     severePressure ||
                     urgentFreshnessPressure ||
-                    highCadenceFreshnessPressure
+                    highCadenceFreshnessConfirmed
                 ) 2 else 1
             pressure = (pressure + pressureWeight).coerceAtMost(PRESSURE_SAMPLES_TO_REDUCE)
             val changeInterval = when {
                 severePressure -> SEVERE_CHANGE_INTERVAL_MS
                 urgentFreshnessPressure -> URGENT_FRESHNESS_CHANGE_INTERVAL_MS
-                highCadenceFreshnessPressure -> HIGH_CADENCE_FAST_RELIEF_CHANGE_INTERVAL_MS
+                highCadenceFreshnessConfirmed -> HIGH_CADENCE_FAST_RELIEF_CHANGE_INTERVAL_MS
                 else -> MIN_CHANGE_INTERVAL_MS
             }
             if (pressure < PRESSURE_SAMPLES_TO_REDUCE || nowMs - changedAt < changeInterval) return false
@@ -806,6 +868,7 @@ class VideoCadenceGovernor(
 
         return "cap=${cap}fps decision=$lastDecision " +
             "$lastDeadlineSummary " +
+            highCadencePressureGate.compact(nowMs) + " " +
             "changeAgo=${ageMs(changedAt)} " +
             "overloadAgo=${ageMs(lastOverloadAtMs)} " +
             "floorProof=$interactiveFloorHeadroom/$INTERACTION_FLOOR_SAMPLES " +

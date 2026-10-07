@@ -50,10 +50,22 @@ class VideoUrgentFreshnessTest {
     }
 
     @Test
-    fun ordinaryFullCadenceQueueGetsOneFreshnessStep() {
+    fun isolatedOrdinaryFullCadenceQueueBlipDoesNotDownshift() {
         val governor = VideoCadenceGovernor(60)
 
-        assertTrue(governor.observe(outbound(queueMs = 70.0), receiver(), 60, 2_000))
+        assertFalse(governor.observe(outbound(queueMs = 45.0), receiver(), 60, 1_000))
+        assertEquals(60, governor.cap)
+
+        assertFalse(governor.observe(outbound(queueMs = 0.0), receiver(), 60, 1_500))
+        assertEquals(60, governor.cap)
+    }
+
+    @Test
+    fun sustainedOrdinaryFullCadenceQueueGetsFineRelief() {
+        val governor = VideoCadenceGovernor(60)
+
+        assertFalse(governor.observe(outbound(queueMs = 45.0), receiver(), 60, 1_000))
+        assertTrue(governor.observe(outbound(queueMs = 45.0), receiver(), 60, 1_500))
         assertEquals(58, governor.cap)
     }
 
@@ -67,10 +79,10 @@ class VideoUrgentFreshnessTest {
     }
 
     @Test
-    fun halfSecondGlassHitchRelievesSixtyBeforeNextStatsWindow() {
+    fun oneModerateHalfSecondGlassHitchIsTolerated() {
         val governor = VideoCadenceGovernor(60)
 
-        assertTrue(
+        assertFalse(
             governor.observeFastPresentation(
                 intervalMs = 500,
                 renderedFrames = 22,
@@ -80,13 +92,14 @@ class VideoUrgentFreshnessTest {
                 nowMs = 500
             )
         )
-        assertEquals(58, governor.cap)
+        assertEquals(60, governor.cap)
     }
 
     @Test
-    fun ordinaryFineCadenceVarianceDoesNotCascade() {
+    fun twoModerateGlassHitchesConfirmFineRelief() {
         val governor = VideoCadenceGovernor(60)
-        assertTrue(
+
+        assertFalse(
             governor.observeFastPresentation(
                 intervalMs = 500,
                 renderedFrames = 22,
@@ -94,6 +107,42 @@ class VideoUrgentFreshnessTest {
                 requestedFps = 60,
                 interactionActive = true,
                 nowMs = 500
+            )
+        )
+        assertTrue(
+            governor.observeFastPresentation(
+                intervalMs = 500,
+                renderedFrames = 22,
+                maxGapMs = 80,
+                requestedFps = 60,
+                interactionActive = true,
+                nowMs = 1_000
+            )
+        )
+        assertEquals(58, governor.cap)
+    }
+
+    @Test
+    fun ordinaryFineCadenceVarianceDoesNotCascade() {
+        val governor = VideoCadenceGovernor(60)
+        assertFalse(
+            governor.observeFastPresentation(
+                intervalMs = 500,
+                renderedFrames = 22,
+                maxGapMs = 80,
+                requestedFps = 60,
+                interactionActive = true,
+                nowMs = 500
+            )
+        )
+        assertTrue(
+            governor.observeFastPresentation(
+                intervalMs = 500,
+                renderedFrames = 22,
+                maxGapMs = 80,
+                requestedFps = 60,
+                interactionActive = true,
+                nowMs = 1_000
             )
         )
 
@@ -104,7 +153,7 @@ class VideoUrgentFreshnessTest {
                 maxGapMs = 80,
                 requestedFps = 58,
                 interactionActive = true,
-                nowMs = 1_000
+                nowMs = 1_500
             )
         )
         assertEquals(58, governor.cap)
@@ -116,13 +165,14 @@ class VideoUrgentFreshnessTest {
         assertTrue(
             governor.observeFastPresentation(
                 intervalMs = 500,
-                renderedFrames = 22,
-                maxGapMs = 80,
+                renderedFrames = 10,
+                maxGapMs = 180,
                 requestedFps = 60,
                 interactionActive = true,
                 nowMs = 500
             )
         )
+        assertEquals(58, governor.cap)
 
         assertTrue(
             governor.observeFastPresentation(

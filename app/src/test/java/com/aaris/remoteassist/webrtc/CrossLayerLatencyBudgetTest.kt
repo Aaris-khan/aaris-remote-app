@@ -51,11 +51,12 @@ class CrossLayerLatencyBudgetTest {
         val sender = outbound(sendQueueMs = 35.0)
         val controller = receiver(jitterMs = 45.0)
 
-        // 35 ms is below the sender's 55 ms alarm and 45 ms is below the
-        // receiver's 85 ms alarm, but 80 ms of serial residence is visibly
-        // stale for 60 fps remote control. At full cadence we now take one
-        // immediate soft step instead of waiting another stats window.
-        assertTrue(governor.observe(sender, controller, 60, 1_000))
+        // 35 ms is below the sender alarm and 45 ms is below the receiver
+        // alarm, but 80 ms of serial residence is stale at 60 fps. One window
+        // may still be a mobile-network blip, so require confirmation.
+        assertFalse(governor.observe(sender, controller, 60, 1_000))
+        assertEquals(60, governor.cap)
+        assertTrue(governor.observe(sender, controller, 60, 1_500))
         assertEquals(58, governor.cap)
     }
 
@@ -66,10 +67,11 @@ class CrossLayerLatencyBudgetTest {
         val controller = receiver(jitterMs = 35.0)
 
         // Neither endpoint is individually unhealthy. Together they retain
-        // about 3.6 60-Hz frame periods, which is enough to make a fresh swipe
-        // visibly trail the controlled phone. One fine 60 -> 58 step starts draining
-        // the queue while lower rungs keep conservative hysteresis.
-        assertTrue(governor.observe(sender, controller, 60, 1_000))
+        // about 3.6 60-Hz frame periods. Confirm that the debt persists before
+        // taking the fine 60 -> 58 step.
+        assertFalse(governor.observe(sender, controller, 60, 1_000))
+        assertEquals(60, governor.cap)
+        assertTrue(governor.observe(sender, controller, 60, 1_500))
         assertEquals(58, governor.cap)
     }
 
