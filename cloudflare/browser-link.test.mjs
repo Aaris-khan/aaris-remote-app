@@ -55,6 +55,7 @@ test('GET previews load a token-free console without claiming or consuming a ses
   const clientScript=await browserResponse('/remote/client.js').text();
   assert.match(clientScript,/browser_ping/);
   assert.match(clientScript,/linkClientId/);
+  assert.match(clientScript,/history\.replaceState/);
 });
 test('browser public origin accepts only a clean HTTPS origin and otherwise falls back safely',()=>{
   const request=new Request('https://worker.example/v1/browser-sessions');
