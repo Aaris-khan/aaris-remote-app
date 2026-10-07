@@ -19,7 +19,8 @@ class ScreenCaptureTrack(
     context: Context,
     grant: ProjectionGrant,
     private val onProjectionStopped: () -> Unit,
-    private val onSourceMotion: () -> Unit = {}
+    private val onSourceMotion: () -> Unit = {},
+    private val onSourceGeometryChanged: (Int, Int) -> Unit = { _, _ -> }
 ) : Closeable {
     private val appContext = context.applicationContext
     private val factory = WebRtcRuntime.factory(appContext)
@@ -64,6 +65,8 @@ class ScreenCaptureTrack(
 
     @Volatile
     private var started = false
+    private var lastObservedSourceWidth = 0
+    private var lastObservedSourceHeight = 0
     private var sourceGeometry: StableCaptureGeometry? = null
     private var outputFormat: Triple<Int, Int, Int>? = null
 
@@ -88,6 +91,34 @@ class ScreenCaptureTrack(
                 override fun onCapturerStopped() { videoSource.capturerObserver.onCapturerStopped() }
                 override fun onFrameCaptured(frame: VideoFrame) {
                     refreshPolicy.onSample(android.os.SystemClock.elapsedRealtime())
+
+                    /*
+                     * MediaProjection/OEM rotation callbacks are not perfectly
+                     * reliable while a fullscreen game owns the display. The
+                     * actual producer frame is authoritative geometry evidence.
+                     * Publish only when the oriented source dimensions change;
+                     * this is O(1), allocates nothing on steady-state frames and
+                     * never waits on policy work.
+                     */
+                    val observedWidth = frame.rotatedWidth
+                    val observedHeight = frame.rotatedHeight
+                    if (
+                        observedWidth > 0 &&
+                        observedHeight > 0 &&
+                        (
+                            observedWidth != lastObservedSourceWidth ||
+                                observedHeight != lastObservedSourceHeight
+                            )
+                    ) {
+                        lastObservedSourceWidth = observedWidth
+                        lastObservedSourceHeight = observedHeight
+                        runCatching {
+                            onSourceGeometryChanged(
+                                observedWidth,
+                                observedHeight
+                            )
+                        }
+                    }
                     // Admit the latency-critical RTP sample first. Auxiliary
                     // sinks are best-effort consumers (fallback recovery / AI
                     // snapshots); a slow conversion or retain must never hold
