@@ -138,8 +138,9 @@ class AssistAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null || !AiConnectorRuntime.state.active) return
-        AiObservationSignals.changed?.invoke()
+        if (event == null) return
+        if (AiConnectorRuntime.state.active) AiObservationSignals.changed?.invoke()
+        if (com.aaris.remoteassist.ai.BrowserLinkRuntime.sharing) com.aaris.remoteassist.ai.BrowserLinkRuntime.screenChanged?.invoke()
     }
 
     override fun onInterrupt() { stopAiIfActive() }
@@ -1274,6 +1275,59 @@ class AssistAccessibilityService : AccessibilityService() {
         return AiUiSnapshot(packageName, hints, masks, sensitiveFocus || hasSensitiveFocusedInput(), truncated, windowId, nodes)
     }
 
+    /** Bounded active-window read; only message containers with assistant provenance. */
+    @Suppress("DEPRECATION")
+    private fun collectBrowserAgentReply(): Pair<String, String>? {
+        check(Looper.myLooper() == mainHandler.looper)
+        if (keyguard.isDeviceLocked || keyguard.isKeyguardLocked) return null
+        val root = rootInActiveWindow ?: return null
+        val pkg = root.packageName?.toString().orEmpty()
+        if (pkg !in com.aaris.remoteassist.ai.BrowserAgentCommand.chatPackages) { root.recycle(); return null }
+        var visited = 0
+        val queue = ArrayDeque<AccessibilityNodeInfo>(); queue.add(root)
+        var candidate: Pair<String, String>? = null
+        try {
+            while (queue.isNotEmpty() && visited++ < 500) {
+                val node = queue.removeFirst()
+                try {
+                    if (!node.isVisibleToUser || node.isEditable || node.isPassword) continue
+                    val text = node.text?.toString().orEmpty()
+                    if (text.contains(com.aaris.remoteassist.ai.BrowserAgentCommand.BEGIN)) {
+                        var container: AccessibilityNodeInfo? = AccessibilityNodeInfo.obtain(node)
+                        try {
+                            repeat(4) {
+                                val current = container ?: return@repeat
+                                val parts = mutableListOf<String>(); var assistant = false; var user = false
+                                val local = ArrayDeque<AccessibilityNodeInfo>(); local.add(AccessibilityNodeInfo.obtain(current)); var n = 0
+                                while (local.isNotEmpty() && n++ < 160) {
+                                    val child = local.removeFirst()
+                                    try {
+                                        if (!child.isVisibleToUser || child.isEditable || child.isPassword) { if (child.isEditable) user = true; continue }
+                                        val label = child.contentDescription?.toString().orEmpty().lowercase()
+                                        val id = child.viewIdResourceName.orEmpty().lowercase()
+                                        if (id.contains("assistant_message") || id.contains("message_assistant") || label in setOf("read aloud", "good response", "bad response", "thumbs up", "thumbs down", "retry response", "पढ़कर सुनाएँ", "अच्छा जवाब", "खराब जवाब")) assistant = true
+                                        if (id.contains("user_message") || id.contains("message_user") || label in setOf("edit message", "edit prompt")) user = true
+                                        child.text?.toString()?.takeIf { it.length <= 16384 }?.let(parts::add)
+                                        for (i in 0 until child.childCount.coerceAtMost(60)) child.getChild(i)?.let { if (local.size < 160) local.add(it) else it.recycle() }
+                                    } finally { child.recycle() }
+                                }
+                                val truncated = local.isNotEmpty(); while (local.isNotEmpty()) local.removeFirst().recycle()
+                                val joined = if (text.contains(com.aaris.remoteassist.ai.BrowserAgentCommand.END)) text else parts.distinct().joinToString("\n")
+                                if (assistant && !user && !truncated && joined.length <= 16384 && joined.contains(com.aaris.remoteassist.ai.BrowserAgentCommand.END)) {
+                                    candidate = pkg to joined
+                                    return@repeat
+                                }
+                                val parent = current.parent; current.recycle(); container = parent
+                            }
+                        } finally { container?.recycle() }
+                    }
+                    for (i in 0 until node.childCount.coerceAtMost(60)) node.getChild(i)?.let { if (queue.size < 500) queue.add(it) else it.recycle() }
+                } finally { node.recycle() }
+            }
+        } finally { while (queue.isNotEmpty()) queue.removeFirst().recycle() }
+        return candidate
+    }
+
     companion object {
         private const val MAX_REMOTE_TEXT_CHARS = 1000
         // Long enough to cross several 60 Hz input samples in games while
@@ -1316,5 +1370,6 @@ class AssistAccessibilityService : AccessibilityService() {
 
         fun isConnected(): Boolean = instance.get() != null
         fun aiSnapshot(): AiUiSnapshot? = instance.get()?.collectAiSnapshot()
+        fun browserAgentReply(): Pair<String, String>? = instance.get()?.collectBrowserAgentReply()
     }
 }

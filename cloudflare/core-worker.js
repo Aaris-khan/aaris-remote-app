@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { agentPage, agentParameters, observationResponse } from "./browser-agent.js";
 import { browserResponse } from "./browser-console.js";
 
 const CODE_TTL=300000,APPROVAL_TTL=180000,CONNECT_TTL=180000;
@@ -16,6 +17,7 @@ function bearer(r){const h=r.headers.get("authorization")||"";if(!h.toLowerCase(
 async function body(r){const x=await r.text();if(x.length>786432)throw new Error("request_too_large");return x?JSON.parse(x):{}}
 function deadline(s){if(!s)return null;if(s.state==="CODE_ACTIVE")return s.expiresAtMs;if(s.state==="PAIR_PENDING")return s.approvalExpiresAtMs||null;if(s.state==="HOST_APPROVED"||s.state==="SCREEN_READY")return s.connectExpiresAtMs||null;if(s.state==="LIVE"&&s.browserLink)return s.sessionExpiresAtMs;return null}
 const pub=s=>s?{sessionId:s.sessionId,state:s.state,hostUid:s.hostId,controllerUid:s.controllerId||null,displayGeneration:s.displayGeneration||0,deadlineAtMs:deadline(s),...(s.browserLink?{browserEpoch:s.browser?.epoch||0,browserLink:true}: {})}:null;
+const withoutImageData=value=>value?.image?{...value,image:{...value.image,data:undefined}}:value;
 const browserInstance=/^[a-f0-9-]{36}$/;
 export function browserPublicOrigin(request,env){
   const fallback=new URL(request.url).origin,raw=String(env?.BROWSER_PUBLIC_ORIGIN||'').trim();
@@ -136,6 +138,85 @@ export class AarisSession extends DurableObject{
     if(!this.browserAuthorized(s,h,instanceId))return{ok:false,status:409,code:'controller_replaced'};
     return{ok:true};
   }
+  // Read-only observation does not claim the browser or consume the link.
+  async agentObservation(h,refresh=true,frameId=null) {
+    const s=await this.session();
+    if(!s?.browserLink||!this.role(s,h))return{ok:false,status:401,error:'unauthorized'};
+    if(s.state==='CLOSED'||deadline(s)<=Date.now())return{ok:false,status:410,error:'session_ended'};
+    let observation=await this.ctx.storage.get('agent:observation');
+    if(!refresh&&frameId&&frameId!==observation?.observationId){
+      const previous=await this.ctx.storage.get('agent:previous');
+      if(previous?.observationId===frameId&&previous.expiresAtMs>Date.now())observation=previous;
+    }
+    const online=this.ctx.getWebSockets('host-agent').length>0,nativeOnline=this.ctx.getWebSockets('host').length>0;
+    const captureStatus=await this.ctx.storage.get('agent:status');
+    if(refresh&&online&&(!observation||Date.now()-observation.receivedAtMs>2500))await this.agentEnqueue(h,'observe',{},null);
+    return{ok:true,phoneOnline:online||nativeOnline,agentOnline:online,state:s.state,observation:observation&&Date.now()-observation.receivedAtMs<90000?observation:null,
+      error:online?(captureStatus?.error||'OBSERVATION_PENDING'):nativeOnline?'SCREENSHOT_ADAPTER_UNAVAILABLE':'PHONE_OFFLINE'};
+  }
+  async agentEnqueue(h,kind,args,instanceId) {
+    let result,message;
+    const id=kind==='observe'?'observe':String(args.actionId||'');
+    if(kind!=='observe'&&!/^[a-zA-Z0-9_-]{8,80}$/.test(id))return{ok:false,status:400,error:'INVALID_ACTION_ID'};
+    const digest=await sha(JSON.stringify(args));
+    await this.ctx.storage.transaction(async t=>{
+      const s=await t.get('session');
+      if(!s?.browserLink||this.role(s,h)!=='controller'){result={ok:false,status:401,error:'unauthorized'};return}
+      if(s.state==='CLOSED'||deadline(s)<=Date.now()){result={ok:false,status:410,error:'session_ended'};return}
+      if(kind==='action'&&!this.browserAuthorized(s,h,instanceId)){result={ok:false,status:409,error:'controller_replaced'};return}
+      if(!this.ctx.getWebSockets('host-agent').length){result={ok:false,status:503,error:'PHONE_OFFLINE'};return}
+      const old=await t.get('agent:r:'+id);
+      if(old&&(kind==='action'||(!old.result&&old.expiresAtMs>Date.now()))){
+        result=kind==='action'&&old.digest!==digest?{ok:false,status:409,error:'ACTION_ID_CONFLICT'}:{ok:true,requestId:id,result:old.result||null};return;
+      }
+      const pending=await t.list({prefix:'agent:r:'});
+      if([...pending.values()].some(x=>!x.result&&x.expiresAtMs>Date.now())){result={ok:false,status:409,error:'ACTION_IN_PROGRESS'};return}
+      const now=Date.now();
+      message={kind:'agent_request',requestId:id,operation:kind,args,instanceId,epoch:s.browser?.epoch||0,expiresAtMs:now+12000};
+      await t.put('agent:r:'+id,{...message,digest,createdAtMs:now,dispatched:false});
+      // Bound retained idempotency records. Expired actions are never replayed.
+      const oldKeys=[...pending].sort((a,b)=>a[1].createdAtMs-b[1].createdAtMs);
+      for(const [key] of oldKeys.slice(0,Math.max(0,oldKeys.length-63)))await t.delete(key);
+      result={ok:true,requestId:id,result:null};
+    });
+    if(message)for(const ws of this.ctx.getWebSockets('host-agent'))try{ws.send(JSON.stringify(message))}catch(_){}
+    return result;
+  }
+  async agentStart(h,id) {
+    let result;
+    await this.ctx.storage.transaction(async t=>{
+      const s=await t.get('session'),r=await t.get('agent:r:'+id);
+      if(!s?.browserLink||this.role(s,h)!=='host'){result={ok:false,status:401,error:'unauthorized'};return}
+      if(!r||r.dispatched||r.result||r.expiresAtMs<=Date.now()||s.state==='CLOSED'||deadline(s)<=Date.now()||
+        (r.operation==='action'&&(s.browser?.instanceId!==r.instanceId||s.browser?.epoch!==r.epoch))){result={ok:false,status:409,error:'REQUEST_EXPIRED_OR_USED'};return}
+      r.dispatched=true;await t.put('agent:r:'+id,r);result={ok:true};
+    });return result;
+  }
+  async agentPublish(h,result,requestId=null) {
+    let outcome;
+    await this.ctx.storage.transaction(async t=>{
+      const s=await t.get('session');
+      if(!s?.browserLink||this.role(s,h)!=='host'){outcome={ok:false,status:401,error:'unauthorized'};return}
+      if(s.state==='CLOSED'||deadline(s)<=Date.now()){outcome={ok:false,status:410,error:'session_ended'};return}
+      if(JSON.stringify(result).length>700000){outcome={ok:false,status:413,error:'FRAME_TOO_LARGE'};return}
+      if(requestId){const r=await t.get('agent:r:'+requestId);if(!r?.dispatched||r.result){outcome={ok:false,status:409,error:'REQUEST_EXPIRED_OR_USED'};return}r.result=result;await t.put('agent:r:'+requestId,r)}
+      if(result.error&&!result.observationId)await t.put('agent:status',{error:String(result.error).slice(0,100),receivedAtMs:Date.now()});
+      if(result.observationId)await t.delete('agent:status');
+      if(result.actionId&&!result.observationId){await t.delete('agent:observation');await t.delete('agent:previous')}
+      if(result.observationId&&result.image?.mimeType==='image/jpeg'&&typeof result.image.data==='string')
+        {const previous=await t.get('agent:observation');
+         if(previous&&previous.observationId!==result.observationId)await t.put('agent:previous',{...previous,expiresAtMs:Date.now()+15000});
+         const observation={...result,receivedAtMs:Date.now()};delete observation.error;delete observation.actionId;delete observation.applied;await t.put('agent:observation',observation)}
+      outcome={ok:true};
+    });return outcome;
+  }
+  async agentResult(h,id,instanceId) {
+    const auth=await this.authorizeRequest(h,instanceId);if(!auth.ok)return auth;
+    const r=await this.ctx.storage.get('agent:r:'+id);
+    if(!r)return{ok:false,status:404,error:'REQUEST_NOT_FOUND'};
+    if(r.operation==='action'&&r.instanceId!==instanceId)return{ok:false,status:409,error:'controller_replaced'};
+    return{ok:true,result:r.result|| (r.expiresAtMs<=Date.now()?{error:r.dispatched?'OUTCOME_UNKNOWN':'REQUEST_EXPIRED',applied:null}:null)};
+  }
   async redeem(controllerTokenHash,controllerId,now){
     let o;
     await this.ctx.storage.transaction(async t=>{
@@ -190,6 +271,7 @@ export class AarisSession extends DurableObject{
     }
     return o;
   }
+  async clearAgentData(){const data=await this.ctx.storage.list({prefix:'agent:'});if(data.size)await this.ctx.storage.delete([...data.keys()])}
   async closeSession(h,now,instanceId=null){
     let result,updated;
     await this.ctx.storage.transaction(async t=>{
@@ -199,7 +281,7 @@ export class AarisSession extends DurableObject{
       if(s.state!=='CLOSED'){s.state='CLOSED';s.closedAtMs=now;await t.put('session',s);await t.setAlarm(now+CLOSED_RETENTION);updated=s}
       result={ok:true,snapshot:pub(s)};
     });
-    if(updated)this.broadcastSession(updated);
+    if(updated){await this.clearAgentData();this.broadcastSession(updated)}
     return result;
   }
   async authorizeIce(h){
@@ -250,16 +332,20 @@ export class AarisSession extends DurableObject{
   }
   async fetch(request){
     const u=new URL(request.url);
-    if(!u.pathname.endsWith("/socket"))return new Response("Not found",{status:404});
+    if(!u.pathname.endsWith("/socket")&&!u.pathname.endsWith("/agent-socket"))return new Response("Not found",{status:404});
     if((request.headers.get("upgrade")||"").toLowerCase()!=="websocket")return new Response("Expected WebSocket",{status:426});
     const raw=bearer(request);if(!raw)return new Response("Unauthorized",{status:401});
     const h=await sha(raw),s=await this.session(),r=this.role(s,h);if(!r)return new Response("Unauthorized",{status:401});
+    const agentSocket=u.pathname.endsWith('/agent-socket');
+    if(agentSocket&&(!s.browserLink||r!=='host'))return new Response('Unauthorized',{status:403});
     const instanceId=request.headers.get('X-Aaris-Instance');
     if(s.browserLink&&(s.state==='CLOSED'||deadline(s)<=Date.now()))return new Response('Ended',{status:410});
     if(!this.browserAuthorized(s,h,instanceId))return new Response('Controller replaced',{status:409});
     if(s.browserLink&&r==='controller')for(const old of this.ctx.getWebSockets('controller'))try{old.close(4009,'Socket replaced')}catch(_){}
     const pair=new WebSocketPair(),[client,server]=Object.values(pair);
-    this.ctx.acceptWebSocket(server,[r]);server.serializeAttachment({role:r,instanceId});
+    const role=agentSocket?'host-agent':r;
+    if(agentSocket)for(const old of this.ctx.getWebSockets('host-agent'))try{old.close(4009,'Agent socket replaced')}catch(_){}
+    this.ctx.acceptWebSocket(server,[role]);server.serializeAttachment({role,instanceId});
     console.log(JSON.stringify({
       event:"socket_open",
       role:r,
@@ -267,7 +353,7 @@ export class AarisSession extends DurableObject{
       after:Math.max(0,Number(u.searchParams.get("after")||0)||0)
     }));
     server.send(JSON.stringify({kind:"session",session:pub(s)}));
-    const backlog=await this.eventsAfter(h,Math.max(0,Number(u.searchParams.get("after")||0)||0));
+    const backlog=agentSocket?{ok:false}:await this.eventsAfter(h,Math.max(0,Number(u.searchParams.get("after")||0)||0));
     if(backlog.ok)for(const e of backlog.events)server.send(JSON.stringify({kind:"signal_event",event:e}));
     return new Response(null,{status:101,webSocket:client,...(instanceId?{headers:{'Sec-WebSocket-Protocol':'aaris-remote'}}:{})});
   }
@@ -304,7 +390,7 @@ export class AarisSession extends DurableObject{
       return;
     }
     const d=deadline(s);
-    if(d!=null&&d<=now){s.state="CLOSED";s.closedAtMs=now;await this.ctx.storage.put("session",s);this.broadcastSession(s);await this.ctx.storage.setAlarm(now+CLOSED_RETENTION)}
+    if(d!=null&&d<=now){s.state="CLOSED";s.closedAtMs=now;await this.ctx.storage.put("session",s);await this.clearAgentData();this.broadcastSession(s);await this.ctx.storage.setAlarm(now+CLOSED_RETENTION)}
   }
 }
 
@@ -315,7 +401,14 @@ export default{
   async fetch(request,env){
     try{
       const u=new URL(request.url);
-      if(request.method==='GET'&&['/remote','/remote/','/remote/client.js'].includes(u.pathname))return browserResponse(u.pathname);
+      if(request.method==='GET'&&u.pathname==='/remote/client.js')return browserResponse(u.pathname);
+      if(request.method==='GET'&&['/remote','/remote/','/remote/frame','/remote/observe'].includes(u.pathname)){
+        const params=agentParameters(u);
+        if(!params)return u.pathname.startsWith('/remote/f')||u.pathname==='/remote/observe'?fail(401,'unauthorized','Open the complete phone link.'):browserResponse(u.pathname);
+        const state=await sessions(env,params.sessionId).agentObservation(await sha(params.access),u.pathname!=='/remote/frame',u.searchParams.get('observationId'));
+        if(u.pathname==='/remote/frame'||u.pathname==='/remote/observe')return observationResponse(u,state);
+        return agentPage(u,state);
+      }
       if(request.method==='POST'&&u.pathname==='/v1/browser-sessions'){
         const id=hex(rb(32)),hostToken=token(),controllerToken=token(),browserClientId=crypto.randomUUID(),now=Date.now();
         const r=await sessions(env,id).initBrowser(id,await sha(hostToken),await sha(controllerToken),now);
@@ -371,9 +464,23 @@ export default{
         const x=await body(request),r=await room.claimBrowser(h,x.clientId,x.instanceId,Date.now());
         return r.ok?j(r):fail(r.status,r.code,'Cannot join this browser session.');
       }
+      if(request.method==='GET'&&action==='agent-observe'){const r=await room.agentObservation(h);return j({...r,observation:withoutImageData(r.observation)},r.ok?200:r.status||400)}
+      if(request.method==='POST'&&action==='agent-publish'){
+        const x=await body(request),r=await room.agentPublish(h,x.result,x.requestId||null);return j(r,r.ok?200:r.status||400);
+      }
+      if(request.method==='POST'&&action==='agent-start'){
+        const x=await body(request),r=await room.agentStart(h,String(x.requestId||''));return j(r,r.ok?200:r.status||400);
+      }
       const allowed=await room.authorizeRequest(h,request.headers.get('X-Aaris-Instance'));
       if(!allowed.ok)return fail(allowed.status,allowed.code,'Session ended or controller changed.');
-      if(action==="socket")return room.fetch(request);
+      if(action==="socket"||action==='agent-socket')return room.fetch(request);
+      if(request.method==='POST'&&(action==='agent-action'||action==='agent-refresh')){
+        if(request.headers.get('Origin')&&request.headers.get('Origin')!==u.origin)return fail(403,'invalid_origin','Invalid origin.');
+        const x=await body(request),r=await room.agentEnqueue(h,action==='agent-action'?'action':'observe',x,request.headers.get('X-Aaris-Instance'));return j(r,r.ok?202:r.status||400);
+      }
+      if(request.method==='GET'&&action==='agent-result'){
+        const r=await room.agentResult(h,u.searchParams.get('requestId'),request.headers.get('X-Aaris-Instance'));return j({...r,result:withoutImageData(r.result)},r.ok?200:r.status||400);
+      }
 
       if(request.method==="GET"&&action===""){
         const r=await room.snapshot(h);

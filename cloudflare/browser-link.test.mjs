@@ -8,6 +8,7 @@ import { browserResponse } from './browser-console.js';
 // The transaction stub serializes operations like Durable Object SQLite.
 const source = (await fs.readFile(new URL('./core-worker.js', import.meta.url), 'utf8'))
   .replace('import { DurableObject } from "cloudflare:workers";', 'class DurableObject { constructor(ctx, env) { this.ctx=ctx; this.env=env; } }')
+  .replace('"./browser-agent.js"', JSON.stringify(new URL('./browser-agent.js', import.meta.url).href))
   .replace('"./browser-console.js"', JSON.stringify(new URL('./browser-console.js', import.meta.url).href));
 globalThis.WebSocketRequestResponsePair = class {};
 const { default: worker, AarisSession, browserPublicOrigin } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
@@ -15,7 +16,7 @@ class Storage {
   values = new Map(); queue = Promise.resolve();
   async get(k) { return structuredClone(this.values.get(k)); }
   async put(k,v) { this.values.set(k,structuredClone(v)); }
-  async delete(k) { this.values.delete(k); }
+  async delete(k) { for(const key of Array.isArray(k)?k:[k])this.values.delete(key); }
   async deleteAll() { this.values.clear(); }
   async list({prefix}) { return new Map([...this.values].filter(([k])=>k.startsWith(prefix))); }
   async setAlarm(t) { this.alarm=t; }
@@ -166,4 +167,83 @@ test('long press, swipe, drag and text use the existing Android v1 packet shapes
   assert.equal(drag.byteLength,33);assert.equal(new DataView(drag).getUint8(22),2);
   assert.equal(new DataView(drag).getUint16(31),400);
   assert.equal(wire.command('text',hello,1n,{text:'हाय'}).byteLength,24+new TextEncoder().encode('हाय').length);
+});
+
+test('read-only query links expose phone status without claiming a controller; no GET performs actions',async()=>{
+  const f=await fixture();
+  const url=`https://remote.test/remote/?session=${sid}&access=${controller}&client=${client}`;
+  const page=await worker.fetch(new Request(url),f.env);
+  assert.equal(page.status,200);assert.match(await page.text(),/Phone offline/);
+  assert.equal((await f.storage.get('session')).browser,undefined);
+  const obs=await worker.fetch(new Request(url.replace('/remote/','/remote/observe')),f.env);
+  assert.equal((await obs.json()).phoneOnline,false);
+  assert.equal((await f.call(`/v1/sessions/${sid}/agent-action`)).status,409);
+  assert.equal([...f.storage.values.keys()].filter(k=>k.startsWith('agent:r:')).length,0);
+});
+test('HTTP screenshot mode dispatches once, fences replaced controllers and rejects conflicting action IDs',async()=>{
+  const f=await fixture();await f.room.claimBrowser(f.c,client,instance,f.now);
+  const sent=[];f.sockets.push({a:{role:'host-agent'},send:x=>sent.push(JSON.parse(x))});
+  const args={actionId:'unique_action_1',action:'home'};
+  const first=await f.room.agentEnqueue(f.c,'action',args,instance);
+  assert.equal(first.ok,true);assert.equal(sent.length,1);
+  assert.equal((await f.room.agentEnqueue(f.c,'action',args,instance)).requestId,first.requestId);
+  assert.equal(sent.length,1);
+  assert.equal((await f.room.agentEnqueue(f.c,'action',{...args,action:'back'},instance)).error,'ACTION_ID_CONFLICT');
+  assert.equal((await f.room.agentStart(f.c,first.requestId)).ok,false);
+  assert.equal((await f.room.agentStart(f.h,first.requestId)).ok,true);
+  assert.equal((await f.room.agentStart(f.h,first.requestId)).ok,false);
+  assert.equal((await f.room.agentPublish(f.c,{applied:true},first.requestId)).ok,false);
+  assert.equal((await f.room.agentPublish(f.h,{applied:true},first.requestId)).ok,true);
+  assert.equal((await f.room.agentResult(f.c,first.requestId,instance)).result.applied,true);
+  const next={actionId:'unique_action_2',action:'tap'};
+  await f.room.agentEnqueue(f.c,'action',next,instance);
+  await f.room.claimBrowser(f.c,client,crypto.randomUUID(),f.now+1);
+  assert.equal((await f.room.agentStart(f.h,next.actionId)).error,'REQUEST_EXPIRED_OR_USED');
+});
+test('server-rendered screenshot links carry one observation and can be read without JavaScript',async()=>{
+  const f=await fixture();f.sockets.push({a:{role:'host-agent'},send(){}});
+  const id=crypto.randomUUID();
+  await f.room.agentPublish(f.h,{observationId:id,screenVersion:1,commandNonce:'nonce',image:{mimeType:'image/jpeg',width:2,height:2,data:btoa('jpeg')},note:'<script>alert(1)</script>'});
+  const url=`https://remote.test/remote/?session=${sid}&access=${controller}`;
+  const html=await (await worker.fetch(new Request(url),f.env)).text();
+  assert.match(html,/AARIS_ACTION_BEGIN/);assert.match(html,/View current phone screenshot/);
+  assert.ok(!html.includes('<script>alert(1)</script>'));
+  assert.equal((await f.storage.get('session')).browser,undefined);
+  const frame=await worker.fetch(new Request(url.replace('/remote/','/remote/frame')+`&observationId=${id}`),f.env);
+  assert.equal(frame.headers.get('content-type'),'image/jpeg');assert.equal(await frame.text(),'jpeg');
+  assert.equal((await worker.fetch(new Request(url.replace('/remote/','/remote/frame')+'&observationId=old'),f.env)).status,409);
+  await f.room.closeSession(f.h,f.now+10);
+  assert.equal((await worker.fetch(new Request(url.replace('/remote/','/remote/frame')+`&observationId=${id}`),f.env)).status,410);
+});
+
+test('a connected host exposes capture failures instead of a permanent Connecting screen',async()=>{
+  const f=await fixture();f.sockets.push({a:{role:'host-agent'},send(){}});
+  await f.room.agentPublish(f.h,{error:'DEVICE_LOCKED_OR_ACCESSIBILITY_OFF',applied:false});
+  const result=await f.room.agentObservation(f.c);
+  assert.equal(result.phoneOnline,true);assert.equal(result.error,'DEVICE_LOCKED_OR_ACCESSIBILITY_OFF');
+  const html=await (await worker.fetch(new Request(`https://remote.test/remote/?session=${sid}&access=${controller}`),f.env)).text();
+  assert.match(html,/Unlock the phone or restore Accessibility/);
+  await f.room.closeSession(f.h,f.now+1);
+  assert.equal([...f.storage.values.keys()].filter(k=>k.startsWith('agent:')).length,0);
+});
+
+test('observation reads refresh old frames once; image downloads do not invalidate their coordinates',async()=>{
+  const f=await fixture(),sent=[];f.sockets.push({a:{role:'host-agent'},send:x=>sent.push(JSON.parse(x))});
+  const id=crypto.randomUUID(),image={mimeType:'image/jpeg',width:2,height:2,data:btoa('jpeg')};
+  await f.room.agentPublish(f.h,{observationId:id,screenVersion:1,commandNonce:'nonce',image});
+  const stored=await f.storage.get('agent:observation');stored.receivedAtMs=Date.now()-5000;await f.storage.put('agent:observation',stored);
+  const query=`?session=${sid}&access=${controller}`;
+  const frame=await worker.fetch(new Request(`https://remote.test/remote/frame${query}&observationId=${id}`),f.env);
+  assert.equal(frame.status,200);assert.equal(await frame.text(),'jpeg');assert.equal(sent.length,0);
+  const observation=await worker.fetch(new Request(`https://remote.test/remote/observe${query}`),f.env);
+  assert.equal((await observation.json()).observation.observationId,id);assert.equal(sent.length,1);assert.equal(sent[0].operation,'observe');
+  await Promise.all([f.room.agentObservation(f.c),f.room.agentObservation(f.c)]);
+  assert.equal(sent.length,1,'Concurrent reads coalesce while the phone captures');
+  await f.room.agentStart(f.h,'observe');
+  const next=crypto.randomUUID();await f.room.agentPublish(f.h,{observationId:next,screenVersion:2,commandNonce:'nonce',image},'observe');
+  assert.equal((await f.room.agentObservation(f.c)).observation.observationId,next);assert.equal(sent.length,1);
+  const prior=await worker.fetch(new Request(`https://remote.test/remote/frame${query}&observationId=${id}`),f.env);
+  assert.equal(prior.status,200);assert.equal(prior.headers.get('X-Aaris-Observation'),id,'A slow image download retains exactly its requested frame');
+  const previous=await f.storage.get('agent:previous');previous.expiresAtMs=Date.now()-1;await f.storage.put('agent:previous',previous);
+  assert.equal((await worker.fetch(new Request(`https://remote.test/remote/frame${query}&observationId=${id}`),f.env)).status,409);
 });

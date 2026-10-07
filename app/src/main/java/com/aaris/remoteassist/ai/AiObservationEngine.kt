@@ -180,7 +180,7 @@ class AiObservationEngine internal constructor(
         return result
     }
 
-    suspend fun validate(args: JSONObject): AiActionValidation {
+    suspend fun validate(args: JSONObject, exactCoordinates: Boolean = false, allowWindowResume: Boolean = false): AiActionValidation {
         fun refused(reason: String) = AiActionValidation(reason)
         fun ticketValid() = ledger.valid(args.getString("observationId"), args.getLong("screenVersion"), now())
         if (!ticketValid()) return refused("OBSERVATION_EXPIRED_OR_USED")
@@ -188,14 +188,23 @@ class AiObservationEngine internal constructor(
         val geometry = display()
         if (geometry.displayWidthPx != width || geometry.displayHeightPx != height) return refused("CAPTURE_GEOMETRY_CHANGED")
         val action = args.getString("action")
-        if (action == "tap" && !snapTapToClickableTarget(args, observed)) return refused("TARGET_CHANGED")
+        if (action == "tap" && !exactCoordinates && !snapTapToClickableTarget(args, observed)) return refused("TARGET_CHANGED")
         val navigation = action in setOf("home", "back", "recents", "open_app")
         val epoch = ledger.invalidationGeneration
         val ui = uiSnapshot() ?: return refused("DEVICE_LOCKED_OR_ACCESSIBILITY_OFF")
         if (!navigation && (ui.sensitiveFocus || ui.packageName == ownPackage)) return refused("LOCAL_ONLY_SCREEN")
-        if (action !in setOf("home", "open_app") && !sameWindow(observed, ui)) return refused("FOREGROUND_CHANGED")
+        if (action !in setOf("home", "open_app") && !(sameWindow(observed, ui) || (allowWindowResume && observed.packageName == ui.packageName && observed.sensitiveFocus == ui.sensitiveFocus && observed.masks == ui.masks))) return refused("FOREGROUND_CHANGED")
         val scope = if (navigation) null else (actionScope(args, observed) ?: return refused("FOCUSED_FIELD_REQUIRED"))
-        if (!navigation && !sameTarget(args, observed, ui)) return refused("TARGET_CHANGED")
+        val restoredObservation = if (allowWindowResume) observed.copy(windowId = ui.windowId) else observed
+        if (!navigation && !sameTarget(args, restoredObservation, ui)) return refused("TARGET_CHANGED")
+        if (allowWindowResume) {
+            val fresh = freshFrame()
+            if (fresh.rotation != rotation || !geometryMatches(fresh, geometry)) return refused("CAPTURE_GEOMETRY_CHANGED")
+            val ratio = withContext(Dispatchers.Default) {
+                AiVisualFingerprint.differenceRatio(lastFingerprint ?: byteArrayOf(), AiVisualFingerprint.sample(fresh.nv21, fresh.width, fresh.height, fresh.rotation))
+            }
+            if (ratio == null || ratio > 0.18) return refused("RESTORED_SCREEN_CHANGED")
+        }
         if (!navigation) {
             val fresh = freshFrame()
             if (fresh.rotation != rotation || !geometryMatches(fresh, geometry)) return refused("CAPTURE_GEOMETRY_CHANGED")

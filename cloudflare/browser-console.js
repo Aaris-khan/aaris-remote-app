@@ -4,24 +4,27 @@ import { createBrowserProtocol } from './browser-protocol.js';
 // it so the Worker needs neither a UI framework nor a separate asset deployment.
 export function browserMain(protocolFactory) {
   const wire = protocolFactory(), $ = id => document.getElementById(id);
-  const video = $('screen'), status = $('status'), surface = $('surface'), shot = $('snapshot');
-  const match = location.hash.match(/^#([a-f0-9]{64})\.([A-Za-z0-9_-]{43})(?:\.([a-f0-9-]{36}))?$/);
+  const video = $('screen'), status = $('status'), surface = $('surface'), shot = $('snapshot'), fallback = $('fallback');
+  const query = new URLSearchParams(location.search);
+  const linkValue = query.has('session') ? `${query.get('session')}.${query.get('access')}${query.get('client') ? '.' + query.get('client') : ''}` : location.hash.slice(1);
+  const match = linkValue.match(/^([a-f0-9]{64})\.([A-Za-z0-9_-]{43})(?:\.([a-f0-9-]{36}))?$/);
   let stopped = false, ws, pc, control, hello, sequence = 0n, after = 0;
   let remoteId, localId, localReady = false, localCandidates = [], remoteCandidates = new Map();
   let signalChain = Promise.resolve(), publishChain = Promise.resolve(), reconnectTimer, retry = 0;
   let busy = false, pending = null, pointer = null, lastFrameAt = 0, rendered = 0, videoReadyGeneration = -1;
   let lastStats, lastPresented = 0, telemetrySequence = 0n, telemetry;
+  let observation, observationAt = 0, snapshotPending = false;
   const seenSignals = new Set();
   const timers = [], instanceId = crypto.randomUUID();
   let clientId;
-  const message = text => { status.textContent = text; };
+  const message = text => { if (status.textContent !== text) status.textContent = text; };
   function invalidateControls() {
     hello = null; pointer = null; videoReadyGeneration = -1;
     if (pending) { clearTimeout(pending.timer); pending.reject(new Error('Connection changed; observe before trying again')); pending = null; }
-    busy = false;
+    busy = snapshotPending;
   }
   function end(text) {
-    stopped = true; clearTimeout(reconnectTimer); timers.forEach(clearInterval); invalidateControls();
+    stopped = true; clearTimeout(reconnectTimer); fallback.removeAttribute('src'); fallback.hidden = true; timers.forEach(clearInterval); invalidateControls();
     ws?.close(); pc?.close(); video.srcObject = null; shot.removeAttribute('src'); message(text);
   }
   if (!match) { end('Open the complete link copied by Aaris Remote on your phone.'); return; }
@@ -34,7 +37,7 @@ export function browserMain(protocolFactory) {
     } catch { /* Legacy links still connect once when browser storage is unavailable. */ }
     // Canonicalize old two-part links immediately. Stateless/cloud browsers can
     // retain the upgraded URL and reclaim the same controller identity later.
-    try { history.replaceState(null, '', `#${sessionId}.${capability}.${clientId}`); } catch {}
+    try { history.replaceState(null, '', query.has('session') ? `?session=${sessionId}&access=${capability}&client=${clientId}` : `#${sessionId}.${capability}.${clientId}`); } catch {}
   }
   const base = `/v1/sessions/${sessionId}`;
   async function api(action, data) {
@@ -61,6 +64,7 @@ export function browserMain(protocolFactory) {
   }
   function frame() {
     lastFrameAt = performance.now(); rendered++;
+    if (fresh() && !busy) { fallback.hidden = true; video.hidden = false; message('Live • click the phone screen to control it'); }
     if (hello && hello.generation !== videoReadyGeneration) {
       short(wire.videoReady(hello)); videoReadyGeneration = hello.generation;
     }
@@ -75,7 +79,7 @@ export function browserMain(protocolFactory) {
       Math.abs(video.videoWidth / video.videoHeight - hello.width / hello.height) < 0.04;
   }
   async function act(action, args = {}) {
-    if (!fresh()) throw new Error('Wait for a fresh phone screen');
+    if (!fresh()) return snapshotAct(action, args);
     if (busy || control.bufferedAmount > 4096) throw new Error('Wait for the current action to finish');
     const seq = sequence + 1n, packet = wire.command(action, hello, seq, args);
     sequence = seq; busy = true;
@@ -89,6 +93,62 @@ export function browserMain(protocolFactory) {
       return { applied: outcome };
     } finally { busy = false; }
   }
+  function setObservation(value) {
+    if (!value?.observationId || !value.image || pointer || busy) return;
+    if (value.observationId === observation?.observationId) { showFallback(); return; }
+    observation = value; observationAt = performance.now();
+    const params = new URLSearchParams({ session: sessionId, access: capability, observationId: value.observationId });
+    fallback.src = `/remote/frame?${params}`;
+    fallback.onload = showFallback;
+  }
+  function showFallback() {
+    if (!stopped && !fresh() && observation && fallback.complete && fallback.naturalWidth > 0) {
+      video.hidden = true; fallback.hidden = false;
+      message(observation.redacted ? 'Protected/setup screen • use Home to open the launcher' : 'Screenshot mode • click the phone screen to control it');
+    }
+  }
+  function snapshotFresh() {
+    return !stopped && observation && performance.now() - observationAt < 85000 &&
+      !fallback.hidden && fallback.complete && fallback.naturalWidth > 0;
+  }
+  async function pollResult(requestId) {
+    const until = performance.now() + 14000;
+    while (!stopped && performance.now() < until) {
+      const value = await api(`agent-result?requestId=${encodeURIComponent(requestId)}`);
+      if (value.result) return value.result;
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    throw new Error('Action outcome unknown. Inspect a fresh screenshot before trying again.');
+  }
+  async function snapshotAct(action, args) {
+    if (!snapshotFresh()) throw new Error('Wait for a fresh phone screenshot');
+    if (busy) throw new Error('Wait for the current action to finish');
+    const mapped = { longPress: 'long_press', text: 'type' }[action] || action;
+    const input = { ...args };
+    if (mapped === 'tap') delete input.durationMs;
+    if (input.points?.length > 24) input.points = Array.from({length:24}, (_, i) => input.points[Math.round(i * (input.points.length - 1) / 23)]);
+    if (input.durationMs !== undefined) input.durationMs = Math.round(Math.max(80, Math.min(1500, input.durationMs)));
+    const command = { protocol:'aaris-link-v1', nonce:observation.commandNonce, actionId:crypto.randomUUID(),
+      observationId:observation.observationId, screenVersion:observation.screenVersion, action:mapped, ...input };
+    busy = true; snapshotPending = true;
+    try {
+      const queued = await api('agent-action', command), result = queued.result || await pollResult(queued.requestId);
+      busy = false;
+      if (result.observationId) setObservation(result);
+      if (result.error) throw new Error(result.error);
+      message(result.applied === true ? 'Screenshot mode • action applied' : result.applied === false ? 'Action was not applied • inspect the phone' : 'Action outcome unknown • inspect the phone');
+      return result;
+    } finally { snapshotPending = false; busy = false; }
+  }
+  async function updateSnapshot() {
+    if (stopped || fresh() || busy || pointer || document.hidden) return;
+    try {
+      const state = await api('agent-observe');
+      if (state.observation) setObservation(state.observation);
+      else message(!state.phoneOnline ? 'Phone offline • finish screen sharing on the phone' : state.error === 'SCREENSHOT_ADAPTER_UNAVAILABLE' ? 'Screenshot adapter unavailable • update Aaris on the phone' : state.error === 'DEVICE_LOCKED_OR_ACCESSIBILITY_OFF' ? 'Unlock the phone or restore Accessibility' : state.error && state.error !== 'OBSERVATION_PENDING' ? `Phone screenshot unavailable • ${state.error}` : 'Phone connected • preparing screenshot…');
+    } catch (error) { if (!stopped && !fresh()) message('Waiting for phone screenshot • reconnecting automatically…'); }
+  }
+  try { setObservation(JSON.parse($('initialObservation')?.dataset.value || 'null')); } catch {}
   function report(error) { if (!stopped) message(error.message || 'Connection recovering…'); }
   const run = (action, args) => act(action, args).catch(report);
   function bindChannel(channel) {
@@ -100,7 +160,7 @@ export function browserMain(protocolFactory) {
       if (packet?.type === 'hello') {
         if (packet.width < 1 || packet.height < 1) return;
         invalidateControls(); hello = packet; sequence = 0n; short(wire.heartbeat(hello));
-        message('Live • click the phone screen to control it');
+        message(fresh() ? 'Live • click the phone screen to control it' : 'Control connected • waiting for video or screenshot…');
       } else if (packet?.type === 'result' && pending?.seq === packet.sequence) {
         const p = pending; pending = null; clearTimeout(p.timer); p.resolve(packet.applied);
       }
@@ -110,6 +170,7 @@ export function browserMain(protocolFactory) {
   async function connectPeer() {
     const ice = await api('ice', {});
     if (stopped) return;
+    pc?.close();
     pc = new RTCPeerConnection({ iceServers: ice.iceServers, bundlePolicy: 'max-bundle' });
     pc.ondatachannel = event => bindChannel(event.channel);
     pc.ontrack = event => {
@@ -185,6 +246,10 @@ export function browserMain(protocolFactory) {
   $('tapPoint').onclick = () => run('tap', { x: Number($('x').value), y: Number($('y').value) });
   $('play').onclick = () => video.play().then(() => { $('play').hidden = true; }).catch(report);
   $('refresh').onclick = () => {
+    if (!fresh()) {
+      if (busy) return;
+      api('agent-refresh', {}).then(q => pollResult(q.requestId)).then(setObservation).catch(report); return;
+    }
     if (!hello) { message('Waiting for phone…'); return; }
     short(wire.refresh(hello));
     const before = rendered, start = performance.now();
@@ -199,11 +264,11 @@ export function browserMain(protocolFactory) {
     requestAnimationFrame(capture);
   };
   $('disconnect').onclick = async () => { try { await api('close', {}); } catch (error) { report(error); } finally { end('Disconnected. Create a new link on the phone.'); } };
-  const point = event => wire.point(event.clientX, event.clientY, surface.getBoundingClientRect(), video.videoWidth, video.videoHeight);
+  const point = event => wire.point(event.clientX, event.clientY, surface.getBoundingClientRect(), fresh() ? video.videoWidth : fallback.naturalWidth, fresh() ? video.videoHeight : fallback.naturalHeight);
   surface.onpointerdown = event => {
-    if (!fresh() || busy || event.button !== 0 || pointer) return;
+    if ((!fresh() && !snapshotFresh()) || busy || event.button !== 0 || pointer) return;
     const p = point(event); if (!p) return;
-    pointer = { id: event.pointerId, at: performance.now(), hello, points: [p], x: event.clientX, y: event.clientY, distance: 0 };
+    pointer = { id: event.pointerId, at: performance.now(), hello, observation, points: [p], x: event.clientX, y: event.clientY, distance: 0 };
     surface.setPointerCapture(event.pointerId); event.preventDefault();
   };
   surface.onpointermove = event => {
@@ -214,7 +279,7 @@ export function browserMain(protocolFactory) {
   };
   surface.onpointerup = event => {
     const p = pointer; pointer = null;
-    if (!p || p.id !== event.pointerId || p.hello !== hello) return;
+    if (!p || p.id !== event.pointerId || (fresh() ? p.hello !== hello : p.observation !== observation)) return;
     const last = point(event); if (!last) return;
     const durationMs = performance.now() - p.at;
     if (p.distance < 7 && Math.hypot(event.clientX - p.x, event.clientY - p.y) < 7) run(durationMs >= 500 ? 'longPress' : 'tap', { ...last, durationMs });
@@ -263,7 +328,9 @@ export function browserMain(protocolFactory) {
     if (!document.hidden && hello) { short(wire.heartbeat(hello)); short(wire.refresh(hello)); }
   });
   // Deliberately no unload disconnect: refresh must be able to resume the link.
-  message('Connecting to phone…');
+  message('Connecting live video • preparing screenshot fallback…');
+  updateSnapshot();
+  timers.push(setInterval(updateSnapshot, 2500));
   async function start() {
     try {
       const claimed = await api('browser-claim', { clientId, instanceId }); after = claimed.afterSequence;
@@ -284,9 +351,9 @@ export function browserResponse(path) {
     'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" };
   if (path === '/remote/client.js') return new Response(`(${browserMain.toString()})(${createBrowserProtocol.toString()});`, { headers: { ...headers, 'Content-Type': 'text/javascript; charset=utf-8' } });
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aaris Remote • AI Link</title>
-<style>*{box-sizing:border-box}body{margin:0;background:#10141c;color:#eef3fc;font:15px system-ui,sans-serif}main{max-width:980px;margin:auto;padding:18px}header{display:flex;align-items:center;gap:14px;flex-wrap:wrap}h1{font-size:20px;margin:0}#status{flex:1;color:#8ce7c0}#metrics{color:#9cadc6;font-size:12px}#surface{height:72vh;min-height:280px;background:#05080d;position:relative;margin:16px 0;touch-action:none;cursor:crosshair;border-radius:12px;overflow:hidden}video{width:100%;height:100%;object-fit:contain;pointer-events:none}nav,.tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button,input{font:inherit;border:1px solid #40516a;border-radius:8px;padding:11px;color:inherit;background:#202c3d}button{cursor:pointer}button:hover{background:#324764}input[type=number]{width:92px}#text{flex:1;min-width:160px}details{color:#becbe0;margin:16px 0}label{display:flex;align-items:center;gap:6px}#snapshot{max-width:100%;max-height:75vh;border:1px solid #40516a}p{line-height:1.5;color:#a9bad1}#disconnect{color:#ffb6ae}button:focus-visible,input:focus-visible{outline:3px solid #83c4ff}</style></head>
+<style>*{box-sizing:border-box}body{margin:0;background:#10141c;color:#eef3fc;font:15px system-ui,sans-serif}main{max-width:980px;margin:auto;padding:18px}header{display:flex;align-items:center;gap:14px;flex-wrap:wrap}h1{font-size:20px;margin:0}#status{flex:1;color:#8ce7c0}#metrics{color:#9cadc6;font-size:12px}#surface{height:72vh;min-height:280px;background:#05080d;position:relative;margin:16px 0;touch-action:none;cursor:crosshair;border-radius:12px;overflow:hidden}#fallback{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}video{width:100%;height:100%;object-fit:contain;pointer-events:none}nav,.tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button,input{font:inherit;border:1px solid #40516a;border-radius:8px;padding:11px;color:inherit;background:#202c3d}button{cursor:pointer}button:hover{background:#324764}input[type=number]{width:92px}#text{flex:1;min-width:160px}details{color:#becbe0;margin:16px 0}label{display:flex;align-items:center;gap:6px}#snapshot{max-width:100%;max-height:75vh;border:1px solid #40516a}a{color:#83c4ff}p{line-height:1.5;color:#a9bad1}#disconnect{color:#ffb6ae}button:focus-visible,input:focus-visible{outline:3px solid #83c4ff}</style></head>
 <body><main><header><h1>Aaris Remote</h1><span id="status" role="status" aria-live="polite">Connecting…</span><span id="metrics"></span></header>
-<div id="surface" role="img" aria-label="Live phone screen. Click to tap, hold to long press, drag to swipe."><video id="screen" autoplay muted playsinline></video></div>
+<div id="surface" role="img" aria-label="Live phone screen. Click to tap, hold to long press, drag to swipe."><video id="screen" autoplay muted playsinline></video><img id="fallback" hidden alt="Current phone screen. Click this image to tap the same position on the phone."></div>
 <button id="play" hidden>Show phone</button><nav aria-label="Phone controls"><button data-action="back">Back</button><button data-action="home">Home</button><button data-action="recents">Recent apps</button><button data-swipe="up">Swipe up</button><button data-swipe="down">Swipe down</button><button id="refresh">Fresh screenshot</button><button id="disconnect">Disconnect</button></nav>
 <div class="tools"><input id="text" aria-label="Text to enter on phone" placeholder="Type into the phone’s focused field"><button id="sendText">Send text</button></div>
 <details><summary>Tap using normalized coordinates</summary><div class="tools"><label>X <input id="x" type="number" min="0" max="1" step="0.01" value="0.5"></label><label>Y <input id="y" type="number" min="0" max="1" step="0.01" value="0.5"></label><button id="tapPoint">Tap point</button></div></details>
