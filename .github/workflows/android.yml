@@ -46,6 +46,7 @@ jobs:
         with:
           node-version: "24"
       - run: node cloudflare/mcp-worker.test.mjs
+      - run: node --test cloudflare/receiver-playout.test.mjs
       - run: node --test cloudflare/browser-link.test.mjs
 
   gaming-smoothness-lab:

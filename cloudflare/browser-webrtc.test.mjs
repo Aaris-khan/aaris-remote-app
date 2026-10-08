@@ -2,18 +2,7 @@
 // Chromium pages. The host is a synthetic peer, not an Android device.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { browserResponse, createAdaptivePlayoutPolicy } from './browser-console.js';
-const bufferPolicy=createAdaptivePlayoutPolicy();
-assert.equal(bufferPolicy.targetMs(),250,'Base reservoir must start at 250 ms');
-let bufferState=bufferPolicy.observe({nowMs:5000,frames:25,minimumDelayMs:240,actualDelayMs:255,targetDelayMs:250,dropped:0,freezes:1});
-assert.equal(bufferState.targetMs,350,'A real freeze should add one reservoir rung');
-bufferState=bufferPolicy.observe({nowMs:10000,frames:25,minimumDelayMs:340,actualDelayMs:470,targetDelayMs:350,dropped:2,freezes:1});
-assert.equal(bufferState.targetMs,500,'Repeated unstable playback should cap at 500 ms');
-for(let i=1;i<=20;i++) bufferState=bufferPolicy.observe({nowMs:10000+i*1000,frames:25,minimumDelayMs:80,actualDelayMs:500,targetDelayMs:500,dropped:0,freezes:0});
-assert.equal(bufferState.targetMs,350,'500 ms must recover only after a long clean run');
-for(let i=1;i<=30;i++) bufferState=bufferPolicy.observe({nowMs:30000+i*1000,frames:25,minimumDelayMs:80,actualDelayMs:350,targetDelayMs:350,dropped:0,freezes:0});
-assert.equal(bufferState.targetMs,250,'Stable network must slowly return to the 250 ms base reservoir');
-
+import { browserResponse } from './browser-console.js';
 const require = createRequire(import.meta.url);
 let chromium;
 try { ({ chromium } = require('playwright')); }
@@ -40,7 +29,7 @@ await host.exposeFunction('publishHost',payload=>{
 await host.evaluate(()=>{
   const canvas=document.createElement('canvas');canvas.width=360;canvas.height=720;document.body.append(canvas);
   const paint=canvas.getContext('2d'); let tick=0;
-  window.received=[];window.hostEpoch=0;
+  window.received=[];window.feedback=[];window.hostEpoch=0;
   setInterval(()=>{paint.fillStyle='#163955';paint.fillRect(0,0,360,720);paint.fillStyle='#8ee9c5';paint.fillRect(30,300,300,110);paint.fillStyle='white';paint.font='22px sans-serif';paint.fillText('Synthetic phone',35,90);paint.fillText(`Frame ${++tick}`,35,140);paint.fillText(`Actions ${window.received.length}`,50,360);},40);
   const track=canvas.captureStream(25).getVideoTracks()[0];
   window.startHost=async epoch=>{
@@ -50,13 +39,18 @@ await host.evaluate(()=>{
     peer.addTrack(track,new MediaStream([track]));
     const dc=peer.createDataChannel('control-v1');
     const live=peer.createDataChannel('control-live-v1',{ordered:false,maxRetransmits:0});
-    peer.createDataChannel('control-telemetry-v1',{ordered:false,maxRetransmits:1});
+    const telemetry=peer.createDataChannel('control-telemetry-v1',{ordered:false,maxRetransmits:1});
+    telemetry.binaryType='arraybuffer';
     dc.binaryType='arraybuffer';live.binaryType='arraybuffer';window.liveOpen=false;
     live.onopen=()=>{window.liveOpen=true;};
     dc.onopen=()=>{const b=new ArrayBuffer(22),v=new DataView(b);v.setUint8(0,1);v.setUint8(1,1);v.setBigInt64(2,secret);v.setInt32(10,epoch);v.setInt32(14,1080);v.setInt32(18,2160);dc.send(b);};
     const receive=(e,lane)=>{
       const v=new DataView(e.data),type=v.getUint8(1);
-      if([2,14,15,19,20,21,22,23].includes(type))return;
+      if(type===19||type===20){
+        window.feedback.push({type,interval:v.getInt32(22),frames:v.getInt32(26),
+          delay:type===19?v.getFloat32(34):null,gap:type===20?v.getInt32(30):null});return;
+      }
+      if([2,14,15,21,22,23].includes(type))return;
       if(v.getBigInt64(2)!==secret||v.getInt32(10)!==epoch)throw new Error('Stale lease reached synthetic host');
       const sequence=v.getBigInt64(14),phase=type===17?v.getUint8(30):null;
       window.received.push({
@@ -69,6 +63,7 @@ await host.evaluate(()=>{
     };
     dc.onmessage=e=>receive(e,'reliable');
     live.onmessage=e=>receive(e,'live');
+    telemetry.onmessage=e=>receive(e,'telemetry');
     peer.onicecandidate=e=>{if(e.candidate)window.publishHost({kind:'candidate',payload:{mid:e.candidate.sdpMid,mLine:e.candidate.sdpMLineIndex,sdp:e.candidate.candidate,negotiationId:id}});};
     await peer.setLocalDescription(await peer.createOffer());
     await window.publishHost({kind:'description',payload:{type:'offer',sdp:peer.localDescription.sdp,negotiationId:id}});
@@ -124,6 +119,12 @@ const waitActions=async n=>host.waitForFunction(n=>window.received.length>=n,n,{
 try {
   await page.goto(`https://remote.test/remote/#${sid}.${token}`);await waitLive();
   assert.equal(iceRequests,2,'Transient relay configuration failure must recover automatically');
+  await host.waitForFunction(()=>window.feedback.some(r=>r.type===19)&&window.feedback.some(r=>r.type===20),{},{timeout:15000});
+  const mediaFeedback=await host.evaluate(()=>window.feedback);
+  assert.ok(mediaFeedback.every(r=>r.interval>=500&&r.interval<=6000&&r.frames>=0&&r.frames<=2048));
+  assert.ok(mediaFeedback.some(r=>r.type===20&&r.frames>0&&r.gap>=0),'Compositor cadence must reach the host');
+  assert.ok(mediaFeedback.filter(r=>r.type===19).every(r=>Number.isFinite(r.delay)&&r.delay>=-1));
+  await page.waitForFunction(()=>document.getElementById('metrics').textContent.includes('buffer 100ms'),{},{timeout:10000});
   const rect=await page.locator('#surface').boundingBox();
   await page.mouse.click(rect.x+rect.width/2,rect.y+rect.height/2);await waitActions(1);
   const tap=await host.evaluate(()=>window.received[0]);assert.equal(tap.type,3);assert.ok(Math.abs(tap.x-.5)<.003);assert.ok(Math.abs(tap.y-.5)<.003);
@@ -180,5 +181,5 @@ try {
   assert.equal(await host.evaluate(()=>window.received.at(-1).sequence),'1');
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();assert.equal(ended,true);
   assert.deepEqual(errors,[]);
-  console.log('PASS: adaptive 250/350/500ms playout reservoir, startup retry, actual WebRTC video, tap/back/swipe/long press/text, live START-CONTINUE-END gesture streaming, letterbox exclusion, universal AI JSON normalized/pixel taps, refresh and disconnect');
+  console.log('PASS: responsive adaptive playout and real compositor feedback, startup retry, actual WebRTC video, tap/back/swipe/long press/text, live START-CONTINUE-END gesture streaming, letterbox exclusion, universal AI JSON normalized/pixel taps, refresh and disconnect');
 } finally { await browser.close(); }

@@ -1,19 +1,20 @@
 package com.aaris.remoteassist.control
 
 /**
- * Conservative one-clock input-to-glass measurement.
+ * One-clock applied-ACK-to-next-swap responsiveness proxy.
  *
  * We cannot prove which encoded frame first contains a UI mutation without
  * putting application metadata into the video bitstream. Instead, authoritative
  * commands already receive CommandResult after the host applies them. The first
- * real EGL swap observed after that ACK gives a safe upper bound:
+ * real EGL swap observed after that ACK measures this ordering:
  *
  *   input sent -> host applied -> ACK received -> next EGL swap
  *
- * This intentionally overestimates true input-to-photon when the video response
- * beats the ACK back to the controller. The governor therefore uses this metric
- * only to block risky quality/cadence promotion, never as a reason by itself to
- * slash FPS.
+ * That swap may still show a frame captured BEFORE the command, especially with
+ * receiver buffering. It is neither a bound nor proof of the action becoming
+ * visible. Keep the legacy field/wire names for compatibility; diagnostics must
+ * call this a proxy. True input-to-photon needs a frame/action correlation marker
+ * or an external optical measurement. It remains only a promotion gate.
  */
 internal data class InputToGlassSample(
     val sequence: Long,
@@ -81,7 +82,7 @@ internal class InputToGlassTracker {
     @Synchronized
     fun summary(): String {
         if (upperBoundSamples.isEmpty()) {
-            return "Photon: waiting for applied input + EGL swap"
+            return "ACK/swap proxy: waiting for applied input + EGL swap"
         }
 
         val upper = upperBoundSamples.sorted()
@@ -92,7 +93,7 @@ internal class InputToGlassTracker {
                     .coerceIn(0, values.lastIndex)
             ]
 
-        return "Photon upper p50=${percentile(upper, 50)}ms " +
+        return "ACK/swap proxy p50=${percentile(upper, 50)}ms " +
             "p95=${percentile(upper, 95)}ms " +
             "postAck p95=${percentile(postAck, 95)}ms " +
             "n=${upper.size}"

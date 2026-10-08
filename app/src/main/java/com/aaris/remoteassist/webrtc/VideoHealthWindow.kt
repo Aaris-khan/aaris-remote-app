@@ -31,12 +31,12 @@ data class VideoHealthWindow(
     val presentationSampleAgeMs: Int? = null,
     val presentationSampleFresh: Boolean = true,
     /**
-     * Conservative controller-clock input-to-glass upper bound. This includes
+     * Controller-clock ACK-to-next-swap proxy (legacy wire field names). Includes
      * command uplink + host apply + ACK return + the next real EGL swap.
      *
-     * postAckPresentMs is the receiver/media tail after the applied ACK reaches
-     * the controller. The host uses these fields as promotion/recovery gates,
-     * never as a standalone reason to slash cadence.
+     * A buffered swap may predate the command; these are not input-to-photon
+     * bounds. The host uses them as promotion/recovery gates, never as a
+     * standalone reason to slash cadence.
      */
     val inputToGlassUpperBoundMs: Int? = null,
     val commandAckMs: Int? = null,

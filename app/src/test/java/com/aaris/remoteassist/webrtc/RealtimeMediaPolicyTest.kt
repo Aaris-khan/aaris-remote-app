@@ -9,13 +9,14 @@ import org.webrtc.RtpParameters
 
 class RealtimeMediaPolicyTest {
     @Test
-    fun remoteControlUsesBoundedLowLatencyPlayout() {
-        assertEquals(0, RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS)
+    fun remoteControlEnablesNativeTimingWithinTheBrowserRecoveryCeiling() {
+        // min=0,max<=500 bypasses timestamp scheduling in pinned M150.
+        assertEquals(10, RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS)
         assertTrue(
             RealtimeMediaPolicy.PLAYOUT_DELAY_MAX_MS in 1..500
         )
         assertEquals(
-            "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/",
+            "WebRTC-ForceSendPlayoutDelay/min_ms:10,max_ms:500/",
             RealtimeMediaPolicy.FIELD_TRIALS
         )
     }

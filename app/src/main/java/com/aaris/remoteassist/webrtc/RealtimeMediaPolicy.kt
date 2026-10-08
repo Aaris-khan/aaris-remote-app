@@ -7,14 +7,13 @@ import org.webrtc.RtpParameters
 /**
  * Cross-layer realtime policy for remote-control video.
  *
- * The product is latency-sensitive interactive streaming, not buffered media:
- * keep WebRTC's receiver in its low-latency playout path while leaving a small
- * jitter budget, and temporarily favor capture/render scheduling only while the
- * controller is actively manipulating the remote phone.
+ * Keep a small positive receiver smoothing floor and a bounded recovery window.
+ * WebRTC owns RTP ordering, retransmission deadlines and timed decode; the app
+ * never retains a second queue of decoded textures.
  */
 internal object RealtimeMediaPolicy {
-    const val PLAYOUT_DELAY_MIN_MS = 0
-    const val PLAYOUT_DELAY_MAX_MS = 100
+    const val PLAYOUT_DELAY_MIN_MS = 10
+    const val PLAYOUT_DELAY_MAX_MS = 500
 
     /*
      * Interactive remoting is a single latency-sensitive video stream. DSCP is
@@ -25,8 +24,16 @@ internal object RealtimeMediaPolicy {
     const val ENABLE_VIDEO_DSCP = true
     const val VIDEO_NETWORK_PRIORITY = Priority.HIGH
 
+    /*
+     * In pinned libwebrtc M150, min=0 with max<=500 selects RenderTime=0:
+     * render as soon as possible, bypassing timestamp-based smoothing. A small
+     * positive minimum enables native timing without imposing a 500 ms hold.
+     * The upper bound also accommodates the browser's adaptive 100..500 ms
+     * target, avoiding a receiver minimum greater than the sender maximum.
+     * Both values are best-effort RTP hints, not guaranteed end-to-end latency.
+     */
     const val FIELD_TRIALS =
-        "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/"
+        "WebRTC-ForceSendPlayoutDelay/min_ms:10,max_ms:500/"
 
     /*
      * getStats() is diagnostic/adaptation work, not part of the media hot path.
