@@ -289,19 +289,60 @@ internal class MotionVideoBudget {
             bandwidthEstimateBps?.let { estimate ->
                 estimate / currentRungBitrateBps
             }
+
+        /*
+         * A bitrate estimate is a path ceiling, not a measurement of current
+         * pixel demand. An actively held finger does not prove that the screen
+         * producer is generating 30/60 distinct pictures every second. In a
+         * static or capture-starved interval (source=1fps, queue=0ms), applying
+         * the full motion bitrate model would downshift 360 -> 240 -> 180 even
+         * though reducing pixels cannot create the absent source frames.
+         *
+         * Require either measured natural producer activity or an explicitly
+         * unknown producer with independently measured sender activity. Genuine
+         * codec/queue/decode pressure below is never vetoed by sparse source
+         * telemetry, and active gestures still retain their cadence floor.
+         */
+        val bandwidthDemandProven =
+            sourceProvesMotion ||
+                (
+                    interactionActive &&
+                        measuredSourceFps == null &&
+                        sender.fps >= MIN_MOVING_SOURCE_FPS
+                    )
         val predictiveBandwidthPressure =
-            motionEvidence &&
+            bandwidthDemandProven &&
                 bandwidthHeadroomRatio?.let {
                     it < BWE_PRESSURE_HEADROOM_RATIO
                 } == true
         val severePredictiveBandwidthPressure =
-            motionEvidence &&
+            bandwidthDemandProven &&
                 bandwidthHeadroomRatio?.let {
                     it < BWE_SEVERE_HEADROOM_RATIO
                 } == true
 
+        /*
+         * libwebrtc often labels a stream "bandwidth" while its rate estimator
+         * simply sits below the configured bitrate ceiling. Requested FPS minus
+         * encoded FPS is not packet loss: the capture producer may have supplied
+         * only one new frame. Before spending pixels, corroborate the label with
+         * producer > sender throughput, rising RTP residence, or actual
+         * transport loss/RTT. An overloaded encoder and jitter queue are handled
+         * independently above; no extra state machine or media buffer is added.
+         */
+        val producerOutrunsSender =
+            measuredSourceFps?.let { supply ->
+                supply >= MIN_MOVING_SOURCE_FPS &&
+                    sender.fps < minOf(goal.toDouble(), supply) *
+                        PASSIVE_DELIVERY_RATIO
+            } == true
+        val transportProvesCongestion =
+            (queueMs ?: 0.0) >= NETWORK_QUEUE_PRESSURE_MS ||
+                (outbound.packetLossRatio ?: 0.0) >= PROVEN_NETWORK_LOSS_RATIO ||
+                (outbound.roundTripTimeMs ?: 0) >= PROVEN_NETWORK_RTT_MS
         val bandwidthUnderDelivery =
-            motionEvidence && senderLagsMotion && bandwidthLimited
+            motionEvidence && senderLagsMotion && bandwidthLimited &&
+                (producerOutrunsSender || transportProvesCongestion)
         val bandwidthFreshnessPressure =
             bandwidthUnderDelivery &&
                 (
@@ -767,6 +808,8 @@ internal class MotionVideoBudget {
         const val INTERACTION_DELIVERY_RATIO = 0.75
         const val PASSIVE_DELIVERY_RATIO = 0.75
         const val NETWORK_QUEUE_PRESSURE_MS = 90.0
+        const val PROVEN_NETWORK_LOSS_RATIO = 0.06
+        const val PROVEN_NETWORK_RTT_MS = 650
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val MIN_BANDWIDTH_SHORT_EDGE = 180
         const val BANDWIDTH_CADENCE_FLOOR_FPS = 24
