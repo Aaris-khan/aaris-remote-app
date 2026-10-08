@@ -753,14 +753,20 @@ class ControllerWebRtcSession(
             )
         }
         val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastVideoLivenessMs < 3000) return
-        lastVideoLivenessMs = now
-        listener.onDiagnostic(snapshot.compact())
+        // Throttle diagnostics, not decoder liveness. getStats() already runs
+        // every 500 ms during interaction and more slowly while idle. Every
+        // cumulative counter sample helps distinguish real decoder blockage
+        // from a quiet remote screen without introducing another stats poll.
+        if (now - lastVideoLivenessMs >= 3_000L) {
+            lastVideoLivenessMs = now
+            listener.onDiagnostic(snapshot.compact())
+        }
 
         when (
             inboundVideoLiveness.observe(
                 framesReceived = snapshot.frames,
-                framesDecoded = snapshot.framesSecondary
+                framesDecoded = snapshot.framesSecondary,
+                nowMs = now
             )
         ) {
             InboundVideoLivenessAction.NONE -> Unit
