@@ -58,7 +58,8 @@ class PresentationCadenceTracker(
         ) {
             windowStartMs = nowMs
             lastFrameMs = nowMs
-            frames = 1
+            // First EGL swap is the interval anchor, not an interval arrival.
+            frames = 0
             largestGapMs = 0L
             return null
         }
