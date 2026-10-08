@@ -22,12 +22,14 @@ enum class InboundVideoLivenessAction {
 class InboundVideoLivenessMonitor(
     private val decoderStallMs: Long = 2_500L,
     private val transportStallMs: Long = 12_000L,
-    private val retryCooldownMs: Long = 4_000L
+    private val retryCooldownMs: Long = 4_000L,
+    private val maxRecoveryAttempts: Int = 2
 ) {
     init {
         require(decoderStallMs >= 1_000L)
         require(transportStallMs > decoderStallMs)
         require(retryCooldownMs >= 1_000L)
+        require(maxRecoveryAttempts in 1..4)
     }
 
     private var lastFramesReceived = -1L
@@ -37,6 +39,7 @@ class InboundVideoLivenessMonitor(
     private var transportStallSinceMs: Long? = null
     private var lastRecoveryAttemptMs: Long? = null
     private var recoveryPending = false
+    private var recoveryAttempts = 0
 
     @Synchronized
     fun observe(
@@ -62,6 +65,7 @@ class InboundVideoLivenessMonitor(
             transportStallSinceMs = null
             lastRecoveryAttemptMs = null
             recoveryPending = false
+            recoveryAttempts = 0
             return InboundVideoLivenessAction.NONE
         }
 
@@ -97,8 +101,6 @@ class InboundVideoLivenessMonitor(
             if (transportStallSinceMs == null) transportStallSinceMs = nowMs
         }
 
-        if (recoveryPending) return InboundVideoLivenessAction.NONE
-
         val stalled =
             if (receivedAdvanced) {
                 decoderStallSinceMs?.let { nowMs - it >= decoderStallMs } == true
@@ -108,9 +110,15 @@ class InboundVideoLivenessMonitor(
         val retryAllowed =
             lastRecoveryAttemptMs?.let { nowMs - it >= retryCooldownMs } != false
 
-        if (!stalled || !retryAllowed) return InboundVideoLivenessAction.NONE
+        // A successfully sent request does not prove the codec recovered. If
+        // decode remains stalled, allow one bounded follow-up after cooldown.
+        // Never loop indefinitely while the same stream has no glass proof.
+        if (!stalled || !retryAllowed || recoveryAttempts >= maxRecoveryAttempts) {
+            return InboundVideoLivenessAction.NONE
+        }
 
         lastRecoveryAttemptMs = nowMs
+        recoveryAttempts += 1
         recoveryPending = true
         return InboundVideoLivenessAction.REQUEST_RECOVERY
     }
@@ -128,6 +136,7 @@ class InboundVideoLivenessMonitor(
         decoderStallSinceMs = null
         transportStallSinceMs = null
         lastRecoveryAttemptMs = null
+        recoveryAttempts = 0
     }
 
     @Synchronized
@@ -139,5 +148,6 @@ class InboundVideoLivenessMonitor(
         transportStallSinceMs = null
         lastRecoveryAttemptMs = null
         recoveryPending = false
+        recoveryAttempts = 0
     }
 }
