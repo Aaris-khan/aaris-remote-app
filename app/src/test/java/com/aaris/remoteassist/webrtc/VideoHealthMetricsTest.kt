@@ -99,4 +99,59 @@ class VideoHealthMetricsTest {
         assertNull(snapshot.roundTripTimeMs)
         assertNull(snapshot.freezeCount)
     }
+
+    @Test fun activeOutboundTrackOutranksRetiredSsrcWithMoreLifetimeBytes() {
+        val stale = stat(
+            "retired", "outbound-rtp",
+            "kind" to "video", "active" to false,
+            "bytesSent" to 9_000_000L, "framesEncoded" to 900L
+        )
+        val current = stat(
+            "live", "outbound-rtp",
+            "kind" to "video", "active" to true,
+            "bytesSent" to 300L, "framesEncoded" to 5L
+        )
+        val snapshot = checkNotNull(
+            VideoHealthSnapshot.from(
+                RTCStatsReport(1_000_000L, listOf(stale, current).associateBy { it.id }),
+                PeerRole.HOST
+            )
+        )
+        assertEquals("live", snapshot.streamId)
+        assertEquals(5L, snapshot.frames)
+        assertEquals(300L, snapshot.bytes)
+    }
+
+    @Test fun inactiveOldTrackCannotMaskLiveTrackWithoutActiveMetadata() {
+        val retired = stat(
+            "old", "inbound-rtp",
+            "kind" to "video", "active" to false,
+            "bytesReceived" to 4_000_000L, "framesDecoded" to 200L
+        )
+        val live = stat(
+            "new", "inbound-rtp",
+            "kind" to "video",
+            "bytesReceived" to 100L, "framesDecoded" to 3L
+        )
+        val snapshot = checkNotNull(
+            VideoHealthSnapshot.from(
+                RTCStatsReport(1_000_000L, listOf(retired, live).associateBy { it.id }),
+                PeerRole.CONTROLLER
+            )
+        )
+        assertEquals("new", snapshot.streamId)
+        assertEquals(3L, snapshot.framesSecondary)
+    }
+
+    @Test fun missingActivityMetadataKeepsLegacyCumulativeBytesFallback() {
+        val smaller = stat("a", "outbound-rtp", "kind" to "video", "bytesSent" to 10L)
+        val larger = stat("b", "outbound-rtp", "kind" to "video", "bytesSent" to 30L)
+        val snapshot = checkNotNull(
+            VideoHealthSnapshot.from(
+                RTCStatsReport(1_000_000L, listOf(smaller, larger).associateBy { it.id }),
+                PeerRole.HOST
+            )
+        )
+        assertEquals("b", snapshot.streamId)
+    }
 }
