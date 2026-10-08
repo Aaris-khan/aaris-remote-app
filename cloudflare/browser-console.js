@@ -14,7 +14,10 @@ export function createAdaptivePlayoutPolicy() {
     const freezes = Math.max(0, Number(sample.freezes) || 0);
     const minimumDelayMs = valid(sample.minimumDelayMs);
     const actualDelayMs = valid(sample.actualDelayMs);
-    const appliedTargetMs = valid(sample.targetDelayMs) ?? targetMs();
+    const measuredTargetMs = valid(sample.targetDelayMs);
+    const appliedTargetMs = measuredTargetMs != null && measuredTargetMs > 0
+      ? measuredTargetMs
+      : targetMs();
     const active = frames >= 5;
     const dropRatio = frames + dropped > 0 ? dropped / (frames + dropped) : 0;
     const headroomMs = minimumDelayMs == null ? null : targetMs() - minimumDelayMs;
@@ -689,7 +692,7 @@ export function browserMain(protocolFactory, playoutFactory) {
              */
             const feedbackJitterMs = actualDelayMs == null ? -1 :
               playoutTargetSupported
-                ? Math.max(0, actualDelayMs - (targetDelayMs ?? playout.targetMs()))
+                ? Math.max(0, actualDelayMs - (targetDelayMs != null && targetDelayMs > 0 ? targetDelayMs : playout.targetMs()))
                 : actualDelayMs;
             const decodeMs = count ? ((r.totalDecodeTime || 0) - (lastStats.totalDecodeTime || 0)) * 1000 / count : -1;
             feedback(19, [ms, count, decodeMs, feedbackJitterMs, dropped, freezes], [2, 3]);
