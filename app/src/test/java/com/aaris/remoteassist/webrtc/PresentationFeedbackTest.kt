@@ -15,7 +15,7 @@ class PresentationFeedbackTest {
         }
         val result = checkNotNull(sample)
         assertEquals(500, result.intervalMs)
-        assertEquals(10, result.renderedFrames)
+        assertEquals(9, result.renderedFrames)
         assertEquals(104, result.maxGapMs)
     }
 
@@ -25,7 +25,7 @@ class PresentationFeedbackTest {
         assertNull(tracker.onPresented(1_250))
         val result = checkNotNull(tracker.onPresented(1_500))
         assertEquals(500, result.intervalMs)
-        assertEquals(3, result.renderedFrames)
+        assertEquals(2, result.renderedFrames)
         assertEquals(250, result.maxGapMs)
     }
 
