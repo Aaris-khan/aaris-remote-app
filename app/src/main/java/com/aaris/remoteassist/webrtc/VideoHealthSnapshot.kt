@@ -123,7 +123,20 @@ data class VideoHealthSnapshot(
                     kind.equals("video", ignoreCase = true)
                 }
 
-            val selected = candidates.maxByOrNull { stat ->
+            /*
+             * An SSRC replaced during ICE/codec recovery may remain in getStats
+             * with more lifetime bytes than the new active screen stream.
+             * Picking max(bytes) alone silently binds health/adaptation to the
+             * retired track. Prefer an explicitly active RTP report, and never
+             * prefer an explicitly inactive one over an unmarked live report.
+             *
+             * Older WebRTC/OEM builds can omit "active": retain the original
+             * cumulative-byte fallback when activity information is absent.
+             */
+            val viable = candidates.filterNot { it.members["active"] == false }
+                .ifEmpty { candidates }
+            val active = viable.filter { it.members["active"] == true }
+            val selected = (active.ifEmpty { viable }).maxByOrNull { stat ->
                 number(stat.members["bytesSent"])
                     .coerceAtLeast(
                         number(stat.members["bytesReceived"])
