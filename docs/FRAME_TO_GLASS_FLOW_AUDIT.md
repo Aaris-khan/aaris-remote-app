@@ -249,3 +249,64 @@ sender source/encoded frame deltas with controller decoded and actual EGL-swap
 cadence during scrolling, fullscreen games, portrait/landscape transitions,
 low-bandwidth and static content. Record p95/max inter-swap gap plus visible
 touch latency; diagnose codec/network stalls separately from EGL stalls.
+
+## Follow-up: bound ineffective decoder-recovery requests (October 8, 2026)
+
+### Verified code-level deadlock in the controller recovery state
+
+In `InboundVideoLivenessMonitor.observe()`, a decoder stall triggers
+`REQUEST_RECOVERY`, which sets `recoveryPending=true`. The controller sends
+`VideoRecoveryRequest` to the host, or uses signaling recovery if its reliable
+channel is unavailable. **Successful send only confirms request dispatch,
+not resumed decoding or EGL presentation.** Previously `recoveryPending`
+short-circuited every later stalled observation. With no new decoded frame,
+`markPrimaryRecoveredConfirmed()` could never run, so a successful but
+ineffective recovery request blocked subsequent attempts for the entire
+unchanged stream.
+
+This is distinct from a healthy decoder with a stopped Surface: the latter
+remains owned by `InlineRemoteControllerView.mediaWatchdog` and
+`RendererContinuityPolicy`. Transport/codec restart is not the primary
+response to EGL-only stalls.
+
+### Surgical correction
+
+Keep the existing 2.5-second decoder-only and 12-second no-receive detection
+deadlines, the same 4-second retry cooldown, and the existing session / glass
+confirmation states. Permit **at most two** requests per unconfirmed decoder
+failure (the initial request and one cooled-down follow-up). No additional
+`getStats()` calls, threads, capture sessions, codecs, RTP buffering, frame
+copies, frame interpolation, or new wire messages are introduced.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Healthy
+    Healthy --> Stalled: decoder stops while RTP advances
+    Stalled --> Pending1: first elapsed-time deadline
+    Pending1 --> AwaitGlass: decode resumes
+    Pending1 --> Pending2: still stalled and cooldown elapsed
+    Pending2 --> AwaitGlass: decode resumes
+    Pending2 --> ObserveOnly: still stalled; retry budget exhausted
+    AwaitGlass --> Healthy: real EGL swap confirms primary
+    ObserveOnly --> Healthy: real EGL swap / new stream generation
+```
+
+The retry budget resets only when actual primary presentation is confirmed,
+the RTP generation resets, the monitor is reset on lease/track replacement,
+or clock/counters discontinuity requires reseeding. A progressing decoder
+does not trigger a second request merely because the renderer has not
+confirmed a fresh EGL swap. Failed sends obey the same cooldown and bounded
+attempt budget.
+
+**Regression tests:** delivered-but-ineffective request, early cooldown,
+no-receive/long-deadline retry, exhausted budget, healthy decoder without
+glass confirmation, and budget renewal after a genuine presentation proof.
+
+**Physical gate remains open:** compare this branch against baseline
+`1c3e6114a857bf4b8edf046ca2771f8f23521113` on two Android phones for
+10 minutes each with scrolling, a live game, idle-to-touch, portrait/landscape,
+Wi-Fi and TURN/mobile data. Record encoder/source/decoder/EGL FPS, p95/max
+render gap, RTP jitter/queue, ICE route and action-to-changed-pixels. A
+unit/CI pass confirms the corrected state transitions but cannot guarantee
+smooth physical playback. Persistent 2 FPS while source/encoder/network
+throughput is inadequate is outside this surgical recovery fix.
