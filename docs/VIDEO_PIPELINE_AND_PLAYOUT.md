@@ -58,6 +58,8 @@ flowchart TD
    an arbitrarily inflated native target. Example: actual=720, native target=700,
    app target=250 now reports **470 ms** pressure, instead of hiding it as 20 ms.
    A target chosen for the next interval cannot erase pressure from the old one.
+   A planned downshift retains at most the old allowance for two seconds while
+   it drains; newly growing delay above that budget remains visible immediately.
 4. **Presentation feedback:** browser compositor windows now reach the existing
    host cadence governor, rather than reporting decoder FPS alone. Missing JS
    callbacks are detected with the compositor's frame counter; incomplete gap

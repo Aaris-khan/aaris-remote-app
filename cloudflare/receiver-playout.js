@@ -4,6 +4,7 @@ export function createAdaptivePlayoutPolicy() {
   const valid = value => Number.isFinite(value) && value >= 0 ? value : null;
   let level = 0, pressureWindows = 0, cleanSinceMs = null;
   let lastChangeMs = -Infinity, lastSampleMs = null;
+  let drainAllowanceMs = null, drainUntilMs = -Infinity;
   let presentation = null;
   const targetMs = () => ladder[level];
 
@@ -21,7 +22,13 @@ export function createAdaptivePlayoutPolicy() {
   function observe(sample = {}) {
     const now = valid(sample.nowMs), ms = valid(sample.intervalMs);
     const oldTarget = targetMs();
-    const excessDelayMs = pressureDelayMs(sample.actualDelayMs, sample.targetDelayMs, sample.acceptedTargetMs);
+    const accepted = valid(sample.acceptedTargetMs);
+    // A planned downshift takes time to drain. Briefly retain the OLD accepted
+    // allowance, never anything above it, then expose any remaining backlog.
+    const accountedBudget = now != null && now < drainUntilMs && accepted === oldTarget &&
+      accepted != null && drainAllowanceMs != null && accepted < drainAllowanceMs
+      ? drainAllowanceMs : accepted;
+    const excessDelayMs = pressureDelayMs(sample.actualDelayMs, sample.targetDelayMs, accountedBudget);
     const result = (changed = false, reason = null) => ({
       targetMs: targetMs(), changed, reason, excessDelayMs, pressureWindows
     });
@@ -34,7 +41,6 @@ export function createAdaptivePlayoutPolicy() {
     lastSampleMs = now;
     const frames = valid(sample.frames), floor = valid(sample.minimumDelayMs);
     const decode = valid(sample.decodeMs), dropped = valid(sample.dropped), freezes = valid(sample.freezes);
-    const accepted = valid(sample.acceptedTargetMs);
     const active = frames != null && frames >= 5;
     const headroom = floor == null ? null : oldTarget - floor;
     const framePeriod = 1000 / Math.max(24, (frames ?? 0) * 1000 / ms);
@@ -55,6 +61,7 @@ export function createAdaptivePlayoutPolicy() {
       floor != null && floor <= lowerTarget - 40;
     cleanSinceMs = clean ? (cleanSinceMs ?? now) : null;
     if (level > 0 && cleanSinceMs != null && now - cleanSinceMs >= 30000 && now - lastChangeMs >= 30000) {
+      drainAllowanceMs = accepted; drainUntilMs = now + 2000;
       level--; lastChangeMs = now; pressureWindows = 0; cleanSinceMs = null;
       return result(true, 'stable-network');
     }
@@ -120,6 +127,7 @@ export function createAdaptivePlayoutPolicy() {
     reset() {
       level = 0; pressureWindows = 0; cleanSinceMs = null;
       lastChangeMs = -Infinity; lastSampleMs = null; presentation = null;
+      drainAllowanceMs = null; drainUntilMs = -Infinity;
     }
   };
 }

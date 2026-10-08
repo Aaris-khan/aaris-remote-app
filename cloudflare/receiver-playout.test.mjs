@@ -67,6 +67,17 @@ test('target transition reports pressure from the completed interval, not the ne
   assert.equal(state.excessDelayMs, 45);
 });
 
+test('planned downshift gets a bounded drain allowance without hiding newly growing backlog', () => {
+  const p = createAdaptivePlayoutPolicy();
+  p.observe(sample(p, 1000, { minimumDelayMs: 95, freezes: 1 }));
+  for (let t = 2000; t <= 32000; t += 1000) p.observe(sample(p, t));
+  assert.equal(p.targetMs(), 100);
+  const draining = { actualDelayMs: 150, targetDelayMs: 150 };
+  assert.equal(p.observe(sample(p, 33000, draining)).excessDelayMs, 0);
+  assert.equal(p.observe(sample(p, 33500, { actualDelayMs: 400, targetDelayMs: 400 })).excessDelayMs, 250);
+  assert.equal(p.observe(sample(p, 34500, draining)).excessDelayMs, 50, 'old allowance expires after two seconds');
+});
+
 const before = {
   id: 'video', timestamp: 1000, framesDecoded: 100, jitterBufferEmittedCount: 100,
   totalDecodeTime: .4, jitterBufferDelay: 10, jitterBufferTargetDelay: 10,
