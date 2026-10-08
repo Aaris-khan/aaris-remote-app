@@ -112,3 +112,26 @@ and deployed Worker status must be reported separately from passing CI.
   and [RTP hint parsing](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/modules/rtp_rtcp/source/rtp_sender_video.cc).
 - [WebRTC playout-delay extension](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/playout-delay/README.md): limits are best-effort guidance.
 - [W3C jitterBufferTarget](https://www.w3.org/TR/webrtc/#dom-rtcrtpreceiver-jitterbuffertarget): application preference, not a fixed stopwatch delay.
+
+## Follow-up: native overuse relief and stable stats windows (October 2026)
+
+Two additional problems were located after PR #549:
+
+- `VideoHealthWindowTracker` advanced its baseline on invalid, sub-500 ms
+  samples. Early 500 ms polls or the intentional fast 100/120 ms probes could
+  repeatedly erase the deltas required by the motion/cadence governors. These
+  samples now accumulate until a valid 500–6000 ms window. Counter resets,
+  codec/stream changes and timestamp discontinuities still reseed safely.
+- The sender was configured with `MAINTAIN_FRAMERATE_AND_RESOLUTION`. This
+  prevented native encoder spatial relief while the app waited for multi-window
+  feedback. It now uses `MAINTAIN_FRAMERATE`: libwebrtc can lower spatial
+  workload inside the application-defined maximum source envelope to preserve
+  motion cadence under codec/transport stress.
+
+This is a code-level optimization, not a claim of measured smoothness. Compare
+against the parent build on two physical Android devices for 10 minutes each
+under Wi-Fi, poor network, TURN, scrolling and gaming. Record actual source,
+encoded, decoded and presented FPS, max frame gap, codec service time, encoder
+frame dimensions, send queue and receiver jitter residence. Check especially
+for resolution oscillation or hardware codec reinitialization. No guarantee
+of 60 unique FPS is possible when capture or bandwidth cannot supply it.
