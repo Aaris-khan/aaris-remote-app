@@ -279,7 +279,11 @@ class InlineRemoteControllerView(
                         session()?.requestMediaRecovery()
                         mainHandler.postDelayed(this, MEDIA_RECOVERY_RETRY_MS)
                     } else {
+                        // The retry budget stops repeated transport repairs, not
+                        // observation. A late decoded track must still be able to
+                        // advance into the EGL recovery branch.
                         showVideoStatus("Connected • controls work • waiting for live video…")
+                        mainHandler.postDelayed(this, RENDER_HEALTH_CHECK_INTERVAL_MS)
                     }
                     return
                 }
@@ -290,17 +294,21 @@ class InlineRemoteControllerView(
                 // arriving, the surface is visible, and no swap was observed
                 // for a sustained interval. A static/quiet screen and normal
                 // packet jitter must not rebuild a healthy decoder.
+                val surfaceReady =
+                    rendererSurfaceAttached &&
+                        surfaceView.holder.surface.isValid &&
+                        root.windowVisibility == View.VISIBLE
                 val eglStalled = RendererContinuityPolicy.shouldRecover(
                     nowMs = now,
                     lastDecodedAtMs = lastRawFrameAtMs,
                     lastPresentedAtMs = lastPresentedFrameAtMs,
                     hadRendered = renderedFrameSeen.get(),
-                    surfaceReady = rendererSurfaceAttached &&
-                        surfaceView.holder.surface.isValid &&
-                        root.windowVisibility == View.VISIBLE
+                    surfaceReady = surfaceReady
                 )
 
-                if (!renderedFrameSeen.get() || eglStalled) {
+                // Do not burn the limited initial-render repair budget while
+                // SurfaceView is hidden or its Surface has been destroyed.
+                if ((!renderedFrameSeen.get() && surfaceReady) || eglStalled) {
                     if (rendererRecoveryAttempts < MAX_RENDERER_RECOVERY_ATTEMPTS) {
                         rendererRecoveryAttempts += 1
                         showVideoStatus(
@@ -317,7 +325,11 @@ class InlineRemoteControllerView(
                         rebuildRenderer()
                         mainHandler.postDelayed(this, RENDER_RECOVERY_RETRY_MS)
                     } else {
+                        // Stay alive after exhausting attempts: a later Surface
+                        // recreation or successful pending swap may recover
+                        // without a new video track or a transport restart.
                         showVideoStatus("Video received • display retrying…")
+                        mainHandler.postDelayed(this, RENDER_HEALTH_CHECK_INTERVAL_MS)
                     }
                     return
                 }
@@ -607,6 +619,17 @@ class InlineRemoteControllerView(
                         surfaceView.height
                     )
                     remoteTrack?.let(::attachTrack)
+                    if (attached && remoteTrack != null) {
+                        // A new real Surface is a new rendering opportunity.
+                        // Preserve the transport but grant a fresh bounded EGL
+                        // repair budget and resume the same watchdog.
+                        rendererRecoveryAttempts = 0
+                        mainHandler.removeCallbacks(mediaWatchdog)
+                        mainHandler.postDelayed(
+                            mediaWatchdog,
+                            FIRST_FRAME_DEADLINE_MS
+                        )
+                    }
                 }
 
                 override fun surfaceChanged(

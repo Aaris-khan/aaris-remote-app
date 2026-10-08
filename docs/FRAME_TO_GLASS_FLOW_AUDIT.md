@@ -142,3 +142,57 @@ swap gaps, GPU contention, recovery cadence, rotation and touch-to-visible
 latency for at least 10 minutes. This patch repairs **stalls after an initially
 successful rendering session**; it does not claim to fix upstream 2-fps
 encoding or bandwidth-limited RTP delivery.
+
+
+## Follow-up: bounded watchdog remains observable after retries (October 8, 2026)
+
+Audited parent: `49e69fdd3bc308c6f5c4a7402eea9ec5c3e04a3d`
+(PR #555 already contains the post-start EGL-stall detector).
+
+**Verified lifecycle defect:** `InlineRemoteControllerView.mediaWatchdog`
+stopped scheduling itself after either the transport or renderer repair
+budget was exhausted. Therefore a late decoded frame, a successfully
+recovered pending EGL swap, or a recreated `SurfaceView` could arrive after
+the final watchdog check with no further periodic observation. In addition,
+the pre-first-EGL-swap branch attempted renderer rebuild even when its Surface
+was destroyed/hidden, consuming finite repair attempts with no output target.
+
+**Targeted correction (not a new buffer or transport):**
+
+- Keep the existing 1.5-second timestamp-only watchdog running after either
+  finite retry budget is exhausted; this **does not** authorize further
+  transport/renderer rebuilds once the budget is spent.
+- Only attempt initial EGL repair when `rendererSurfaceAttached`, a valid
+  `Surface` and a visible root agree. Preserve the already-conservative
+  post-start `RendererContinuityPolicy.shouldRecover` gate.
+- When a real `SurfaceHolder.surfaceCreated` arrives for an attached active
+  remote video track, reset the **renderer-only** attempt budget, preserve the
+  WebRTC session, and rearm the existing watchdog using the first-frame
+  deadline. Do not spend the video transport recovery budget or create a new
+  media track.
+
+**State trace:**
+
+```text
+REMOTE_TRACK → FIRST_FRAME_WAIT → DECODED_PENDING_EGL
+       ↘ NO_RTP → LIMITED_MEDIA_REPAIR → OBSERVE_ONLY (periodic)
+DECODED_PENDING_EGL + NO_SURFACE → OBSERVE_ONLY (periodic)
+DECODED_PENDING_EGL + VALID_SURFACE → LIMITED_EGL_REPAIR
+       ↘ attempts exhausted → OBSERVE_ONLY (periodic)
+SURFACE_RECREATED + ACTIVE_TRACK → REARM LIMITED_EGL_REPAIR
+RENDER_SWAPPED → HEALTHY_MONITOR (periodic) → POST_START_EGL_STALL_CHECK
+```
+
+**Scope and test constraints:** This repairs two verifiable controller
+watchdog-state defects and should not be represented as proof of lower
+encoding/transmission jitter. The existing pure
+`RendererContinuityPolicyTest` checks Surface gating and stale decode
+evidence; Android build/lint jobs can check integration. Manual device
+validation must additionally exercise: starting with a destroyed Surface,
+two exhausted recovery attempts followed by a Surface recreation, later
+decoded frames after transport-retry exhaustion, 10-minute continuous
+presentation with both phones, portrait/landscape game transitions, and
+that retry counters do not cause unbounded repairs. Measure separately
+source FPS, encoded FPS, inbound decoded FPS, EGL swap FPS/gaps, RTP
+jitter residence and action-to-changed-pixels delay; no simulated test can
+establish physical two-phone smoothness.
