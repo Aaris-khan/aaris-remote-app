@@ -2,7 +2,18 @@
 // Chromium pages. The host is a synthetic peer, not an Android device.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { browserResponse } from './browser-console.js';
+import { browserResponse, createAdaptivePlayoutPolicy } from './browser-console.js';
+const bufferPolicy=createAdaptivePlayoutPolicy();
+assert.equal(bufferPolicy.targetMs(),250,'Base reservoir must start at 250 ms');
+let bufferState=bufferPolicy.observe({nowMs:5000,frames:25,minimumDelayMs:240,actualDelayMs:255,targetDelayMs:250,dropped:0,freezes:1});
+assert.equal(bufferState.targetMs,350,'A real freeze should add one reservoir rung');
+bufferState=bufferPolicy.observe({nowMs:10000,frames:25,minimumDelayMs:340,actualDelayMs:470,targetDelayMs:350,dropped:2,freezes:1});
+assert.equal(bufferState.targetMs,500,'Repeated unstable playback should cap at 500 ms');
+for(let i=1;i<=20;i++) bufferState=bufferPolicy.observe({nowMs:10000+i*1000,frames:25,minimumDelayMs:80,actualDelayMs:500,targetDelayMs:500,dropped:0,freezes:0});
+assert.equal(bufferState.targetMs,350,'500 ms must recover only after a long clean run');
+for(let i=1;i<=30;i++) bufferState=bufferPolicy.observe({nowMs:30000+i*1000,frames:25,minimumDelayMs:80,actualDelayMs:350,targetDelayMs:350,dropped:0,freezes:0});
+assert.equal(bufferState.targetMs,250,'Stable network must slowly return to the 250 ms base reservoir');
+
 const require = createRequire(import.meta.url);
 let chromium;
 try { ({ chromium } = require('playwright')); }
@@ -169,5 +180,5 @@ try {
   assert.equal(await host.evaluate(()=>window.received.at(-1).sequence),'1');
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();assert.equal(ended,true);
   assert.deepEqual(errors,[]);
-  console.log('PASS: startup retry, actual WebRTC video, tap/back/swipe/long press/text, live START-CONTINUE-END gesture streaming, letterbox exclusion, universal AI JSON normalized/pixel taps, refresh and disconnect');
+  console.log('PASS: adaptive 250/350/500ms playout reservoir, startup retry, actual WebRTC video, tap/back/swipe/long press/text, live START-CONTINUE-END gesture streaming, letterbox exclusion, universal AI JSON normalized/pixel taps, refresh and disconnect');
 } finally { await browser.close(); }
