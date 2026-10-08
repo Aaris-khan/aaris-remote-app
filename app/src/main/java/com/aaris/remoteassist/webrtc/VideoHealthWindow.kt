@@ -95,14 +95,38 @@ class VideoHealthWindowTracker {
 
     @Synchronized fun sample(current: VideoHealthSnapshot): VideoHealthSnapshot {
         val old = previous
-        previous = current
-        if (old == null || current.streamId != old.streamId || current.direction != old.direction || current.codec != old.codec) return current
+        if (
+            old == null ||
+            current.streamId != old.streamId ||
+            current.direction != old.direction ||
+            current.codec != old.codec
+        ) {
+            previous = current
+            return current
+        }
         val interval = (current.timestampUs - old.timestampUs) / 1000.0
-        if (!interval.isFinite() || interval !in 500.0..6000.0) return current
-        val frames = if (current.direction == "outbound") current.frames - old.frames else current.framesSecondary - old.framesSecondary
+        if (!interval.isFinite() || interval < 0.0 || interval > 6000.0) {
+            // A long gap or timestamp reset must start a new stable window.
+            previous = current
+            return current
+        }
+        val frames =
+            if (current.direction == "outbound") current.frames - old.frames
+            else current.framesSecondary - old.framesSecondary
         val bytes = current.bytes - old.bytes
         val packets = current.packets - old.packets
-        if (frames !in 0..2048 || bytes < 0 || packets < 0) return current
+        if (frames !in 0..2048 || bytes < 0 || packets < 0) {
+            // Reseed immediately if an RTP stream resets mid-window.
+            previous = current
+            return current
+        }
+        if (interval < 500.0) {
+            // Slightly early 500 ms probes and 100/120 ms transition kicks
+            // must not consume the baseline. Otherwise regular early probes
+            // can discard every sample and blind both adaptive governors.
+            return current
+        }
+        previous = current
         fun average(total: Double?, before: Double?, count: Long): Double? {
             if (total == null || before == null || count <= 0) return null
             val delta = total - before

@@ -3,10 +3,11 @@ package com.aaris.remoteassist.webrtc
 import com.aaris.remoteassist.capture.CaptureTier
 
 /**
- * Remote control must permit native resolution adaptation before the first
- * touch and even when a stalled encoder cannot prove passive motion yet.
- * Clarity recovery belongs to the pixel budget, not a competing switch back
- * to MAINTAIN_RESOLUTION. A static producer still emits few/no frames.
+ * Keep cadence-first behavior from the first frame even when a struggling
+ * codec has not yet produced enough samples to prove passive motion. The
+ * source envelope is owned by MotionVideoBudget; native WebRTC can scale
+ * DOWN within that envelope on immediate overuse. Never force resolution
+ * preservation for the interactive remote-control stream.
  */
 data class InteractiveVideoPolicy(
     val preserveResolution: Boolean,

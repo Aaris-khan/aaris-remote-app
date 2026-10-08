@@ -31,18 +31,18 @@ class RealtimeMediaPolicyTest {
     }
 
     @Test
-    fun appOwnedMotionBudgetIsTheOnlySpatialTemporalAdaptationAuthority() {
+    fun nativeSpatialReliefMaintainsFrameRateUnderSuddenCodecPressure() {
         assertEquals(
-            RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE_AND_RESOLUTION,
+            RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE,
             RealtimeMediaPolicy.videoDegradationPreference(
                 motionPriority = true,
                 preserveResolution = false
             )
         )
-        // Motion ownership wins even if a stale preserve-resolution hint is
-        // simultaneously present; two spatial controllers must never compete.
+        // Motion cadence takes precedence over a stale resolution-preserving
+        // hint; native downscaling remains inside the app's source ceiling.
         assertEquals(
-            RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE_AND_RESOLUTION,
+            RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE,
             RealtimeMediaPolicy.videoDegradationPreference(
                 motionPriority = true,
                 preserveResolution = true

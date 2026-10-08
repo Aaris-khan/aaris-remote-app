@@ -35,6 +35,31 @@ class VideoFeedbackTest {
         val missing = snapshot(21_000_000, 530, 4.1, "new").copy(processingTotalSeconds = null, jitterTotalSeconds = null)
         assertNull(tracker.sample(missing).recent!!.processingMs)
     }
+
+    @Test fun earlyRealtimeStatsProbesAccumulateUntilValidWindow() {
+        val tracker = VideoHealthWindowTracker()
+        assertNull(tracker.sample(snapshot(1_000_000, 300, 3.0)).recent)
+        assertNull(tracker.sample(snapshot(1_120_000, 304, 3.04)).recent)
+        assertNull(tracker.sample(snapshot(1_480_000, 314, 3.14)).recent)
+        val window = checkNotNull(
+            tracker.sample(snapshot(1_960_000, 329, 3.29)).recent
+        )
+        assertEquals(960, window.intervalMs)
+        assertEquals(29, window.frames)
+        assertEquals(29 * 1000.0 / 960.0, window.fps, 0.001)
+    }
+
+    @Test fun earlyCounterResetReseedsWithoutStaleDeltas() {
+        val tracker = VideoHealthWindowTracker()
+        assertNull(tracker.sample(snapshot(1_000_000, 300, 3.0)).recent)
+        assertNull(tracker.sample(snapshot(1_200_000, 2, 0.02)).recent)
+        val window = checkNotNull(
+            tracker.sample(snapshot(1_800_000, 20, 0.2)).recent
+        )
+        assertEquals(600, window.intervalMs)
+        assertEquals(18, window.frames)
+    }
+
     private val packet = ControlPacket.VideoFeedback(42, 2, 1, 1000, 30, 8f, 30f, 1, 0)
     @Test fun boundedWirePacketRoundTripsAndRejectsTruncationNaNsAndUnknownVersion() {
         val bytes = ControlProtocol.encode(packet)

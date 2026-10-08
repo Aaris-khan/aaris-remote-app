@@ -65,18 +65,17 @@ internal object RealtimeMediaPolicy {
         }
 
     /**
-     * Keep one authority over interactive spatial/temporal adaptation.
+     * Split fast native relief from the slower app-owned source envelope.
      *
-     * MotionVideoBudget + HighCadenceProbe already own the app's source
-     * resolution/FPS envelope. Letting libwebrtc independently resize the same
-     * motion stream creates two feedback controllers acting on one plant, which
-     * can cause hidden resolution oscillation and repeated codec reconfiguration.
+     * MotionVideoBudget/HighCadenceProbe cap input pixels, FPS and bitrate
+     * using end-to-end pressure measurements. Native overuse adaptation is
+     * faster than those measurements: MAINTAIN_FRAMERATE allows libwebrtc to
+     * sacrifice spatial detail inside the app's maximum capture envelope
+     * before dropping temporal cadence. It cannot raise resolution beyond
+     * that envelope; app-level recovery remains hysteresis-gated.
      *
-     * Modern libwebrtc exposes MAINTAIN_FRAMERATE_AND_RESOLUTION specifically
-     * for applications that implement their own adaptation policy. WebRTC still
-     * owns congestion control, packet pacing, encoder rate control and may drop
-     * work before encode when resources are overused; our measured cross-layer
-     * governor then lowers the declared rung when pressure persists.
+     * No additional decoded-frame queue or Java-side codec scaler is added.
+     * Non-motion callers can still select BALANCED / MAINTAIN_RESOLUTION.
      */
     fun videoDegradationPreference(
         motionPriority: Boolean,
@@ -84,7 +83,7 @@ internal object RealtimeMediaPolicy {
     ): RtpParameters.DegradationPreference =
         when {
             motionPriority ->
-                RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE_AND_RESOLUTION
+                RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
             preserveResolution ->
                 RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
             else ->
