@@ -15,6 +15,62 @@ class MotionVideoBudgetTest {
         VideoHealthWindow(1000, fps, decode, 5.0, 0, 0, presentationIntervalMs = 1000,
             presentedFrames = presented, maxRenderGapMs = 34)
 
+    @Test fun shortStatsProbeCannotEraseRealEncoderPressureEvidence() {
+        val budget = MotionVideoBudget()
+        assertTrue(budget.primeForMotion(profile, 0L))
+        val overloaded = sender(fps = 20, encode = 35.0, queue = 5.0)
+
+        // The first completed one-second interval is genuine encoder pressure,
+        // but hysteresis deliberately requires another completed observation.
+        assertFalse(budget.observe(overloaded, null, 30.0, true, 30, 4_000L, true))
+        assertEquals(360, budget.shortEdge)
+
+        // A 120 ms reconfiguration kick has no complete recent window. It
+        // must not turn one measured pressure window into zero.
+        assertFalse(
+            budget.observe(overloaded.copy(recent = null), null, 30.0, true, 30, 4_120L, true)
+        )
+        assertTrue(budget.observe(overloaded, null, 30.0, true, 30, 5_000L, true))
+        assertEquals(240, budget.shortEdge)
+    }
+
+    @Test fun staleEncoderPressureExpiresAfterAnUnmeasuredGap() {
+        val budget = MotionVideoBudget()
+        assertTrue(budget.primeForMotion(profile, 0L))
+        val overloaded = sender(fps = 20, encode = 35.0, queue = 5.0)
+
+        assertFalse(budget.observe(overloaded, null, 30.0, true, 30, 4_000L, true))
+        // Multiple short or missing probes must not become fabricated samples.
+        assertFalse(
+            budget.observe(overloaded.copy(recent = null), null, 30.0, true, 30, 10_400L, true)
+        )
+        assertFalse(budget.observe(overloaded, null, 30.0, true, 30, 10_500L, true))
+        assertEquals(360, budget.shortEdge)
+
+        // New consecutive full windows can establish pressure again.
+        assertTrue(budget.observe(overloaded, null, 30.0, true, 30, 11_500L, true))
+        assertEquals(240, budget.shortEdge)
+    }
+
+    @Test fun replacementCodecOrStreamCannotInheritOldPressure() {
+        val budget = MotionVideoBudget()
+        assertTrue(budget.primeForMotion(profile, 0L))
+        val previousStream = sender(fps = 20, encode = 35.0, queue = 5.0)
+            .copy(streamId = "video-old")
+
+        assertFalse(budget.observe(previousStream, null, 30.0, true, 30, 4_000L, true))
+        val replacement = previousStream.copy(streamId = "video-new", codec = "video/H264")
+        // New stream/codec starts with a short native probe; old pressure must
+        // be forgotten before the first new-stream complete sender window.
+        assertFalse(
+            budget.observe(replacement.copy(recent = null), null, 30.0, true, 30, 4_120L, true)
+        )
+        assertFalse(budget.observe(replacement, null, 30.0, true, 30, 5_000L, true))
+        assertEquals(360, budget.shortEdge)
+        assertTrue(budget.observe(replacement, null, 30.0, true, 30, 6_000L, true))
+        assertEquals(240, budget.shortEdge)
+    }
+
     @Test fun newMotionWarmStartsAtThreeSixtyBeforeTelemetryArrives() {
         val budget = MotionVideoBudget()
 
