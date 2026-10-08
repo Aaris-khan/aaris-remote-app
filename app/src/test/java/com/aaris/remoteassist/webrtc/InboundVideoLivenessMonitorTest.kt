@@ -94,6 +94,56 @@ class InboundVideoLivenessMonitorTest {
     }
 
     @Test
+    fun successfulRequestWithoutDecoderProgressGetsOneBoundedRetry() {
+        val monitor = InboundVideoLivenessMonitor()
+        monitor.observe(100, 100, 0)
+        assertEquals(none, monitor.observe(120, 100, 500))
+        assertEquals(repair, monitor.observe(140, 100, 3_000))
+        // A control-channel send succeeded; the codec never recovered.
+        assertEquals(none, monitor.observe(160, 100, 6_999))
+        assertEquals(repair, monitor.observe(180, 100, 7_000))
+        // Additional stats must not cause an unbounded restart loop.
+        assertEquals(none, monitor.observe(200, 100, 11_000))
+        assertEquals(none, monitor.observe(220, 100, 30_000))
+    }
+
+    @Test
+    fun quietTransportAfterAcceptedRequestAlsoGetsBoundedRetry() {
+        val monitor = InboundVideoLivenessMonitor()
+        monitor.observe(100, 100, 0)
+        monitor.observe(120, 100, 500)
+        assertEquals(repair, monitor.observe(140, 100, 3_000))
+        assertEquals(none, monitor.observe(140, 100, 3_500))
+        assertEquals(none, monitor.observe(140, 100, 15_499))
+        assertEquals(repair, monitor.observe(140, 100, 15_500))
+        assertEquals(none, monitor.observe(140, 100, 30_000))
+    }
+
+    @Test
+    fun realGlassConfirmationRenewsRecoveryBudgetForLaterFreeze() {
+        val monitor = InboundVideoLivenessMonitor()
+        monitor.observe(100, 100, 0)
+        monitor.observe(120, 100, 500)
+        assertEquals(repair, monitor.observe(140, 100, 3_000))
+        assertEquals(repair, monitor.observe(160, 100, 7_000))
+        monitor.markPrimaryRecoveredConfirmed()
+        assertEquals(none, monitor.observe(170, 110, 8_000))
+        assertEquals(none, monitor.observe(190, 110, 8_500))
+        assertEquals(repair, monitor.observe(220, 110, 11_000))
+    }
+
+    @Test
+    fun healthyDecoderAfterRecoveryDoesNotLoopWhileWaitingForGlass() {
+        val monitor = InboundVideoLivenessMonitor()
+        monitor.observe(100, 100, 0)
+        monitor.observe(120, 100, 500)
+        assertEquals(repair, monitor.observe(140, 100, 3_000))
+        assertEquals(resumed, monitor.observe(150, 110, 3_500))
+        assertEquals(resumed, monitor.observe(200, 160, 8_000))
+        assertEquals(resumed, monitor.observe(250, 210, 20_000))
+    }
+
+    @Test
     fun counterResetAndClockRollbackClearStaleEvidence() {
         val monitor = InboundVideoLivenessMonitor()
         monitor.observe(100, 100, 0)
