@@ -196,3 +196,56 @@ that retry counters do not cause unbounded repairs. Measure separately
 source FPS, encoded FPS, inbound decoded FPS, EGL swap FPS/gaps, RTP
 jitter residence and action-to-changed-pixels delay; no simulated test can
 establish physical two-phone smoothness.
+
+## Controller decoder-liveness sampling fix (October 8, 2026)
+
+### Verified integration mismatch
+
+`WebRtcPeer` already samples incoming WebRTC RTP counters on a 500 ms
+interaction cadence and 1,500 ms quiet cadence. In the controller,
+`ControllerWebRtcSession.onVideoHealth` formerly returned early on a
+3,000 ms *diagnostic logging throttle* **before** invoking
+`InboundVideoLivenessMonitor.observe`. The monitor additionally counted
+observations, rather than elapsed duration. Therefore the same stopped decoder
+could take substantially longer to trigger media repair than the statistics
+loop itself; changing logging frequency also changed recovery behavior.
+
+### Surgical patch and state/visual mapping
+
+Every existing inbound stats callback now feeds the monotonic
+received/decoded counters and `SystemClock.elapsedRealtime()` to the
+existing monitor. Only human-readable diagnostics remain throttled.
+No additional RTCStats polling, RTP buffering, encoder, observer thread,
+frame interpolation, signaling format, or UI layer is introduced.
+
+```text
+RECEIVE PROGRESS + DECODE PROGRESS → HEALTHY
+RECEIVE PROGRESS + NO DECODE PROGRESS for 2,500 ms → REQUEST_RECOVERY
+NO RECEIVE PROGRESS + NO DECODE PROGRESS for 12,000 ms → REQUEST_RECOVERY
+NO FIRST DECODE YET → STARTUP WATCHDOG OWNS RECOVERY
+REQUEST_RECOVERY + DECODE RESUMES → WAIT_FOR_ACTUAL_EGL_PRESENTATION
+REQUEST_FAILED → RETRY AFTER 4,000 ms COOLDOWN
+RTP COUNTER RESET / CLOCK DISCONTINUITY → RESEED, NO FALSE RECOVERY
+```
+
+Only a continuous observation interval that matches one of the two stall
+conditions contributes to its timer; a quiet packet interval cancels previous
+decoder-only evidence. Stream generation resets clear stale counters. The
+controller's normal EGL presentation proof remains authoritative for turning
+off fallback; a decoder counter alone must not declare visible recovery.
+
+The 2.5/12/4-second thresholds are *policy deadlines*, not claims that
+the network or hardware will recover within these durations. Delivery can
+still be low-FPS when encoder workload, thermal constraints or insufficient
+network capacity dominate. No additional '500 ms frame reservoir' was
+implemented because a second video queue would increase input-to-screen lag.
+
+### Regression and physical acceptance
+
+Unit regression cases exercise high/low stats cadence, decoder-only stalls,
+partial RTP gaps, idle/no-first-decode, recovery acknowledgment, cooldown,
+monotonic clock and counter resets. CI is software-only. On two phones compare
+sender source/encoded frame deltas with controller decoded and actual EGL-swap
+cadence during scrolling, fullscreen games, portrait/landscape transitions,
+low-bandwidth and static content. Record p95/max inter-swap gap plus visible
+touch latency; diagnose codec/network stalls separately from EGL stalls.
