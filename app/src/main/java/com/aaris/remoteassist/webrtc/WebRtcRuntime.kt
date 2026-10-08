@@ -48,11 +48,11 @@ object WebRtcRuntime {
                 PeerConnectionFactory.InitializationOptions
                     .builder(appContext)
                     /*
-                     * Remote-control video is interactive streaming, not movie
-                     * playback. Ask libwebrtc to advertise a 0..100 ms playout
-                     * window so the receiver takes its low-latency scheduling
-                     * path while retaining a small jitter budget instead of
-                     * building a stale-frame playback queue.
+                     * Enable native timestamp-based smoothing with a 10 ms
+                     * floor and a best-effort 500 ms ceiling. The ceiling is
+                     * recovery headroom, not a fixed half-second delay. Keep
+                     * packet repair and timed decode inside libwebrtc rather
+                     * than buffering decoded frames in the Android viewer.
                      */
                     .setFieldTrials(RealtimeMediaPolicy.FIELD_TRIALS)
                     .setEnableInternalTracer(false)

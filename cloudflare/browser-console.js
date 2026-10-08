@@ -1,101 +1,7 @@
 import { createBrowserProtocol } from './browser-protocol.js';
 
-export function createAdaptivePlayoutPolicy() {
-  const ladder = [250, 350, 500];
-  let level = 0, pressureWindows = 0, cleanWindows = 0, lastChangeMs = -1e12;
-
-  const valid = value => Number.isFinite(value) && value >= 0 ? Number(value) : null;
-  const targetMs = () => ladder[level];
-
-  function observe(sample = {}) {
-    const nowMs = Number.isFinite(sample.nowMs) ? Number(sample.nowMs) : Date.now();
-    const frames = Math.max(0, Number(sample.frames) || 0);
-    const dropped = Math.max(0, Number(sample.dropped) || 0);
-    const freezes = Math.max(0, Number(sample.freezes) || 0);
-    const minimumDelayMs = valid(sample.minimumDelayMs);
-    const actualDelayMs = valid(sample.actualDelayMs);
-    const measuredTargetMs = valid(sample.targetDelayMs);
-    const appliedTargetMs = measuredTargetMs != null && measuredTargetMs > 0
-      ? measuredTargetMs
-      : targetMs();
-    const active = frames >= 5;
-    const dropRatio = frames + dropped > 0 ? dropped / (frames + dropped) : 0;
-    const headroomMs = minimumDelayMs == null ? null : targetMs() - minimumDelayMs;
-    const excessDelayMs = actualDelayMs == null ? null : Math.max(0, actualDelayMs - appliedTargetMs);
-
-    const severe = active && (
-      freezes > 0 ||
-      (headroomMs != null && headroomMs <= 30) ||
-      (excessDelayMs != null && excessDelayMs >= 120) ||
-      (dropped >= 3 && dropRatio >= 0.08)
-    );
-    const moderate = active && !severe && (
-      (headroomMs != null && headroomMs <= 80) ||
-      (excessDelayMs != null && excessDelayMs >= 70) ||
-      (dropped >= 2 && dropRatio >= 0.04)
-    );
-
-    let changed = false, reason = null;
-    if (severe) pressureWindows = Math.min(6, pressureWindows + 2);
-    else if (moderate) pressureWindows = Math.min(6, pressureWindows + 1);
-    else pressureWindows = Math.max(0, pressureWindows - 1);
-
-    const canRaise = level < ladder.length - 1 && nowMs - lastChangeMs >= 4000;
-    if (canRaise && (freezes > 0 || pressureWindows >= 3)) {
-      level++;
-      changed = true;
-      reason = freezes > 0 ? 'freeze-reservoir' : 'jitter-reservoir';
-      pressureWindows = 0;
-      cleanWindows = 0;
-      lastChangeMs = nowMs;
-    } else {
-      const lowerTarget = level > 0 ? ladder[level - 1] : null;
-      const prospectiveHeadroomClean =
-        lowerTarget == null ||
-        minimumDelayMs == null ||
-        minimumDelayMs <= lowerTarget - 120;
-      const clean = active && freezes === 0 && dropped === 0 &&
-        (headroomMs == null || headroomMs >= 120) &&
-        (excessDelayMs == null || excessDelayMs <= 40) &&
-        prospectiveHeadroomClean;
-
-      cleanWindows = clean ? Math.min(60, cleanWindows + 1) : 0;
-      const requiredClean = level >= 2 ? 20 : 30;
-      const requiredHoldMs = level >= 2 ? 20000 : 30000;
-      if (level > 0 && cleanWindows >= requiredClean && nowMs - lastChangeMs >= requiredHoldMs) {
-        level--;
-        changed = true;
-        reason = 'stable-network';
-        pressureWindows = 0;
-        cleanWindows = 0;
-        lastChangeMs = nowMs;
-      }
-    }
-
-    return {
-      targetMs: targetMs(),
-      changed,
-      reason,
-      excessDelayMs,
-      minimumDelayMs,
-      actualDelayMs,
-      appliedTargetMs,
-      pressureWindows,
-      cleanWindows
-    };
-  }
-
-  return {
-    targetMs,
-    observe,
-    reset() {
-      level = 0;
-      pressureWindows = 0;
-      cleanWindows = 0;
-      lastChangeMs = -1e12;
-    }
-  };
-}
+import { createAdaptivePlayoutPolicy } from './receiver-playout.js';
+export { createAdaptivePlayoutPolicy };
 
 // This function is served as an ES module. Keep all browser dependencies inside
 // it so the Worker needs neither a UI framework nor a separate asset deployment.
@@ -111,7 +17,8 @@ export function browserMain(protocolFactory, playoutFactory) {
   let signalChain = Promise.resolve(), publishChain = Promise.resolve(), reconnectTimer, retry = 0;
   let busy = false, pending = null, pointer = null, lastFrameAt = 0, rendered = 0, videoReadyGeneration = -1;
   let lastStats, lastPresented = 0, telemetrySequence = 0n, telemetry;
-  let videoReceiver = null, playoutTargetSupported = false;
+  let videoReceiver = null, acceptedPlayoutTargetMs = null;
+  let statsInFlight = false, mediaEpoch = 0;
   let observation, observationAt = 0, snapshotPending = false;
   const seenSignals = new Set();
   const timers = [], instanceId = crypto.randomUUID();
@@ -119,6 +26,7 @@ export function browserMain(protocolFactory, playoutFactory) {
   const message = text => { if (status.textContent !== text) status.textContent = text; };
   function invalidateControls() {
     hello = null; pointer = null; videoReadyGeneration = -1;
+    lastStats = null; mediaEpoch++; playout.resetPresentation();
     if (pending) { clearTimeout(pending.timer); pending.reject(new Error('Connection changed; observe before trying again')); pending = null; }
     busy = snapshotPending;
   }
@@ -169,7 +77,15 @@ export function browserMain(protocolFactory, playoutFactory) {
     }
   }
   if (video.requestVideoFrameCallback) {
-    const onFrame = () => { if (stopped) return; frame(); video.requestVideoFrameCallback(onFrame); };
+    const onFrame = (now, metadata) => {
+      if (stopped) return;
+      frame();
+      if (hello && !document.hidden) {
+        const window = playout.present(metadata.expectedDisplayTime ?? now, metadata.presentedFrames);
+        if (window) feedback(20, [window.intervalMs, window.frames, window.maxGapMs]);
+      }
+      video.requestVideoFrameCallback(onFrame);
+    };
     video.requestVideoFrameCallback(onFrame);
   } else video.addEventListener('timeupdate', frame);
   function fresh() {
@@ -431,15 +347,17 @@ export function browserMain(protocolFactory, playoutFactory) {
   }
   function applyPlayoutTarget() {
     if (!videoReceiver || !('jitterBufferTarget' in videoReceiver)) {
-      playoutTargetSupported = false;
+      acceptedPlayoutTargetMs = null;
       return false;
     }
     try {
       videoReceiver.jitterBufferTarget = playout.targetMs();
-      playoutTargetSupported = true;
-      return true;
+      const value = videoReceiver.jitterBufferTarget;
+      acceptedPlayoutTargetMs = Number.isFinite(value) && value >= 0 ? value : null;
+      return acceptedPlayoutTargetMs === playout.targetMs();
     } catch {
-      playoutTargetSupported = false;
+      // A failed change cannot give the sender credit for an unapplied budget.
+      acceptedPlayoutTargetMs = null;
       return false;
     }
   }
@@ -447,14 +365,14 @@ export function browserMain(protocolFactory, playoutFactory) {
     const ice = await api('ice', {});
     if (stopped) return;
     pc?.close();
-    videoReceiver = null; playoutTargetSupported = false; playout.reset(); lastStats = null;
+    videoReceiver = null; acceptedPlayoutTargetMs = null; playout.reset(); lastStats = null; mediaEpoch++;
     pc = new RTCPeerConnection({ iceServers: ice.iceServers, bundlePolicy: 'max-bundle' });
     pc.ondatachannel = event => bindChannel(event.channel);
     pc.ontrack = event => {
       if (event.track.kind !== 'video') return;
       videoReceiver = event.receiver || null;
-      // Prime a modest reservoir before normal playout. 250 ms absorbs ordinary
-      // mobile jitter while keeping control feedback comfortably sub-second.
+      lastStats = null; mediaEpoch++; playout.reset();
+      // Start responsive, then buy recovery time only for measured jitter.
       applyPlayoutTarget();
       video.srcObject = new MediaStream([event.track]);
       video.play().catch(() => { $('play').hidden = false; message('Browser paused video • press Show phone'); });
@@ -657,57 +575,38 @@ export function browserMain(protocolFactory, playoutFactory) {
     if (ws?.readyState === WebSocket.OPEN) ws.send('browser_ping');
   }, 5000));
   timers.push(setInterval(async () => {
-    if (!pc || stopped || !hello || document.hidden) return;
+    if (!pc || !videoReceiver || stopped || !hello || document.hidden || statsInFlight) return;
     if (rendered > lastPresented) { feedback(21); lastPresented = rendered; }
+    const sampledPeer = pc, sampledReceiver = videoReceiver, sampledEpoch = mediaEpoch;
+    statsInFlight = true;
     try {
-      const reports = await pc.getStats();
+      const reports = await sampledReceiver.getStats();
+      if (stopped || document.hidden || !hello || pc !== sampledPeer ||
+          videoReceiver !== sampledReceiver || mediaEpoch !== sampledEpoch) return;
       reports.forEach(r => {
         if (r.type !== 'inbound-rtp' || r.kind !== 'video') return;
-        if (lastStats?.id === r.id) {
-          const ms = Math.round(r.timestamp - lastStats.timestamp), count = r.framesDecoded - lastStats.framesDecoded;
-          const emitted = (r.jitterBufferEmittedCount || 0) - (lastStats.jitterBufferEmittedCount || 0);
-          if (ms >= 500 && ms <= 6000 && count >= 0 && count <= 2048) {
-            const average = (key) => {
-              if (!emitted || !Number.isFinite(r[key]) || !Number.isFinite(lastStats[key])) return null;
-              const delta = r[key] - lastStats[key];
-              return delta >= 0 ? delta * 1000 / emitted : null;
-            };
-            const actualDelayMs = average('jitterBufferDelay');
-            const targetDelayMs = average('jitterBufferTargetDelay');
-            const minimumDelayMs = average('jitterBufferMinimumDelay') ??
-              (Number.isFinite(r.jitter) ? r.jitter * 1000 : null);
-            const dropped = Math.max(0, (r.framesDropped || 0) - (lastStats.framesDropped || 0));
-            const freezes = Math.max(0, (r.freezeCount || 0) - (lastStats.freezeCount || 0));
-            const bufferState = playout.observe({
-              nowMs: performance.now(), frames: count, dropped, freezes,
-              minimumDelayMs, actualDelayMs, targetDelayMs
-            });
-            if (bufferState.changed) applyPlayoutTarget();
-
-            /*
-             * The host's freshness governors predate an intentional reservoir.
-             * Report only residence ABOVE the browser's deliberate playout
-             * target; otherwise a healthy 250/350/500 ms tank would look like
-             * severe queue pressure and cause needless FPS/resolution cuts.
-             */
-            const feedbackJitterMs = actualDelayMs == null ? -1 :
-              playoutTargetSupported
-                ? Math.max(0, actualDelayMs - (targetDelayMs != null && targetDelayMs > 0 ? targetDelayMs : playout.targetMs()))
-                : actualDelayMs;
-            const decodeMs = count ? ((r.totalDecodeTime || 0) - (lastStats.totalDecodeTime || 0)) * 1000 / count : -1;
-            feedback(19, [ms, count, decodeMs, feedbackJitterMs, dropped, freezes], [2, 3]);
-            const actualText = actualDelayMs == null ? '-' : Math.round(actualDelayMs);
-            const floorText = minimumDelayMs == null ? '-' : Math.round(minimumDelayMs);
-            const bufferText = playoutTargetSupported ? `${playout.targetMs()}ms` : 'browser-auto';
-            $('metrics').textContent =
-              `${Math.round(count * 1000 / ms)} fps • ${r.frameWidth || video.videoWidth} × ${r.frameHeight || video.videoHeight} • buffer ${bufferText} • jb ${actualText}ms • floor ${floorText}ms`;
-          }
-        }
+        const sample = playout.sampleStats(r, lastStats);
         lastStats = r;
+        if (!sample) return;
+        // Normalize against the preference accepted DURING this sample. A new
+        // target selected below must not erase backlog already observed.
+        const bufferState = playout.observe({
+          ...sample, nowMs: performance.now(), acceptedTargetMs: acceptedPlayoutTargetMs
+        });
+        feedback(19, [sample.intervalMs, sample.frames, sample.decodeMs ?? -1,
+          bufferState.excessDelayMs ?? -1, sample.dropped ?? -1, sample.freezes ?? -1], [2, 3]);
+        if (bufferState.changed) applyPlayoutTarget();
+        const actualText = sample.actualDelayMs == null ? '-' : Math.round(sample.actualDelayMs);
+        const floorText = sample.minimumDelayMs == null ? '-' : Math.round(sample.minimumDelayMs);
+        const bufferText = acceptedPlayoutTargetMs == null ? 'browser-auto' : `${acceptedPlayoutTargetMs}ms`;
+        $('metrics').textContent =
+          `${Math.round(sample.frames * 1000 / sample.intervalMs)} fps • ${r.frameWidth || video.videoWidth} × ${r.frameHeight || video.videoHeight} • buffer ${bufferText} • jb ${actualText}ms • floor ${floorText}ms`;
       });
     } catch { /* Stats are advisory, never a session-ending condition. */ }
+    finally { statsInFlight = false; }
   }, 1000));
   document.addEventListener('visibilitychange', () => {
+    lastStats = null; mediaEpoch++; playout.resetPresentation();
     if (pointer?.streaming && pointer.last) endPointerStream(pointer, pointer.last, performance.now());
     pointer = null;
     if (!document.hidden && hello) { short(wire.heartbeat(hello)); short(wire.refresh(hello)); }

@@ -174,11 +174,11 @@ sealed interface ControlPacket {
     }
 
     /**
-     * Conservative controller-clock input-to-glass upper bound.
+     * Controller-clock ACK-to-next-swap proxy; legacy field names are retained.
      *
-     * postAckPresentMs isolates the receiver/media tail after an applied command
-     * ACK reaches the controller. High commandAckMs with a tiny post-ACK tail is
-     * control/network pressure, not evidence that video cadence should be cut.
+     * The next swap may contain an older buffered frame. This is not a bound on
+     * when the action becomes visible. High commandAckMs alone is not evidence
+     * that video cadence should be cut.
      */
     data class PhotonFeedback(
         val leaseSecret: Long,

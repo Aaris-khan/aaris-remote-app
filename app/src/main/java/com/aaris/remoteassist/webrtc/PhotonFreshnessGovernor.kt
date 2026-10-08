@@ -38,7 +38,7 @@ internal data class PhotonPolicy(
         return "photon=${state.name.lowercase()} " +
             "glass=${ratio(glassDeliveryRatio)} " +
             "debt=${ms(pipelineDebtMs)} " +
-            "upper=${ms(inputToGlassUpperBoundMs)} " +
+            "ackSwapProxy=${ms(inputToGlassUpperBoundMs)} " +
             "ack=${ms(commandAckMs)} " +
             "postAck=${ms(postAckPresentMs)} " +
             "clean=$cleanGlassWindows " +
@@ -55,10 +55,10 @@ internal data class PhotonPolicy(
  * Governor coordinates only the *upward* direction so those actuators cannot
  * race each other and grow quality while end-to-end freshness is unproven.
  *
- * A high input-to-glass upper bound alone is not media pressure: it includes
- * the command ACK round trip. postAckPresentMs is the useful differentiator.
- * High ACK + low post-ACK tail means control/network latency, so we do not
- * punish video cadence for it.
+ * The legacy inputToGlassUpperBoundMs field is an ACK-to-next-swap proxy, not
+ * proof that a particular input appeared in the displayed frame. A high ACK
+ * alone is not media pressure. The post-ACK swap gap can block promotion but a
+ * low value cannot establish low input-to-photon latency through a buffer.
  */
 internal class PhotonFreshnessGovernor {
     private var cleanGlassWindows = 0
