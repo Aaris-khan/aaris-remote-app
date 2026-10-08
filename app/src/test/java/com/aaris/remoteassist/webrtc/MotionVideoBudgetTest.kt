@@ -988,6 +988,82 @@ class MotionVideoBudgetTest {
         assertEquals(24, cadence.cap)
     }
 
+    @Test fun activeSourceStarvationMustNotTriggerBandwidthPixelCollapse() {
+        val budget = MotionVideoBudget()
+        assertTrue(budget.primeForMotion(profile, 0L))
+        val sourceStarved = sender(fps = 1, encode = 4.0, queue = 0.0).copy(
+            qualityLimitationReason = "bandwidth",
+            availableOutgoingBitrateBps = 200_000.0,
+            packetLossRatio = 0.0,
+            roundTripTimeMs = 38
+        )
+
+        // The uploaded screen trace alternated between source~1fps and
+        // source~27fps. A 1fps capture shortage with no pacer backlog is not
+        // proof of bandwidth-driven loss, even while a finger is down.
+        repeat(12) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = sourceStarved,
+                    receiver = null,
+                    sourceFps = 1.0,
+                    motionActive = true,
+                    targetFps = 24,
+                    nowMs = 1_000L + index * 1_000L,
+                    interactionActive = true
+                )
+            )
+        }
+        assertEquals(360, budget.shortEdge)
+    }
+
+    @Test fun activeSparseSourceWithRealRtpBacklogStillGetsPixelRelief() {
+        val budget = MotionVideoBudget()
+        assertTrue(budget.primeForMotion(profile, 0L))
+        val congestion = sender(fps = 6, encode = 10.0, queue = 120.0).copy(
+            qualityLimitationReason = "bandwidth",
+            availableOutgoingBitrateBps = 200_000.0,
+            packetLossRatio = 0.0,
+            roundTripTimeMs = 160
+        )
+
+        assertTrue(
+            budget.observe(
+                outbound = congestion,
+                receiver = null,
+                sourceFps = 3.0,
+                motionActive = true,
+                targetFps = 24,
+                nowMs = 1_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(240, budget.shortEdge)
+    }
+
+    @Test fun activeHighSupplyBandwidthUnderdeliveryStillGetsPixelRelief() {
+        val budget = MotionVideoBudget()
+        assertTrue(budget.primeForMotion(profile, 0L))
+        val lossOfFreshThroughput = sender(fps = 5, encode = 5.0, queue = 5.0).copy(
+            qualityLimitationReason = "bandwidth",
+            packetLossRatio = 0.0,
+            roundTripTimeMs = 160
+        )
+
+        assertTrue(
+            budget.observe(
+                outbound = lossOfFreshThroughput,
+                receiver = null,
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 24,
+                nowMs = 1_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(240, budget.shortEdge)
+    }
+
     @Test fun bandwidthLabelWithoutMovingSourceCannotOverBlur() {
         val budget = MotionVideoBudget()
         val limited = sender(2, 5.0, 500.0).copy(
