@@ -7,59 +7,73 @@ enum class InboundVideoLivenessAction {
 }
 
 /**
- * Detects a primary-video stall from monotonic inbound RTP counters.
+ * Detects a stopped decoder from monotonic inbound RTP counters.
  *
- * The monitor deliberately reacts much faster when RTP frames continue to
- * arrive but decoding stops, because that is strong evidence of a decoder /
- * render pipeline problem. If both receive and decode counters stop, it waits
- * longer before recovery to avoid overreacting to a short network pause.
+ * getStats() is already sampled more frequently during interactions than while
+ * idle. A sample-count threshold therefore gives wildly different recovery
+ * deadlines depending on the current stats cadence. Use elapsed time instead,
+ * without adding a poll, timer, frame copy, or media queue.
  *
- * WebRTC stats are sampled every few seconds, so this policy is intentionally
- * sample-based and deterministic rather than depending on wall-clock timers.
+ * Incoming RTP without decoded frames is strong decoder-stall evidence, so it
+ * receives a shorter deadline. When neither counter advances, tolerate a much
+ * longer network/quiet-screen gap. Alternating packet bursts never inherit a
+ * decoder-stall deadline from an earlier unrelated interval.
  */
 class InboundVideoLivenessMonitor(
-    private val stagnantScoreBeforeRecovery: Int = 4
+    private val decoderStallMs: Long = 2_500L,
+    private val transportStallMs: Long = 12_000L,
+    private val retryCooldownMs: Long = 4_000L
 ) {
     init {
-        require(stagnantScoreBeforeRecovery >= 2)
+        require(decoderStallMs >= 1_000L)
+        require(transportStallMs > decoderStallMs)
+        require(retryCooldownMs >= 1_000L)
     }
 
     private var lastFramesReceived = -1L
     private var lastFramesDecoded = -1L
-    private var stagnantScore = 0
+    private var lastSampleAtMs = -1L
+    private var decoderStallSinceMs: Long? = null
+    private var transportStallSinceMs: Long? = null
+    private var lastRecoveryAttemptMs: Long? = null
     private var recoveryPending = false
 
     @Synchronized
     fun observe(
         framesReceived: Long,
-        framesDecoded: Long
+        framesDecoded: Long,
+        nowMs: Long
     ): InboundVideoLivenessAction {
-        if (framesReceived < 0L || framesDecoded < 0L) {
+        if (framesReceived < 0L || framesDecoded < 0L || nowMs < 0L) {
             return InboundVideoLivenessAction.NONE
         }
 
         if (
-            lastFramesReceived < 0L ||
-            lastFramesDecoded < 0L ||
+            lastSampleAtMs < 0L ||
+            nowMs < lastSampleAtMs ||
             framesReceived < lastFramesReceived ||
             framesDecoded < lastFramesDecoded
         ) {
+            // First sample, clock discontinuity, or a new RTP counter generation.
             lastFramesReceived = framesReceived
             lastFramesDecoded = framesDecoded
-            stagnantScore = 0
+            lastSampleAtMs = nowMs
+            decoderStallSinceMs = null
+            transportStallSinceMs = null
+            lastRecoveryAttemptMs = null
+            recoveryPending = false
             return InboundVideoLivenessAction.NONE
         }
 
-        val receivedAdvanced =
-            framesReceived > lastFramesReceived
-        val decodedAdvanced =
-            framesDecoded > lastFramesDecoded
-
+        val receivedAdvanced = framesReceived > lastFramesReceived
+        val decodedAdvanced = framesDecoded > lastFramesDecoded
         lastFramesReceived = framesReceived
         lastFramesDecoded = framesDecoded
+        lastSampleAtMs = nowMs
 
         if (decodedAdvanced) {
-            stagnantScore = 0
+            decoderStallSinceMs = null
+            transportStallSinceMs = null
             return if (recoveryPending) {
                 InboundVideoLivenessAction.CONFIRM_PRIMARY_RECOVERED
             } else {
@@ -67,49 +81,63 @@ class InboundVideoLivenessMonitor(
             }
         }
 
-        /*
-         * Do not diagnose a freeze until the primary path has demonstrated
-         * successful receive+decode at least once in this stats generation.
-         */
-        if (framesReceived <= 0L || framesDecoded <= 0L) {
-            stagnantScore = 0
+        // Do not diagnose a freeze before primary video has ever decoded.
+        if (framesReceived == 0L || framesDecoded == 0L) {
+            decoderStallSinceMs = null
+            transportStallSinceMs = null
             return InboundVideoLivenessAction.NONE
         }
 
-        if (recoveryPending) {
-            return InboundVideoLivenessAction.NONE
+        if (receivedAdvanced) {
+            transportStallSinceMs = null
+            if (decoderStallSinceMs == null) decoderStallSinceMs = nowMs
+        } else {
+            // A brief RTP pause must not count as ongoing decoder overload.
+            decoderStallSinceMs = null
+            if (transportStallSinceMs == null) transportStallSinceMs = nowMs
         }
 
-        stagnantScore += if (receivedAdvanced) 2 else 1
-        if (stagnantScore < stagnantScoreBeforeRecovery) {
-            return InboundVideoLivenessAction.NONE
-        }
+        if (recoveryPending) return InboundVideoLivenessAction.NONE
 
-        stagnantScore = 0
+        val stalled =
+            if (receivedAdvanced) {
+                decoderStallSinceMs?.let { nowMs - it >= decoderStallMs } == true
+            } else {
+                transportStallSinceMs?.let { nowMs - it >= transportStallMs } == true
+            }
+        val retryAllowed =
+            lastRecoveryAttemptMs?.let { nowMs - it >= retryCooldownMs } != false
+
+        if (!stalled || !retryAllowed) return InboundVideoLivenessAction.NONE
+
+        lastRecoveryAttemptMs = nowMs
         recoveryPending = true
         return InboundVideoLivenessAction.REQUEST_RECOVERY
     }
 
     @Synchronized
     fun markRecoveryRequestFailed() {
-        if (!recoveryPending) return
+        // A failed transport request can retry after the same bounded cooldown.
+        // The next getStats() must not spin recovery requests every 500 ms.
         recoveryPending = false
-        stagnantScore =
-            (stagnantScoreBeforeRecovery - 1)
-                .coerceAtLeast(0)
     }
 
     @Synchronized
     fun markPrimaryRecoveredConfirmed() {
         recoveryPending = false
-        stagnantScore = 0
+        decoderStallSinceMs = null
+        transportStallSinceMs = null
+        lastRecoveryAttemptMs = null
     }
 
     @Synchronized
     fun reset() {
         lastFramesReceived = -1L
         lastFramesDecoded = -1L
-        stagnantScore = 0
+        lastSampleAtMs = -1L
+        decoderStallSinceMs = null
+        transportStallSinceMs = null
+        lastRecoveryAttemptMs = null
         recoveryPending = false
     }
 }
