@@ -1,9 +1,106 @@
 import { createBrowserProtocol } from './browser-protocol.js';
 
+export function createAdaptivePlayoutPolicy() {
+  const ladder = [250, 350, 500];
+  let level = 0, pressureWindows = 0, cleanWindows = 0, lastChangeMs = -1e12;
+
+  const valid = value => Number.isFinite(value) && value >= 0 ? Number(value) : null;
+  const targetMs = () => ladder[level];
+
+  function observe(sample = {}) {
+    const nowMs = Number.isFinite(sample.nowMs) ? Number(sample.nowMs) : Date.now();
+    const frames = Math.max(0, Number(sample.frames) || 0);
+    const dropped = Math.max(0, Number(sample.dropped) || 0);
+    const freezes = Math.max(0, Number(sample.freezes) || 0);
+    const minimumDelayMs = valid(sample.minimumDelayMs);
+    const actualDelayMs = valid(sample.actualDelayMs);
+    const measuredTargetMs = valid(sample.targetDelayMs);
+    const appliedTargetMs = measuredTargetMs != null && measuredTargetMs > 0
+      ? measuredTargetMs
+      : targetMs();
+    const active = frames >= 5;
+    const dropRatio = frames + dropped > 0 ? dropped / (frames + dropped) : 0;
+    const headroomMs = minimumDelayMs == null ? null : targetMs() - minimumDelayMs;
+    const excessDelayMs = actualDelayMs == null ? null : Math.max(0, actualDelayMs - appliedTargetMs);
+
+    const severe = active && (
+      freezes > 0 ||
+      (headroomMs != null && headroomMs <= 30) ||
+      (excessDelayMs != null && excessDelayMs >= 120) ||
+      (dropped >= 3 && dropRatio >= 0.08)
+    );
+    const moderate = active && !severe && (
+      (headroomMs != null && headroomMs <= 80) ||
+      (excessDelayMs != null && excessDelayMs >= 70) ||
+      (dropped >= 2 && dropRatio >= 0.04)
+    );
+
+    let changed = false, reason = null;
+    if (severe) pressureWindows = Math.min(6, pressureWindows + 2);
+    else if (moderate) pressureWindows = Math.min(6, pressureWindows + 1);
+    else pressureWindows = Math.max(0, pressureWindows - 1);
+
+    const canRaise = level < ladder.length - 1 && nowMs - lastChangeMs >= 4000;
+    if (canRaise && (freezes > 0 || pressureWindows >= 3)) {
+      level++;
+      changed = true;
+      reason = freezes > 0 ? 'freeze-reservoir' : 'jitter-reservoir';
+      pressureWindows = 0;
+      cleanWindows = 0;
+      lastChangeMs = nowMs;
+    } else {
+      const lowerTarget = level > 0 ? ladder[level - 1] : null;
+      const prospectiveHeadroomClean =
+        lowerTarget == null ||
+        minimumDelayMs == null ||
+        minimumDelayMs <= lowerTarget - 120;
+      const clean = active && freezes === 0 && dropped === 0 &&
+        (headroomMs == null || headroomMs >= 120) &&
+        (excessDelayMs == null || excessDelayMs <= 40) &&
+        prospectiveHeadroomClean;
+
+      cleanWindows = clean ? Math.min(60, cleanWindows + 1) : 0;
+      const requiredClean = level >= 2 ? 20 : 30;
+      const requiredHoldMs = level >= 2 ? 20000 : 30000;
+      if (level > 0 && cleanWindows >= requiredClean && nowMs - lastChangeMs >= requiredHoldMs) {
+        level--;
+        changed = true;
+        reason = 'stable-network';
+        pressureWindows = 0;
+        cleanWindows = 0;
+        lastChangeMs = nowMs;
+      }
+    }
+
+    return {
+      targetMs: targetMs(),
+      changed,
+      reason,
+      excessDelayMs,
+      minimumDelayMs,
+      actualDelayMs,
+      appliedTargetMs,
+      pressureWindows,
+      cleanWindows
+    };
+  }
+
+  return {
+    targetMs,
+    observe,
+    reset() {
+      level = 0;
+      pressureWindows = 0;
+      cleanWindows = 0;
+      lastChangeMs = -1e12;
+    }
+  };
+}
+
 // This function is served as an ES module. Keep all browser dependencies inside
 // it so the Worker needs neither a UI framework nor a separate asset deployment.
-export function browserMain(protocolFactory) {
-  const wire = protocolFactory(), $ = id => document.getElementById(id);
+export function browserMain(protocolFactory, playoutFactory) {
+  const wire = protocolFactory(), playout = playoutFactory(), $ = id => document.getElementById(id);
   const video = $('screen'), status = $('status'), surface = $('surface'), shot = $('snapshot'), fallback = $('fallback');
   const aiCommand = $('aiCommand'), aiExecute = $('aiExecute'), aiTargets = $('aiTargets'), aiResult = $('aiResult');
   const query = new URLSearchParams(location.search);
@@ -14,6 +111,7 @@ export function browserMain(protocolFactory) {
   let signalChain = Promise.resolve(), publishChain = Promise.resolve(), reconnectTimer, retry = 0;
   let busy = false, pending = null, pointer = null, lastFrameAt = 0, rendered = 0, videoReadyGeneration = -1;
   let lastStats, lastPresented = 0, telemetrySequence = 0n, telemetry;
+  let videoReceiver = null, playoutTargetSupported = false;
   let observation, observationAt = 0, snapshotPending = false;
   const seenSignals = new Set();
   const timers = [], instanceId = crypto.randomUUID();
@@ -331,14 +429,33 @@ export function browserMain(protocolFactory) {
     };
     channel.onclose = () => { if (control === channel) { invalidateControls(); if (!stopped) message('Reconnecting to phone…'); } };
   }
+  function applyPlayoutTarget() {
+    if (!videoReceiver || !('jitterBufferTarget' in videoReceiver)) {
+      playoutTargetSupported = false;
+      return false;
+    }
+    try {
+      videoReceiver.jitterBufferTarget = playout.targetMs();
+      playoutTargetSupported = true;
+      return true;
+    } catch {
+      playoutTargetSupported = false;
+      return false;
+    }
+  }
   async function connectPeer() {
     const ice = await api('ice', {});
     if (stopped) return;
     pc?.close();
+    videoReceiver = null; playoutTargetSupported = false; playout.reset(); lastStats = null;
     pc = new RTCPeerConnection({ iceServers: ice.iceServers, bundlePolicy: 'max-bundle' });
     pc.ondatachannel = event => bindChannel(event.channel);
     pc.ontrack = event => {
       if (event.track.kind !== 'video') return;
+      videoReceiver = event.receiver || null;
+      // Prime a modest reservoir before normal playout. 250 ms absorbs ordinary
+      // mobile jitter while keeping control feedback comfortably sub-second.
+      applyPlayoutTarget();
       video.srcObject = new MediaStream([event.track]);
       video.play().catch(() => { $('play').hidden = false; message('Browser paused video • press Show phone'); });
     };
@@ -550,10 +667,40 @@ export function browserMain(protocolFactory) {
           const ms = Math.round(r.timestamp - lastStats.timestamp), count = r.framesDecoded - lastStats.framesDecoded;
           const emitted = (r.jitterBufferEmittedCount || 0) - (lastStats.jitterBufferEmittedCount || 0);
           if (ms >= 500 && ms <= 6000 && count >= 0 && count <= 2048) {
-            feedback(19, [ms, count, count ? ((r.totalDecodeTime || 0) - (lastStats.totalDecodeTime || 0)) * 1000 / count : -1,
-              emitted ? ((r.jitterBufferDelay || 0) - (lastStats.jitterBufferDelay || 0)) * 1000 / emitted : -1,
-              Math.max(0, (r.framesDropped || 0) - (lastStats.framesDropped || 0)), Math.max(0, (r.freezeCount || 0) - (lastStats.freezeCount || 0))], [2, 3]);
-            $('metrics').textContent = `${Math.round(count * 1000 / ms)} fps • ${r.frameWidth || video.videoWidth} × ${r.frameHeight || video.videoHeight}`;
+            const average = (key) => {
+              if (!emitted || !Number.isFinite(r[key]) || !Number.isFinite(lastStats[key])) return null;
+              const delta = r[key] - lastStats[key];
+              return delta >= 0 ? delta * 1000 / emitted : null;
+            };
+            const actualDelayMs = average('jitterBufferDelay');
+            const targetDelayMs = average('jitterBufferTargetDelay');
+            const minimumDelayMs = average('jitterBufferMinimumDelay') ??
+              (Number.isFinite(r.jitter) ? r.jitter * 1000 : null);
+            const dropped = Math.max(0, (r.framesDropped || 0) - (lastStats.framesDropped || 0));
+            const freezes = Math.max(0, (r.freezeCount || 0) - (lastStats.freezeCount || 0));
+            const bufferState = playout.observe({
+              nowMs: performance.now(), frames: count, dropped, freezes,
+              minimumDelayMs, actualDelayMs, targetDelayMs
+            });
+            if (bufferState.changed) applyPlayoutTarget();
+
+            /*
+             * The host's freshness governors predate an intentional reservoir.
+             * Report only residence ABOVE the browser's deliberate playout
+             * target; otherwise a healthy 250/350/500 ms tank would look like
+             * severe queue pressure and cause needless FPS/resolution cuts.
+             */
+            const feedbackJitterMs = actualDelayMs == null ? -1 :
+              playoutTargetSupported
+                ? Math.max(0, actualDelayMs - (targetDelayMs != null && targetDelayMs > 0 ? targetDelayMs : playout.targetMs()))
+                : actualDelayMs;
+            const decodeMs = count ? ((r.totalDecodeTime || 0) - (lastStats.totalDecodeTime || 0)) * 1000 / count : -1;
+            feedback(19, [ms, count, decodeMs, feedbackJitterMs, dropped, freezes], [2, 3]);
+            const actualText = actualDelayMs == null ? '-' : Math.round(actualDelayMs);
+            const floorText = minimumDelayMs == null ? '-' : Math.round(minimumDelayMs);
+            const bufferText = playoutTargetSupported ? `${playout.targetMs()}ms` : 'browser-auto';
+            $('metrics').textContent =
+              `${Math.round(count * 1000 / ms)} fps • ${r.frameWidth || video.videoWidth} × ${r.frameHeight || video.videoHeight} • buffer ${bufferText} • jb ${actualText}ms • floor ${floorText}ms`;
           }
         }
         lastStats = r;
@@ -587,7 +734,7 @@ export function browserResponse(path) {
   const headers = { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
     'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" };
-  if (path === '/remote/client.js') return new Response(`(${browserMain.toString()})(${createBrowserProtocol.toString()});`, { headers: { ...headers, 'Content-Type': 'text/javascript; charset=utf-8' } });
+  if (path === '/remote/client.js') return new Response(`(${browserMain.toString()})(${createBrowserProtocol.toString()},${createAdaptivePlayoutPolicy.toString()});`, { headers: { ...headers, 'Content-Type': 'text/javascript; charset=utf-8' } });
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aaris Remote • AI Link</title>
 <style>*{box-sizing:border-box}body{margin:0;background:#10141c;color:#eef3fc;font:15px system-ui,sans-serif}main{max-width:980px;margin:auto;padding:18px}header{display:flex;align-items:center;gap:14px;flex-wrap:wrap}h1{font-size:20px;margin:0}#status{flex:1;color:#8ce7c0}#metrics{color:#9cadc6;font-size:12px}#surface{height:72vh;min-height:280px;background:#05080d;position:relative;margin:16px 0;touch-action:none;cursor:crosshair;border-radius:12px;overflow:hidden}#fallback{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}video{width:100%;height:100%;object-fit:contain;pointer-events:none}nav,.tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button,input{font:inherit;border:1px solid #40516a;border-radius:8px;padding:11px;color:inherit;background:#202c3d}button{cursor:pointer}button:hover{background:#324764}input[type=number]{width:92px}#text{flex:1;min-width:160px}details{color:#becbe0;margin:16px 0}label{display:flex;align-items:center;gap:6px}#snapshot{max-width:100%;max-height:75vh;border:1px solid #40516a}#aiCommand{width:100%;min-height:118px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #40516a;border-radius:8px;padding:11px;color:#eef3fc;background:#0b111b}#aiTargets{font-size:12px;color:#9cadc6;line-height:1.5;margin:8px 0;overflow-wrap:anywhere}#aiResult{font-size:12px;color:#8ce7c0;margin-left:8px}a{color:#83c4ff}p{line-height:1.5;color:#a9bad1}#disconnect{color:#ffb6ae}button:focus-visible,input:focus-visible{outline:3px solid #83c4ff}</style></head>
 <body><main><header><h1>Aaris Remote</h1><span id="status" role="status" aria-live="polite">Connecting…</span><span id="metrics"></span></header>
