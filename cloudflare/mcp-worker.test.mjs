@@ -41,6 +41,10 @@ test('strict arguments reject nonfinite, missing and out of range coordinates, u
   assert.equal(validateArguments('phone_action', { ...args, action: 'swipe', toX: 0.5, toY: 0.5, targetId: 'com.example:id/submit' }), false);
   assert.equal(TOOLS.find(t => t.name === 'phone_action').inputSchema.properties.targetId.maxLength, 256);
   assert.ok(validateArguments('phone_action', { ...args, action: 'type', text: 'Hello' }));
+  assert.ok(validateArguments('phone_action', { ...args, action: 'insert_text', text: ' Khan' }));
+  assert.ok(validateArguments('phone_action', { ...args, action: 'clear_text' }));
+  assert.equal(validateArguments('phone_action', { ...args, action: 'clear_text', text: 'oops' }), false);
+  assert.equal(validateArguments('phone_action', { ...args, action: 'insert_text' }), false);
   assert.ok(validateArguments('phone_action', { ...args, action: 'open_app', app: 'ChatGPT' }));
   assert.equal(validateArguments('phone_action', { ...args, action: 'open_app' }), false);
   assert.equal(validateArguments('phone_action', { ...args, action: 'open_app', app: '   ' }), false);

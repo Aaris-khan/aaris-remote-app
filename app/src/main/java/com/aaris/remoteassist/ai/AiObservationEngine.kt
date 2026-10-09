@@ -339,7 +339,7 @@ class AiObservationEngine internal constructor(
 
     private fun actionScope(args: JSONObject, ui: AiUiSnapshot): AiActionScope? {
         return when (args.getString("action")) {
-            "type" -> {
+            "type", "insert_text", "clear_text" -> {
                 val field = ui.nodes.singleOrNull { it.focused && it.editable } ?: return null
                 AiActionScope((field.left + field.right) / 2.0 / width, (field.top + field.bottom) / 2.0 / height)
             }
@@ -385,7 +385,7 @@ class AiObservationEngine internal constructor(
 
     private fun sameTarget(args: JSONObject, a: AiUiSnapshot, b: AiUiSnapshot): Boolean {
         if (!sameWindow(a, b) || a.sensitiveFocus != b.sensitiveFocus || a.masks != b.masks) return false
-        if (args.getString("action") == "type") {
+        if (args.getString("action") in setOf("type", "insert_text", "clear_text")) {
             val field = a.nodes.singleOrNull { it.focused && it.editable } ?: return false
             return field.enabled && field == b.nodes.singleOrNull { it.focused && it.editable }
         }

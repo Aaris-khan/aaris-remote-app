@@ -108,5 +108,7 @@ data class SetTextCommand(
     override val leaseSecret: Long,
     override val generation: Int,
     override val sequence: Long,
-    val text: String
+    val text: String,
+    // AI exact/clear operations overwrite the focused field; human typing remains insertion.
+    val replaceAll: Boolean = false
 ) : RemoteCommand

@@ -1,6 +1,7 @@
 package com.aaris.remoteassist.ai
 
 import com.aaris.remoteassist.control.GesturePathCommand
+import com.aaris.remoteassist.control.SetTextCommand
 import com.aaris.remoteassist.session.LiveLease
 import org.json.JSONArray
 import org.json.JSONObject
@@ -53,6 +54,31 @@ class AiDragActionTest {
         assertEquals(110f, command.points[1].yPx, 0.001f)
         assertEquals(42f, command.points[2].xPx, 0.001f)
         assertEquals(60f, command.points[2].yPx, 0.001f)
+    }
+
+    @Test
+    fun aiTextActionsAreAtomicAndNeverCopyPlaceholderContent() {
+        val replace = AiActionTranslator.translate(
+            JSONObject().put("action", "type").put("text", "Zulfikar"), lease, 12L, 100, 200
+        ) as SetTextCommand
+        assertEquals("Zulfikar", replace.text)
+        assertTrue(replace.replaceAll)
+
+        val insert = AiActionTranslator.translate(
+            JSONObject().put("action", "insert_text").put("text", " Khan"), lease, 13L, 100, 200
+        ) as SetTextCommand
+        assertEquals(" Khan", insert.text)
+        assertFalse(insert.replaceAll)
+
+        val clear = AiActionTranslator.translate(
+            JSONObject().put("action", "clear_text"), lease, 14L, 100, 200
+        ) as SetTextCommand
+        assertEquals("", clear.text)
+        assertTrue(clear.replaceAll)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            AiActionTranslator.translate(JSONObject().put("action", "clear_text").put("text", "oops"), lease, 15L, 100, 200)
+        }
     }
 
     @Test

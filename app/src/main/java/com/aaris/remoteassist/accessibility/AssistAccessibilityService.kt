@@ -267,7 +267,7 @@ class AssistAccessibilityService : AccessibilityService() {
                 )
             )
             is SetTextCommand -> onResult(
-                setFocusedText(command.text)
+                setFocusedText(command.text, command.replaceAll)
             )
         }
     }
@@ -280,18 +280,20 @@ class AssistAccessibilityService : AccessibilityService() {
         return node.isEditable && isSensitiveInput(node)
     }
 
-    private fun setFocusedText(text: String): Boolean {
+    private fun setFocusedText(text: String, replaceAll: Boolean = false): Boolean {
         val node = rootInActiveWindow
             ?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             ?: return false
 
         if (!node.isEditable || isSensitiveInput(node)) return false
 
-        val current = node.text?.toString().orEmpty()
-        val selectionStart = node.textSelectionStart
+        // Accessibility may expose placeholder/hint text in node.text even when the
+        // field is empty. Exact AI typing MUST ignore that value entirely.
+        val current = if (replaceAll) "" else node.text?.toString().orEmpty()
+        val selectionStart = if (replaceAll) 0 else node.textSelectionStart
             .takeIf { it >= 0 }
             ?: current.length
-        val selectionEnd = node.textSelectionEnd
+        val selectionEnd = if (replaceAll) 0 else node.textSelectionEnd
             .takeIf { it >= 0 }
             ?: selectionStart
 
@@ -309,7 +311,8 @@ class AssistAccessibilityService : AccessibilityService() {
         val insertion = text
             .take(MAX_REMOTE_TEXT_CHARS)
             .take(available)
-        if (insertion.isEmpty()) return false
+        // An empty exact replacement is a one-shot clear, not an invalid keystroke.
+        if (insertion.isEmpty() && !replaceAll) return false
 
         val updated = current.replaceRange(
             from,

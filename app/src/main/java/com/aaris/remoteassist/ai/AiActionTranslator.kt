@@ -4,6 +4,7 @@ import com.aaris.remoteassist.control.ControlPacket
 import com.aaris.remoteassist.control.ControlPathPoint
 import com.aaris.remoteassist.control.ControlProtocol
 import com.aaris.remoteassist.control.RemoteCommand
+import com.aaris.remoteassist.control.SetTextCommand
 import com.aaris.remoteassist.session.LiveLease
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -60,7 +61,20 @@ object AiActionTranslator {
 
         val secret = lease.leaseSecret
         val generation = lease.displayGeneration
-        val packet = when (args.getString("action")) {
+        val action = args.getString("action")
+        if (action in setOf("type", "insert_text", "clear_text")) {
+            // Direct ACTION_SET_TEXT, not simulated keyboard presses. Never interpret
+            // a placeholder or previous value as part of the AI's requested content.
+            val text = if (action == "clear_text") "" else args.getString("text")
+            require(text.length <= 1000 && text.toByteArray(Charsets.UTF_8).size <= 2048)
+            require(action == "clear_text" || text.isNotEmpty())
+            require(action != "clear_text" || !args.has("text"))
+            return SetTextCommand(
+                lease.sessionId, secret, generation, sequence, text,
+                replaceAll = action != "insert_text"
+            )
+        }
+        val packet = when (action) {
             "tap" -> ControlPacket.Tap(secret, generation, sequence, unit("x"), unit("y"))
             "long_press" -> ControlPacket.LongPress(
                 secret,
@@ -128,11 +142,6 @@ object AiActionTranslator {
             "back" -> ControlPacket.Back(secret, generation, sequence)
             "home" -> ControlPacket.Home(secret, generation, sequence)
             "recents" -> ControlPacket.Recents(secret, generation, sequence)
-            "type" -> {
-                val text = args.getString("text")
-                require(text.isNotEmpty() && text.length <= 1000 && text.toByteArray(Charsets.UTF_8).size <= 2048)
-                ControlPacket.Text(secret, generation, sequence, text)
-            }
             else -> error("UNSUPPORTED_ACTION")
         }
         // Reuse the human controller's protocol and pixel mapping. AI receives
