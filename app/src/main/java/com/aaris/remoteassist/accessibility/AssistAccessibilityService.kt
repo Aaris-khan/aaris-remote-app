@@ -289,11 +289,14 @@ class AssistAccessibilityService : AccessibilityService() {
 
         // Accessibility may expose placeholder/hint text in node.text even when the
         // field is empty. Exact AI typing MUST ignore that value entirely.
-        val current = if (replaceAll) "" else node.text?.toString().orEmpty()
-        val selectionStart = if (replaceAll) 0 else node.textSelectionStart
+        // Treat an Android hint as display-only even for deliberate cursor inserts.
+        // Do not guess based on matching strings: the user may really type the hint.
+        val ignoreExisting = replaceAll || node.isShowingHintText
+        val current = if (ignoreExisting) "" else node.text?.toString().orEmpty()
+        val selectionStart = if (ignoreExisting) 0 else node.textSelectionStart
             .takeIf { it >= 0 }
             ?: current.length
-        val selectionEnd = if (replaceAll) 0 else node.textSelectionEnd
+        val selectionEnd = if (ignoreExisting) 0 else node.textSelectionEnd
             .takeIf { it >= 0 }
             ?: selectionStart
 
