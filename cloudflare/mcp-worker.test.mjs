@@ -111,6 +111,18 @@ test('deep canonicalization makes nested drag retries independent of object key 
   assert.equal(canonical(a), canonical(b));
 });
 
+test('action screenshots are always emitted and accessibility buttons stay local', () => {
+  const v = toolResult({ applied: true, observationId: 'sample', uiHints: [{ text: 'Private button', targetId: 'secret' }],
+    image: { mimeType: 'image/jpeg', width: 720, height: 1600, data: 'full-screen-jpeg' } });
+  assert.equal(v.content.length, 2);
+  assert.equal(v.content[1].type, 'image');
+  assert.equal(v.content[1].data, 'full-screen-jpeg');
+  assert.deepEqual(JSON.parse(v.content[0].text).uiHints, []);
+  assert.equal(JSON.stringify(v).includes('Private button'), false);
+  assert.ok(validateArguments('phone_observe', { quality: 'semantic' }));
+  assert.ok(validateArguments('phone_action', { ...args, responseQuality: 'detail' }));
+});
+
 test('MCP initialization negotiates a supported version and images are first-class content', async () => {
   const f = await fixture();
   const response = await f.obj.fetch(f.request(`/mcp/${id}/${clientToken}`, { jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-06-18' } }));

@@ -58,6 +58,29 @@ class AiObservationEngineTest {
         assertNull(engine.validate(action(observed, "swipe")).error)
         assertNull(engine.validate(action(observed, "long_press")).error)
     }
+    @Test fun desktopPagePinchAndSwipeAllowSmallReflowButRejectMajorSceneChange() = runBlocking {
+        val observed = engine.observe()
+        // A page's text nodes can change while it remains the same screen.
+        ui = ui!!.copy(nodes = listOf(icon.copy(text = "India article updated")))
+        pixels = pixels.clone().apply {
+            for (y in 110 until 144) for (x in 82 until 112) this[y * 120 + x] = 120
+        }
+        val pinch = action(observed, "two_finger")
+            .put("x", 0.35).put("y", 0.55).put("toX", 0.20).put("toY", 0.40)
+            .put("secondX", 0.65).put("secondY", 0.55)
+            .put("secondToX", 0.80).put("secondToY", 0.72)
+        assertNull(engine.validate(pinch).error)
+        assertNull(engine.validate(action(observed, "swipe")).error)
+        pixels.fill(170.toByte())
+        assertEquals("TARGET_CHANGED", engine.validate(pinch).error)
+    }
+    @Test fun onlyScreenshotLeavesDeviceWhileInternalTargetGuardRemains() = runBlocking {
+        val observed = engine.observe()
+        assertEquals(0, observed.getJSONArray("uiHints").length())
+        assertTrue(observed.getJSONObject("image").getString("data").isNotEmpty())
+        val validated = engine.validate(action(observed))
+        assertNull(validated.error)
+    }
     @Test fun actualTargetPixelsOrSemanticsChangingRejectsTap() = runBlocking {
         val observed = engine.observe()
         pixels = pixels.clone().apply { for (y in 175 until 210) for (x in 85 until 107) this[y * 120 + x] = 180.toByte() }

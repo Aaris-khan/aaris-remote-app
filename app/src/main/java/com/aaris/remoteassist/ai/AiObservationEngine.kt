@@ -100,7 +100,9 @@ class AiObservationEngine internal constructor(
             return JSONObject().put("observationId", id).put("screenVersion", ledger.version)
                 .put("capturedAtElapsedMs", frame.receivedAtMs).put("settled", stable)
                 .put("interactionMode", mode.wireName)
-                .put("currentPackage", ui.packageName).put("uiHints", if (hideAll) JSONArray() else publishedHints(ui))
+                .put("currentPackage", ui.packageName).put("uiHints", JSONArray())
+                // Accessibility semantics stay on-device for target/focus/safety checks.
+                // The MCP client receives a fresh full-frame screenshot instead of buttons.
                 .put("treeTruncated", ui.truncated).put("redacted", hideAll || ui.masks.isNotEmpty())
                 .put("display", JSONObject().put("width", width).put("height", height)
                     .put("coordinateSpace", "full-upright-display-normalized-0-to-1"))
@@ -214,15 +216,20 @@ class AiObservationEngine internal constructor(
                 AiVisualFingerprint.materiallyDifferent(before, after, checkNotNull(scope)) to
                     AiVisualFingerprint.differenceRatio(before, after)
             }
+            val gestureOnPage = action in setOf("swipe", "drag", "two_finger") &&
+                issuedMode != AiInteractionMode.STRICT &&
+                observed.nodes.none { it.editable && it.focused } &&
+                ui.nodes.none { it.editable && it.focused }
             val semanticTargetPresent = targetAtScope(observed, checkNotNull(scope)) != null || args.has("targetId")
             val dynamicCanvasCoordinateTap =
                 issuedMode == AiInteractionMode.DYNAMIC_CANVAS && !semanticTargetPresent
-            if (dynamicCanvasCoordinateTap) {
-                // Permit local animation around canvas/game targets, but never
-                // carry a coordinate across a major scene transition in the same window.
-                if (globalChangeRatio == null || globalChangeRatio > DYNAMIC_SCENE_CHANGE_LIMIT) {
-                    return refused("TARGET_CHANGED")
-                }
+            if (dynamicCanvasCoordinateTap || gestureOnPage) {
+                // Swipes/pinches on content pages can overlap changing text/animation.
+                // Do not make them depend on the exact Accessibility node set or
+                // every pixel in the gesture corridor. A major page change still
+                // rejects the action, as do all window/privacy/geometry guards.
+                val limit = if (gestureOnPage) PAGE_GESTURE_SCENE_CHANGE_LIMIT else DYNAMIC_SCENE_CHANGE_LIMIT
+                if (globalChangeRatio == null || globalChangeRatio > limit) return refused("TARGET_CHANGED")
             } else if (localChanged) {
                 return refused("TARGET_CHANGED")
             }
@@ -390,6 +397,16 @@ class AiObservationEngine internal constructor(
             return field.enabled && field == b.nodes.singleOrNull { it.focused && it.editable }
         }
         val scope = actionScope(args, a) ?: return false
+        if (args.getString("action") in setOf("swipe", "drag", "two_finger") &&
+            issuedMode != AiInteractionMode.STRICT &&
+            a.nodes.none { it.editable && it.focused } &&
+            b.nodes.none { it.editable && it.focused }
+        ) {
+            // Browser text/layout may animate between observations. A gesture is
+            // aimed at a screen region, not at the precise text-node set inside it.
+            // Window/privacy/geometry and a fresh coarse visual guard remain mandatory.
+            return true
+        }
         if (args.getString("action") in setOf("swipe", "drag", "two_finger")) {
             fun relevant(ui: AiUiSnapshot) = ui.nodes.filter {
                 it.area < width.toLong() * height / 3 &&
@@ -512,6 +529,7 @@ class AiObservationEngine internal constructor(
         private const val MAX_ANIMATED_SETTLE_MS = 220L
         private const val SETTLE_POLL_MS = 40L
         private const val DYNAMIC_SCENE_CHANGE_LIMIT = 0.42
+        private const val PAGE_GESTURE_SCENE_CHANGE_LIMIT = 0.28
         private const val TAP_NEAR_MISS_RADIUS = 0.035
         private const val TAP_NEAR_MISS_RADIUS_SQ = TAP_NEAR_MISS_RADIUS * TAP_NEAR_MISS_RADIUS
     }

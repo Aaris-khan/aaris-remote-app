@@ -84,10 +84,8 @@ class AiSemanticTargetTest {
     @Test
     fun uniqueClickableIdIsPublishedAndOverridesImpreciseVisionCoordinates() = runBlocking {
         val observed = engine.observe()
-        val hint = observed.getJSONArray("uiHints").getJSONObject(0)
-        assertEquals("launcher:id/open", hint.getString("targetId"))
-        assertEquals(true, hint.getBoolean("enabled"))
-        assertEquals(false, hint.getBoolean("focused"))
+        assertEquals(0, observed.getJSONArray("uiHints").length())
+        // IDs remain private to Android, but a previously supplied valid ID is still guarded.
 
         val args = tap(observed, "launcher:id/open")
         val validation = engine.validate(args)
@@ -116,10 +114,7 @@ class AiSemanticTargetTest {
         ui = snapshot(listOf(field))
 
         val observed = engine.observe()
-        val hint = observed.getJSONArray("uiHints").getJSONObject(0)
-        assertEquals("form:id/name", hint.getString("targetId"))
-        assertEquals(true, hint.getBoolean("enabled"))
-        assertEquals(false, hint.getBoolean("focused"))
+        assertEquals(0, observed.getJSONArray("uiHints").length())
 
         val args = tap(observed, "form:id/name")
         val validation = engine.validate(args)
@@ -139,9 +134,7 @@ class AiSemanticTargetTest {
             )
         )
         val observed = engine.observe()
-        val hints = observed.getJSONArray("uiHints")
-        assertFalse(hints.getJSONObject(0).has("targetId"))
-        assertFalse(hints.getJSONObject(1).has("targetId"))
+        assertEquals(0, observed.getJSONArray("uiHints").length())
 
         val validation = engine.validate(tap(observed, "launcher:id/open"))
         assertEquals("TARGET_CHANGED", validation.error)
