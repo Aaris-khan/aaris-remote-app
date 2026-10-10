@@ -59,11 +59,11 @@ class AiObservationEngineTest {
         ui = ui!!.copy(packageName = "browser", nodes = listOf(search))
         val observed = engine.observe()
 
-        // Model a progress/accessibility HUD drawing directly over the button
-        // between screenshot selection and dispatch. The live bounded control
-        // itself is unchanged and still enabled.
+        // Model a progress/accessibility HUD overlapping a substantial part of
+        // the button between screenshot selection and dispatch. The live bounded
+        // control itself is unchanged and still enabled.
         pixels = pixels.clone().apply {
-            for (y in 178 until 206) for (x in 88 until 112) this[y * 120 + x] = 175.toByte()
+            for (y in 178 until 206) for (x in 88 until 100) this[y * 120 + x] = 175.toByte()
         }
         engine.changed()
 
