@@ -21,16 +21,71 @@ async function fixture(storage = new Storage()) {
   if (!obj.config) assert.equal((await obj.fetch(request(`/v1/connectors/${id}/register`, { clientToken }, deviceToken))).status, 200);
   const call = (name, arguments_ = {}) => obj.fetch(request(`/mcp/${id}/${clientToken}`, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: arguments_ } }));
   const sent = [];
-  const ws = { readyState: 1, a: { ready: true, lastSeen: Date.now(), runId: 'service-run-1' }, deserializeAttachment() { return this.a; }, serializeAttachment(a) { this.a = a; }, send(raw) { sent.push(JSON.parse(raw)); }, close() { this.readyState = 3; } };
+  const requestWaiters = new Set();
+  const ws = { readyState: 1, a: { ready: true, lastSeen: Date.now(), runId: 'service-run-1' }, deserializeAttachment() { return this.a; }, serializeAttachment(a) { this.a = a; }, send(raw) {
+    const packet = JSON.parse(raw); sent.push(packet);
+    if (packet.type === 'request') for (const ready of [...requestWaiters]) ready();
+  }, close() { this.readyState = 3; } };
   const connect = () => sockets.push(ws);
   const complete = async result => {
-    for (let i = 0; i < 100 && !obj.pending; i++) await new Promise(resolve => setImmediate(resolve));
+    // Admission hashes run on the crypto thread pool. Counting fast event-loop
+    // spins races that pool on CI; wait for the actual request instead.
+    if (!obj.pending) await new Promise((resolve, reject) => {
+      const ready = () => { clearTimeout(timer); requestWaiters.delete(ready); resolve(); };
+      const timer = setTimeout(() => { requestWaiters.delete(ready); reject(new Error('Expected an admitted device request')); }, 5000);
+      requestWaiters.add(ready);
+    });
     assert.ok(obj.pending, 'Expected an admitted device request');
     await obj.webSocketMessage(ws, JSON.stringify({ type: 'result', requestId: obj.pending.requestId, result }));
   };
   return { obj, ctx, request, call, sent, ws, connect, complete };
 }
 const result = async response => JSON.parse((await response.json()).result.content[0].text);
+
+test('semantic_click is explicit, coordinate-bound and never a burst/reflex or second automatic method', () => {
+  assert.ok(validateArguments('phone_action', { ...args, action: 'semantic_click' }));
+  assert.ok(validateArguments('phone_action', { ...args, action: 'semantic_click', targetId: 'some.app:id/button' }));
+  for (const bad of [{ x: undefined }, { y: undefined }, { durationMs: 80 }, { rememberReflexId: 'retry-1' },
+    { text: 'resume.pdf' }, { points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }] }, { toX: 0.3 }]) {
+    assert.equal(validateArguments('phone_action', { ...args, action: 'semantic_click', ...bad }), false);
+  }
+  assert.equal(validateArguments('phone_burst', { actionId: args.actionId, observationId: args.observationId,
+    screenVersion: 4, steps: [{ action: 'semantic_click', x: 0.2, y: 0.4 }] }), false);
+});
+
+test('older APK cannot admit semantic input and can continue ordinary gestures', async () => {
+  const f = await fixture(); f.connect();
+  const no = await result(await f.call('phone_action', { ...args, action: 'semantic_click' }));
+  assert.equal(no.error, 'UNSUPPORTED_ACTION'); assert.equal(no.applied, false);
+  assert.equal(f.sent.length, 0); assert.equal(await f.ctx.storage.get(`action:${args.actionId}`), undefined);
+  const call = f.call('phone_action', args);
+  await f.complete({ applied: true, inputMethod: 'touch_gesture' });
+  assert.equal((await result(await call)).inputMethod, 'touch_gesture');
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].arguments.action, 'tap');
+});
+
+test('optional native click is dispatched exactly once and durable retries retain its method', async () => {
+  const f = await fixture(); f.connect();
+  await f.obj.webSocketMessage(f.ws, JSON.stringify({ type: 'ready', runId: 'new-apk-run', capabilities: { semanticClick: true } }));
+  f.sent.length = 0;
+  const semantic = { ...args, action: 'semantic_click' };
+  const call = f.call('phone_action', semantic);
+  await f.complete({ applied: true, inputMethod: 'accessibility_click', effect: { kind: 'no_visible_effect' } });
+  assert.equal((await result(await call)).inputMethod, 'accessibility_click');
+  const retry = await result(await f.call('phone_action', semantic));
+  assert.equal(retry.replayed, true); assert.equal(retry.inputMethod, 'accessibility_click');
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].arguments.action, 'semantic_click');
+});
+
+test('failed native click returns its fresh screenshot without injecting a touch fallback', async () => {
+  const f = await fixture(); f.connect(); f.ws.a.semanticClick = true;
+  const call = f.call('phone_action', { ...args, action: 'semantic_click' });
+  await f.complete({ applied: false, error: 'ACTION_NOT_APPLIED', inputMethod: 'accessibility_click',
+    image: { mimeType: 'image/jpeg', width: 120, height: 240, data: 'fresh' } });
+  const response = (await (await call).json()).result;
+  assert.equal(JSON.parse(response.content[0].text).applied, false);
+  assert.equal(response.content[1].type, 'image'); assert.equal(f.sent.length, 1);
+});
 
 test('strict arguments reject nonfinite, missing and out of range coordinates, unknown fields and oversized text', () => {
   assert.ok(validateArguments('phone_action', args));
@@ -310,3 +365,4 @@ test('animated observations retain their usable ticket and target rejection reta
   const retry = await result(await f.call('phone_action', args));
   assert.equal(retry.replayed, true); assert.equal(retry.applied, false); assert.equal(f.sent.length, 1);
 });
+

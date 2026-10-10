@@ -221,7 +221,7 @@ object AiInteractionClassifier {
         displayWidthPx: Int = 0,
         displayHeightPx: Int = 0
     ): AiInteractionMode {
-        val actionable = ui.nodes.filter { it.enabled && (it.clickable || it.editable) }
+        val actionable = ui.nodes.filter { it.enabled && (it.clickable || it.supportsClick || it.editable) }
         val enabledActionable = actionable.size
         val hasEditable = actionable.any { it.editable }
         if (hasEditable) return AiInteractionMode.STRICT
@@ -252,3 +252,4 @@ object AiInteractionClassifier {
         return AiInteractionMode.INTERACTIVE
     }
 }
+

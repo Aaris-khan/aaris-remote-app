@@ -19,7 +19,10 @@ data class AiUiNode(
     val left: Int, val top: Int, val right: Int, val bottom: Int,
     val clickable: Boolean, val editable: Boolean, val focused: Boolean,
     val enabled: Boolean, val selectionStart: Int = -1, val selectionEnd: Int = -1,
-    val valueDigest: String = ""
+    val valueDigest: String = "",
+    val treePath: String = "",
+    val supportsClick: Boolean = clickable,
+    val textDigest: String = ""
 ) {
     fun contains(x: Double, y: Double) = x >= left && x < right && y >= top && y < bottom
     val area: Long get() = (right - left).toLong().coerceAtLeast(0) * (bottom - top).toLong().coerceAtLeast(0)
@@ -32,9 +35,11 @@ data class AiActionScope(
     val toX: Double = x,
     val toY: Double = y,
     val via: List<Pair<Double, Double>> = emptyList(),
-    val extraPaths: List<List<Pair<Double, Double>>> = emptyList()
+    val extraPaths: List<List<Pair<Double, Double>>> = emptyList(),
+    val clip: AiScopeRect? = null
 ) {
     fun contains(px: Double, py: Double): Boolean {
+        if (clip != null && !clip.contains(px, py)) return false
         val primary = buildList {
             add(x to y)
             addAll(via)
@@ -95,7 +100,13 @@ data class AiActionScope(
     }
 }
 
+/** Clip a point's padded visual guard to the actual bounded control. */
+data class AiScopeRect(val left: Double, val top: Double, val right: Double, val bottom: Double) {
+    fun contains(x: Double, y: Double) = x >= left && x < right && y >= top && y < bottom
+}
+
 object AiObservationSignals {
     // Installed and invoked on the main thread; Accessibility events are not retained.
     var changed: (() -> Unit)? = null
 }
+

@@ -9,6 +9,7 @@ import com.aaris.remoteassist.capture.AiSnapshotProvider
 import com.aaris.remoteassist.capture.CaptureProfile
 import com.aaris.remoteassist.capture.CaptureTier
 import com.aaris.remoteassist.capture.FrameImageEncoder
+import com.aaris.remoteassist.control.SemanticClickTarget
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -16,7 +17,11 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class AiActionValidation(val error: String? = null, val stillValid: () -> Boolean = { false })
+data class AiActionValidation(
+    val error: String? = null,
+    val stillValid: () -> Boolean = { false },
+    val semanticTarget: SemanticClickTarget? = null
+)
 
 /** Main-thread owner. Events guide settling; fresh pixels and target semantics authorize actions. */
 class AiObservationEngine internal constructor(
@@ -101,6 +106,7 @@ class AiObservationEngine internal constructor(
                 .put("capturedAtElapsedMs", frame.receivedAtMs).put("settled", stable)
                 .put("interactionMode", mode.wireName)
                 .put("currentPackage", ui.packageName).put("uiHints", JSONArray())
+                .put("supportedActions", JSONArray(AiActionTranslator.supportedActions.toList()))
                 // Accessibility semantics stay on-device for target/focus/safety checks.
                 // The MCP client receives a fresh full-frame screenshot instead of buttons.
                 .put("treeTruncated", ui.truncated).put("redacted", hideAll || ui.masks.isNotEmpty())
@@ -184,13 +190,19 @@ class AiObservationEngine internal constructor(
 
     suspend fun validate(args: JSONObject, exactCoordinates: Boolean = false, allowWindowResume: Boolean = false): AiActionValidation {
         fun refused(reason: String) = AiActionValidation(reason)
+        val action = args.getString("action")
+        if (action !in AiActionTranslator.supportedActions) return refused("UNSUPPORTED_ACTION")
         fun ticketValid() = ledger.valid(args.getString("observationId"), args.getLong("screenVersion"), now())
         if (!ticketValid()) return refused("OBSERVATION_EXPIRED_OR_USED")
         val observed = issuedUi ?: return refused("OBSERVATION_REQUIRED")
         val geometry = display()
         if (geometry.displayWidthPx != width || geometry.displayHeightPx != height) return refused("CAPTURE_GEOMETRY_CHANGED")
-        val action = args.getString("action")
         if (action == "tap" && !exactCoordinates && !snapTapToClickableTarget(args, observed)) return refused("TARGET_CHANGED")
+        val semanticTarget = if (action == "semantic_click") {
+            AiSemanticClickResolver.resolve(observed, args.getDouble("x"), args.getDouble("y"), width, height,
+                args.optString("targetId").takeIf { args.has("targetId") })
+                ?: return refused("SEMANTIC_TARGET_UNAVAILABLE")
+        } else null
         val navigation = action in setOf("home", "back", "recents", "open_app")
         val epoch = ledger.invalidationGeneration
         val ui = uiSnapshot() ?: return refused("DEVICE_LOCKED_OR_ACCESSIBILITY_OFF")
@@ -220,16 +232,21 @@ class AiObservationEngine internal constructor(
                 issuedMode != AiInteractionMode.STRICT &&
                 observed.nodes.none { it.editable && it.focused } &&
                 ui.nodes.none { it.editable && it.focused }
-            val semanticTargetPresent = targetAtScope(observed, checkNotNull(scope)) != null || args.has("targetId")
+            val semanticTargetPresent = actionableTargetAtScope(observed, checkNotNull(scope)) != null || args.has("targetId")
             val dynamicCanvasCoordinateTap =
-                issuedMode == AiInteractionMode.DYNAMIC_CANVAS && !semanticTargetPresent
-            if (dynamicCanvasCoordinateTap || gestureOnPage) {
-                // Swipes/pinches on content pages can overlap changing text/animation.
-                // Do not make them depend on the exact Accessibility node set or
-                // every pixel in the gesture corridor. A major page change still
-                // rejects the action, as do all window/privacy/geometry guards.
+                action == "tap" && issuedMode == AiInteractionMode.DYNAMIC_CANVAS && !semanticTargetPresent
+            if (semanticTarget != null) {
+                // One native action is bound to the fresh node, not changing
+                // pixels in an animation behind it. Window/privacy/identity,
+                // row labels and the final execution recheck still apply.
+                if (!AiSemanticClickResolver.matches(semanticTarget, ui)) return refused("TARGET_CHANGED")
+            } else if (dynamicCanvasCoordinateTap || gestureOnPage) {
+                // Large background videos are not a scene transition when
+                // the intended touch corridor itself remains visually stable,
+                // even when Accessibility exposes no useful control nodes.
+                // If the target ALSO animates, retain the coarse scene limit.
                 val limit = if (gestureOnPage) PAGE_GESTURE_SCENE_CHANGE_LIMIT else DYNAMIC_SCENE_CHANGE_LIMIT
-                if (globalChangeRatio == null || globalChangeRatio > limit) return refused("TARGET_CHANGED")
+                if (localChanged && (globalChangeRatio == null || globalChangeRatio > limit)) return refused("TARGET_CHANGED")
             } else if (localChanged) {
                 return refused("TARGET_CHANGED")
             }
@@ -246,7 +263,7 @@ class AiObservationEngine internal constructor(
                 (action in setOf("home", "open_app") || sameWindow(ui, current)) &&
                 (navigation || (!current.sensitiveFocus && current.packageName != ownPackage && sameTarget(args, ui, current)))
         }
-        return if (check()) AiActionValidation(stillValid = check) else refused("TARGET_CHANGED")
+        return if (check()) AiActionValidation(stillValid = check, semanticTarget = semanticTarget) else refused("TARGET_CHANGED")
     }
 
     private fun snapTapToClickableTarget(args: JSONObject, ui: AiUiSnapshot): Boolean {
@@ -277,14 +294,14 @@ class AiObservationEngine internal constructor(
          * fresh pixel coordinate unchanged unless it explicitly supplied a
          * semantic targetId.
          */
-        if (issuedMode == AiInteractionMode.DYNAMIC_CANVAS) return true
+        if (issuedMode == AiInteractionMode.DYNAMIC_CANVAS && args.optString("action") == "tap") return true
 
         val tapX = x * width
         val tapY = y * height
         val displayArea = width.toLong() * height.toLong()
         val clickable = ui.nodes.asSequence()
             .filter { node ->
-                node.enabled && node.clickable && node.area > 0L &&
+                node.enabled && (node.clickable || node.supportsClick) && node.area > 0L &&
                     node.area < displayArea / 3L
             }
             .toList()
@@ -348,7 +365,9 @@ class AiObservationEngine internal constructor(
         return when (args.getString("action")) {
             "type", "insert_text", "clear_text" -> {
                 val field = ui.nodes.singleOrNull { it.focused && it.editable } ?: return null
-                AiActionScope((field.left + field.right) / 2.0 / width, (field.top + field.bottom) / 2.0 / height)
+                AiActionScope((field.left + field.right) / 2.0 / width, (field.top + field.bottom) / 2.0 / height,
+                    clip = AiScopeRect(field.left.toDouble() / width, field.top.toDouble() / height,
+                        field.right.toDouble() / width, field.bottom.toDouble() / height))
             }
             "drag" -> AiActionScope.fromPath(dragPoints(args))
             "two_finger" -> AiActionScope.fromPaths(twoFingerPaths(args))
@@ -359,7 +378,13 @@ class AiObservationEngine internal constructor(
                 val tx = if (swipe) args.getDouble("toX") else x
                 val ty = if (swipe) args.getDouble("toY") else y
                 require(listOf(x, y, tx, ty).all { it.isFinite() && it in 0.0..1.0 })
-                AiActionScope(x, y, tx, ty)
+                val pointScope = AiActionScope(x, y, tx, ty)
+                val target = if (args.getString("action") in setOf("tap", "semantic_click"))
+                    actionableTargetAtScope(ui, pointScope) else null
+                if (target == null) pointScope else pointScope.copy(clip = AiScopeRect(
+                    target.left.toDouble() / width, target.top.toDouble() / height,
+                    target.right.toDouble() / width, target.bottom.toDouble() / height
+                ))
             }
         }
     }
@@ -392,9 +417,15 @@ class AiObservationEngine internal constructor(
 
     private fun sameTarget(args: JSONObject, a: AiUiSnapshot, b: AiUiSnapshot): Boolean {
         if (!sameWindow(a, b) || a.sensitiveFocus != b.sensitiveFocus || a.masks != b.masks) return false
+        if (args.getString("action") == "semantic_click") {
+            val target = AiSemanticClickResolver.resolve(a, args.getDouble("x"), args.getDouble("y"), width, height,
+                args.optString("targetId").takeIf { args.has("targetId") }) ?: return false
+            return AiSemanticClickResolver.matches(target, b)
+        }
         if (args.getString("action") in setOf("type", "insert_text", "clear_text")) {
             val field = a.nodes.singleOrNull { it.focused && it.editable } ?: return false
-            return field.enabled && field == b.nodes.singleOrNull { it.focused && it.editable }
+            val currentField = b.nodes.singleOrNull { it.focused && it.editable } ?: return false
+            return field.enabled && field.forTouchComparison() == currentField.forTouchComparison()
         }
         val scope = actionScope(args, a) ?: return false
         if (args.getString("action") in setOf("swipe", "drag", "two_finger") &&
@@ -411,12 +442,26 @@ class AiObservationEngine internal constructor(
             fun relevant(ui: AiUiSnapshot) = ui.nodes.filter {
                 it.area < width.toLong() * height / 3 &&
                     scope.contains((it.left + it.right) / 2.0 / width, (it.top + it.bottom) / 2.0 / height)
-            }.toSet()
+            }.map { it.forTouchComparison() }.toSet()
             return relevant(a) == relevant(b)
         }
+        if (args.getString("action") == "tap") {
+            val control = actionableTargetAtScope(a, scope)
+            if (control != null) {
+                // Compare the actual control rather than a smaller decorative
+                // text/video child underneath the snapped coordinate.
+                val currentControl = actionableTargetAtScope(b, scope) ?: return false
+                // Unrelated siblings can be inserted while a toolbar stays in
+                // place. Tree position alone is not a changed touch target.
+                return control.enabled && control.forTouchComparison() == currentControl.forTouchComparison()
+            }
+            if (issuedMode == AiInteractionMode.DYNAMIC_CANVAS && !args.has("targetId")) return true
+        }
         val target = targetAtScope(a, scope)
-        return target == targetAtScope(b, scope) && target?.enabled != false
+        return target?.forTouchComparison() == targetAtScope(b, scope)?.forTouchComparison() && target?.enabled != false
     }
+
+    private fun AiUiNode.forTouchComparison() = copy(treePath = "")
 
     fun geometry(): Pair<Int, Int> = width to height
 
@@ -513,6 +558,12 @@ class AiObservationEngine internal constructor(
             it.area < width.toLong() * height / 3 && it.contains(scope.x * width, scope.y * height)
         }.minByOrNull { it.area }
 
+    private fun actionableTargetAtScope(ui: AiUiSnapshot, scope: AiActionScope): AiUiNode? =
+        ui.nodes.filter {
+            (it.clickable || it.supportsClick || it.editable) && it.area > 0L &&
+                it.area < width.toLong() * height / 3 && it.contains(scope.x * width, scope.y * height)
+        }.minByOrNull { it.area }
+
     private fun sameWindow(a: AiUiSnapshot, b: AiUiSnapshot) = a.packageName == b.packageName && a.windowId == b.windowId
     private fun samePrivacyContext(a: AiUiSnapshot, b: AiUiSnapshot) = sameWindow(a, b) && a.sensitiveFocus == b.sensitiveFocus && a.masks == b.masks
     private fun geometryMatches(frame: AiRawFrame, profile: CaptureProfile): Boolean {
@@ -534,3 +585,4 @@ class AiObservationEngine internal constructor(
         private const val TAP_NEAR_MISS_RADIUS_SQ = TAP_NEAR_MISS_RADIUS * TAP_NEAR_MISS_RADIUS
     }
 }
+
