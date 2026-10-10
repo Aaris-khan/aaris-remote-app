@@ -46,9 +46,20 @@ object AiSemanticClickResolver {
         return textDigest(labels)
     }
 
-    fun textDigest(text: String): String =
-        MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+    fun textDigest(text: String): String {
+        if (text.isEmpty()) return EMPTY_TEXT_DIGEST
+        val bytes = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+        val chars = CharArray(bytes.size * 2)
+        for (i in bytes.indices) {
+            val value = bytes[i].toInt() and 255
+            chars[i * 2] = HEX[value ushr 4]
+            chars[i * 2 + 1] = HEX[value and 15]
+        }
+        return String(chars)
+    }
+
+    private const val HEX = "0123456789abcdef"
+    private const val EMPTY_TEXT_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
     private fun validPath(path: String) = path.matches(Regex("0(?:/[0-9]{1,3}){0,64}"))
 }

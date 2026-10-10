@@ -21,10 +21,20 @@ async function fixture(storage = new Storage()) {
   if (!obj.config) assert.equal((await obj.fetch(request(`/v1/connectors/${id}/register`, { clientToken }, deviceToken))).status, 200);
   const call = (name, arguments_ = {}) => obj.fetch(request(`/mcp/${id}/${clientToken}`, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: arguments_ } }));
   const sent = [];
-  const ws = { readyState: 1, a: { ready: true, lastSeen: Date.now(), runId: 'service-run-1' }, deserializeAttachment() { return this.a; }, serializeAttachment(a) { this.a = a; }, send(raw) { sent.push(JSON.parse(raw)); }, close() { this.readyState = 3; } };
+  const requestWaiters = new Set();
+  const ws = { readyState: 1, a: { ready: true, lastSeen: Date.now(), runId: 'service-run-1' }, deserializeAttachment() { return this.a; }, serializeAttachment(a) { this.a = a; }, send(raw) {
+    const packet = JSON.parse(raw); sent.push(packet);
+    if (packet.type === 'request') for (const ready of [...requestWaiters]) ready();
+  }, close() { this.readyState = 3; } };
   const connect = () => sockets.push(ws);
   const complete = async result => {
-    for (let i = 0; i < 100 && !obj.pending; i++) await new Promise(resolve => setImmediate(resolve));
+    // Admission hashes run on the crypto thread pool. Counting fast event-loop
+    // spins races that pool on CI; wait for the actual request instead.
+    if (!obj.pending) await new Promise((resolve, reject) => {
+      const ready = () => { clearTimeout(timer); requestWaiters.delete(ready); resolve(); };
+      const timer = setTimeout(() => { requestWaiters.delete(ready); reject(new Error('Expected an admitted device request')); }, 5000);
+      requestWaiters.add(ready);
+    });
     assert.ok(obj.pending, 'Expected an admitted device request');
     await obj.webSocketMessage(ws, JSON.stringify({ type: 'result', requestId: obj.pending.requestId, result }));
   };

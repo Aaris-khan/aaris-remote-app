@@ -22,6 +22,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
+import org.robolectric.util.ReflectionHelpers
 
 @Suppress("DEPRECATION")
 @RunWith(RobolectricTestRunner::class)
@@ -40,7 +41,7 @@ class SemanticClickExecutionTest {
         CommandGate.reset()
         lease = SessionRuntime.activate("native-test", 1)
         service = Robolectric.buildService(AssistAccessibilityService::class.java).create().get()
-        service.onServiceConnected()
+        ReflectionHelpers.callInstanceMethod<Unit>(service, "onServiceConnected")
         val window = AccessibilityWindowInfo.obtain()
         shadowOf(window).setId(7)
         fun node(id: String, text: String, bounds: Rect, clickable: Boolean): AccessibilityNodeInfo =

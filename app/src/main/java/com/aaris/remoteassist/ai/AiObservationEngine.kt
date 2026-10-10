@@ -447,7 +447,10 @@ class AiObservationEngine internal constructor(
             if (control != null) {
                 // Compare the actual control rather than a smaller decorative
                 // text/video child underneath the snapped coordinate.
-                return control.enabled && control == actionableTargetAtScope(b, scope)
+                val currentControl = actionableTargetAtScope(b, scope) ?: return false
+                // Unrelated siblings can be inserted while a toolbar stays in
+                // place. Tree position alone is not a changed touch target.
+                return control.enabled && control.copy(treePath = "") == currentControl.copy(treePath = "")
             }
             if (issuedMode == AiInteractionMode.DYNAMIC_CANVAS && !args.has("targetId")) return true
         }

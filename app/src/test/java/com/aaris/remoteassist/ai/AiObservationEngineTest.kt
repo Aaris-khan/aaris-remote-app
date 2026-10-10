@@ -65,6 +65,15 @@ class AiObservationEngineTest {
         assertEquals("TARGET_CHANGED", engine.validate(action(observed)).error)
     }
 
+    @Test fun unrelatedSiblingInsertionKeepsStationaryControlUsable() = runBlocking {
+        ui = ui!!.copy(nodes = listOf(icon.copy(treePath = "0/1")))
+        val observed = engine.observe()
+        ui = ui!!.copy(nodes = listOf(icon.copy(treePath = "0/2")))
+        assertNull(engine.validate(action(observed)).error)
+        ui = ui!!.copy(nodes = listOf(icon.copy(treePath = "0/2", left = 82)))
+        assertEquals("TARGET_CHANGED", engine.validate(action(observed)).error)
+    }
+
     @Test fun optionalSemanticClickBindsLiveNodeRatherThanAnimatedPixels() = runBlocking {
         ui = ui!!.copy(nodes = listOf(icon.copy(treePath = "0/0")))
         val observed = engine.observe()
