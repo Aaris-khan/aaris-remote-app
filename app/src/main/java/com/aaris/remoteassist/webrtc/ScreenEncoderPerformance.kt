@@ -18,23 +18,80 @@ import kotlin.math.floor
  * live WebRTC telemetry remains authoritative and no capability is invented.
  */
 internal class ScreenEncoderPerformance private constructor(
-    private val capabilities: List<MediaCodecInfo.VideoCapabilities>
+    private val capabilities: List<EncoderCapability>
 ) {
-    private val knownLimits = ConcurrentHashMap<Long, Int>()
-    private val unknownSizes = ConcurrentHashMap.newKeySet<Long>()
+    private data class EncoderCapability(
+        val implementationName: String,
+        val video: MediaCodecInfo.VideoCapabilities
+    )
 
-    fun maxFps(width: Int, height: Int): Int? {
+    /*
+     * The active WebRTC encoder is one concrete MediaCodec component. Cache the
+     * capability result by that component as well as geometry; otherwise a fast
+     * secondary H264/VP8 encoder can accidentally lend its 60 fps guarantee to
+     * the slower component WebRTC actually selected.
+     *
+     * A null implementation scope is the startup/unknown fallback and preserves
+     * the previous "best available hardware component" behavior until getStats
+     * reports encoderImplementation.
+     */
+    private data class LimitKey(
+        val width: Int,
+        val height: Int,
+        val implementationName: String?
+    )
+
+    private val knownLimits = ConcurrentHashMap<LimitKey, Int>()
+    private val unknownSizes = ConcurrentHashMap.newKeySet<LimitKey>()
+
+    fun maxFps(
+        width: Int,
+        height: Int,
+        implementationName: String? = null
+    ): Int? {
         val safeWidth = width.coerceAtLeast(2)
         val safeHeight = height.coerceAtLeast(2)
-        val key = sizeKey(safeWidth, safeHeight)
+
+        val exactImplementation =
+            capabilities.firstOrNull {
+                implementationMatches(
+                    candidateName = it.implementationName,
+                    activeName = implementationName
+                )
+            }
+
+        val scopeName =
+            exactImplementation
+                ?.implementationName
+                ?.lowercase()
+        val key =
+            LimitKey(
+                width = safeWidth,
+                height = safeHeight,
+                implementationName = scopeName
+            )
 
         knownLimits[key]?.let { return it }
         if (unknownSizes.contains(key)) return null
 
         val measured =
-            capabilities
-                .mapNotNull { realtimeLimit(it, safeWidth, safeHeight) }
-                .maxOrNull()
+            if (exactImplementation != null) {
+                realtimeLimit(
+                    exactImplementation.video,
+                    safeWidth,
+                    safeHeight
+                )
+            } else {
+                capabilities
+                    .mapNotNull {
+                        realtimeLimit(
+                            it.video,
+                            safeWidth,
+                            safeHeight
+                        )
+                    }
+                    .maxOrNull()
+            }
 
         if (measured == null) {
             unknownSizes += key
@@ -138,8 +195,12 @@ internal class ScreenEncoderPerformance private constructor(
                     }
 
                     runCatching {
-                        info.getCapabilitiesForType(mime)
-                            .videoCapabilities
+                        EncoderCapability(
+                            implementationName = info.name,
+                            video =
+                                info.getCapabilitiesForType(mime)
+                                    .videoCapabilities
+                        )
                     }.getOrNull()
                 }
 
@@ -175,12 +236,20 @@ internal class ScreenEncoderPerformance private constructor(
             return SOFTWARE_CODEC_MARKERS.none(name::contains)
         }
 
-        private fun sizeKey(
-            width: Int,
-            height: Int
-        ): Long =
-            (width.toLong() shl 32) or
-                (height.toLong() and 0xffff_ffffL)
+        internal fun implementationMatches(
+            candidateName: String,
+            activeName: String?
+        ): Boolean {
+            val normalized =
+                activeName
+                    ?.trim()
+                    ?.takeIf(String::isNotBlank)
+                    ?: return false
+            return candidateName.equals(
+                normalized,
+                ignoreCase = true
+            )
+        }
 
         private val SOFTWARE_CODEC_MARKERS =
             arrayOf(
