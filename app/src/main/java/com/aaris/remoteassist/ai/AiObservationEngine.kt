@@ -222,11 +222,14 @@ class AiObservationEngine internal constructor(
         if (!navigation) {
             val fresh = freshFrame()
             if (fresh.rotation != rotation || !geometryMatches(fresh, geometry)) return refused("CAPTURE_GEOMETRY_CHANGED")
-            val (localChanged, globalChangeRatio) = withContext(Dispatchers.Default) {
+            val (localChanged, localChangeRatio, globalChangeRatio) = withContext(Dispatchers.Default) {
                 val before = lastFingerprint ?: byteArrayOf()
                 val after = AiVisualFingerprint.sample(fresh.nv21, fresh.width, fresh.height, fresh.rotation)
-                AiVisualFingerprint.materiallyDifferent(before, after, checkNotNull(scope)) to
+                Triple(
+                    AiVisualFingerprint.materiallyDifferent(before, after, checkNotNull(scope)),
+                    AiVisualFingerprint.differenceRatio(before, after, checkNotNull(scope)),
                     AiVisualFingerprint.differenceRatio(before, after)
+                )
             }
             val gestureOnPage = action in setOf("swipe", "drag", "two_finger") &&
                 issuedMode != AiInteractionMode.STRICT &&
