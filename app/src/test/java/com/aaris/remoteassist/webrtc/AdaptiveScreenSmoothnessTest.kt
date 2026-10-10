@@ -277,7 +277,7 @@ class AdaptiveScreenSmoothnessTest {
             governor.tryProbeAfterQuiet(
                 outbound = quiet,
                 producerFps = 1.0,
-                telemetryAtMs = 1_000L,
+                telemetryAtMs = 9_000L,
                 nowMs = 10_000L,
                 maximumFps = 20
             )
