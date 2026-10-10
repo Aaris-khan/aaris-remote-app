@@ -65,6 +65,39 @@ internal object RealtimeMediaPolicy {
         }
 
     /**
+     * Single authoritative source-cadence ceiling.
+     *
+     * CaptureProfile encodes the device class budget (for example LOW=20 fps
+     * motion, BALANCED=30 fps, STANDARD/HIGH=60 fps). The session-wide cadence
+     * governor is intentionally capable of 60 fps so premium devices can probe
+     * upward, but that capability must never override the active profile.
+     *
+     * Keeping this invariant in one pure function prevents a healthy-network
+     * promotion from turning a weak phone into an overloaded 30/60 fps encoder
+     * and creating the exact smooth -> stutter -> recover oscillation that
+     * freshness control is meant to avoid.
+     */
+    fun effectiveSourceFps(
+        idleFps: Int,
+        motionFps: Int,
+        cadenceCap: Int,
+        deviceFpsLimit: Int,
+        freshnessActive: Boolean
+    ): Int {
+        val profileCeiling =
+            if (freshnessActive) {
+                motionFps
+            } else {
+                idleFps
+            }
+        return minOf(
+            profileCeiling.coerceAtLeast(1),
+            cadenceCap.coerceAtLeast(1),
+            deviceFpsLimit.coerceAtLeast(1)
+        )
+    }
+
+    /**
      * Split fast native relief from the slower app-owned source envelope.
      *
      * MotionVideoBudget/HighCadenceProbe cap input pixels, FPS and bitrate
