@@ -32,6 +32,51 @@ async function fixture(storage = new Storage()) {
 }
 const result = async response => JSON.parse((await response.json()).result.content[0].text);
 
+test('semantic_click is explicit, coordinate-bound and never a burst/reflex or second automatic method', () => {
+  assert.ok(validateArguments('phone_action', { ...args, action: 'semantic_click' }));
+  assert.ok(validateArguments('phone_action', { ...args, action: 'semantic_click', targetId: 'some.app:id/button' }));
+  for (const bad of [{ x: undefined }, { y: undefined }, { durationMs: 80 }, { rememberReflexId: 'retry-1' },
+    { text: 'resume.pdf' }, { points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }] }, { toX: 0.3 }]) {
+    assert.equal(validateArguments('phone_action', { ...args, action: 'semantic_click', ...bad }), false);
+  }
+  assert.equal(validateArguments('phone_burst', { actionId: args.actionId, observationId: args.observationId,
+    screenVersion: 4, steps: [{ action: 'semantic_click', x: 0.2, y: 0.4 }] }), false);
+});
+
+test('older APK cannot admit semantic input and can continue ordinary gestures', async () => {
+  const f = await fixture(); f.connect();
+  const no = await result(await f.call('phone_action', { ...args, action: 'semantic_click' }));
+  assert.equal(no.error, 'UNSUPPORTED_ACTION'); assert.equal(no.applied, false);
+  assert.equal(f.sent.length, 0); assert.equal(await f.ctx.storage.get(`action:${args.actionId}`), undefined);
+  const call = f.call('phone_action', args);
+  await f.complete({ applied: true, inputMethod: 'touch_gesture' });
+  assert.equal((await result(await call)).inputMethod, 'touch_gesture');
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].arguments.action, 'tap');
+});
+
+test('optional native click is dispatched exactly once and durable retries retain its method', async () => {
+  const f = await fixture(); f.connect();
+  await f.obj.webSocketMessage(f.ws, JSON.stringify({ type: 'ready', runId: 'new-apk-run', capabilities: { semanticClick: true } }));
+  f.sent.length = 0;
+  const semantic = { ...args, action: 'semantic_click' };
+  const call = f.call('phone_action', semantic);
+  await f.complete({ applied: true, inputMethod: 'accessibility_click', effect: { kind: 'no_visible_effect' } });
+  assert.equal((await result(await call)).inputMethod, 'accessibility_click');
+  const retry = await result(await f.call('phone_action', semantic));
+  assert.equal(retry.replayed, true); assert.equal(retry.inputMethod, 'accessibility_click');
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].arguments.action, 'semantic_click');
+});
+
+test('failed native click returns its fresh screenshot without injecting a touch fallback', async () => {
+  const f = await fixture(); f.connect(); f.ws.a.semanticClick = true;
+  const call = f.call('phone_action', { ...args, action: 'semantic_click' });
+  await f.complete({ applied: false, error: 'ACTION_NOT_APPLIED', inputMethod: 'accessibility_click',
+    image: { mimeType: 'image/jpeg', width: 120, height: 240, data: 'fresh' } });
+  const response = (await (await call).json()).result;
+  assert.equal(JSON.parse(response.content[0].text).applied, false);
+  assert.equal(response.content[1].type, 'image'); assert.equal(f.sent.length, 1);
+});
+
 test('strict arguments reject nonfinite, missing and out of range coordinates, unknown fields and oversized text', () => {
   assert.ok(validateArguments('phone_action', args));
   for (const bad of [{ ...args, x: NaN }, { ...args, x: 1.001 }, { ...args, y: undefined }, { ...args, x: '0.4' }, { ...args, shell: 'anything' }, { ...args, screenVersion: -1 }, { ...args, action: 'swipe' }, { ...args, action: 'type', text: 'a'.repeat(1001) }]) assert.equal(validateArguments('phone_action', bad), false);
@@ -310,3 +355,4 @@ test('animated observations retain their usable ticket and target rejection reta
   const retry = await result(await f.call('phone_action', args));
   assert.equal(retry.replayed, true); assert.equal(retry.applied, false); assert.equal(f.sent.length, 1);
 });
+

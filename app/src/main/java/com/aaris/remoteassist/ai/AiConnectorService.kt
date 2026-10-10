@@ -164,7 +164,8 @@ class AiConnectorService : Service() {
         socket = backend.connect(value, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) { scope.launch {
                 if (socket !== webSocket || stopping) { webSocket.cancel(); return@launch }
-                webSocket.send(JSONObject().put("type", "ready").put("runId", runId).toString())
+                webSocket.send(JSONObject().put("type", "ready").put("runId", runId)
+                    .put("capabilities", JSONObject().put("semanticClick", true)).toString())
                 heartbeatJob?.cancel()
                 heartbeatJob = scope.launch {
                     while (isActive && socket === webSocket) {
@@ -322,7 +323,7 @@ class AiConnectorService : Service() {
                             .put("screenVersion", args.getLong("screenVersion"))
                         val firstValidation = engine.validate(firstArgs)
                         if (firstValidation.error != null) {
-                            val image = engine.observe()
+                            val image = engine.observe(args.optString("responseQuality") == "detail")
                             val effect = AiActionEffectAnalyzer.classify("burst", false, null, null)
                             val taskState = taskMemory.recordAction(
                                 actionId = id,
@@ -432,7 +433,7 @@ class AiConnectorService : Service() {
 
                         applied = executedSteps == steps.size && burstState == "completed"
                         engine.invalidate()
-                        val image = engine.observe()
+                        val image = engine.observe(args.optString("responseQuality") == "detail")
                         val (changeRatio, _) = engine.visualChangeRatiosFrom(beforeFingerprint, null)
                         val effect = AiActionEffectAnalyzer.classify(
                             "burst",
@@ -469,7 +470,7 @@ class AiConnectorService : Service() {
                         val action = args.getString("action")
                         val validation = engine.validate(args)
                         if (validation.error != null) {
-                            val code = if (validation.error in setOf("LOCAL_ONLY_SCREEN", "DEVICE_LOCKED_OR_ACCESSIBILITY_OFF", "FOCUSED_FIELD_REQUIRED"))
+                            val code = if (validation.error in setOf("LOCAL_ONLY_SCREEN", "DEVICE_LOCKED_OR_ACCESSIBILITY_OFF", "FOCUSED_FIELD_REQUIRED", "SEMANTIC_TARGET_UNAVAILABLE", "UNSUPPORTED_ACTION"))
                                 validation.error else "STALE_SCREEN"
                             val image = engine.observe()
                             val effect = AiActionEffectAnalyzer.classify(action, false, null, null)
@@ -525,7 +526,8 @@ class AiConnectorService : Service() {
                                 currentLease,
                                 ++sequence,
                                 width,
-                                height
+                                height,
+                                semanticTarget = validation.semanticTarget
                             )
                             val done = CompletableDeferred<Boolean>()
                             AssistAccessibilityService.dispatch(
@@ -561,9 +563,18 @@ class AiConnectorService : Service() {
                         )
                         image.put("applied", applied).put("actionId", id)
                             .put("effect", effect.toJson()).put("taskState", taskState)
+                            .put("inputMethod", when (action) {
+                                "semantic_click" -> "accessibility_click"
+                                "tap", "long_press", "swipe", "drag", "two_finger" -> "touch_gesture"
+                                "type", "insert_text", "clear_text" -> "accessibility_text"
+                                else -> "navigation"
+                            })
+                        if (action == "tap" && applied == true && effect.kind in setOf("no_visible_effect", "background_motion_only")) {
+                            image.put("agentHint", "Touch completed, but the target has no proven visible effect. Inspect this fresh screenshot. If the intended control still has not reacted after ordinary taps, you may explicitly choose semantic_click with a NEW actionId and this observation. Never switch methods on an uncertain transport outcome or replay an old coordinate. Input completion does not prove file attachment or upload.")
+                        }
                         if (reflexCandidate != null && applied == true) image.put("rememberedReflexId", reflexId)
                         if (taskState.optBoolean("stalled")) {
-                            image.put("agentHint", "Progress appears stalled. Re-observe in detail or choose a different strategy instead of repeating the same action.")
+                            image.put("agentHint", "Progress appears stalled. Inspect the fresh screenshot, wait on the relevant region if loading, or choose a different strategy. For repeated no-effect ordinary taps on an unchanged control, semantic_click is an optional alternative. Recheck file-picker confirmation and website attachment separately; do not assume applied=true means uploaded.")
                         }
                         if (applied != true && !image.has("error")) image.put("error", "ACTION_NOT_APPLIED")
                         image
@@ -725,3 +736,4 @@ class AiConnectorService : Service() {
         fun stop(context: Context) { context.startService(Intent(context, AiConnectorService::class.java).setAction(ACTION_STOP)) }
     }
 }
+

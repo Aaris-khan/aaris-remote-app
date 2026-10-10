@@ -33,6 +33,8 @@ import com.aaris.remoteassist.control.RemoteCommand
 import com.aaris.remoteassist.control.SetTextCommand
 import com.aaris.remoteassist.control.SwipeCommand
 import com.aaris.remoteassist.control.TapCommand
+import com.aaris.remoteassist.control.SemanticClickCommand
+import com.aaris.remoteassist.ai.AiSemanticClickResolver
 import com.aaris.remoteassist.control.TwoFingerCommand
 import com.aaris.remoteassist.session.SessionCoordinator
 import com.aaris.remoteassist.session.SessionSnapshot
@@ -177,6 +179,7 @@ class AssistAccessibilityService : AccessibilityService() {
 
         val gestureBlockedBySensitiveFocus =
             command is TapCommand ||
+                command is SemanticClickCommand ||
                 command is LongPressCommand ||
                 command is SwipeCommand ||
                 command is GesturePathCommand ||
@@ -205,7 +208,7 @@ class AssistAccessibilityService : AccessibilityService() {
                     // STOP, rotation or a new screen can occur during overlay relocation.
                     if (SessionRuntime.isAuthorized(command.sessionId, command.leaseSecret, command.generation) &&
                         !keyguard.isDeviceLocked && !keyguard.isKeyguardLocked && precondition()) {
-                        performCommand(command, onResult)
+                        performCommand(command, precondition, onResult)
                     } else onResult(false)
                 },
                 OVERLAY_REPOSITION_SETTLE_MS
@@ -213,14 +216,16 @@ class AssistAccessibilityService : AccessibilityService() {
             return
         }
 
-        performCommand(command, onResult)
+        performCommand(command, precondition, onResult)
     }
 
     private fun performCommand(
         command: RemoteCommand,
+        precondition: () -> Boolean,
         onResult: (Boolean) -> Unit
     ) {
         when (command) {
+            is SemanticClickCommand -> onResult(performSemanticClick(command, precondition))
             is TapCommand -> gesture(
                 command.xPx,
                 command.yPx,
@@ -270,6 +275,38 @@ class AssistAccessibilityService : AccessibilityService() {
                 setFocusedText(command.text, command.replaceAll)
             )
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun performSemanticClick(command: SemanticClickCommand, precondition: () -> Boolean): Boolean {
+        val target = command.target
+        val snapshot = collectAiSnapshot() ?: return false
+        if (!AiSemanticClickResolver.matches(target, snapshot)) return false
+        var node = rootInActiveWindow ?: return false
+        try {
+            if (node.packageName?.toString() != target.packageName || node.windowId != target.windowId) return false
+            // Walk a fresh root, never a retained handle or the first matching
+            // resource id. Repeated PDF rows have the same resource ids.
+            for (index in target.node.path.split('/').drop(1)) {
+                val child = node.getChild(index.toIntOrNull() ?: return false) ?: return false
+                node.recycle()
+                node = child
+            }
+            if (!node.refresh() || !node.isVisibleToUser || !node.isEnabled || isSensitiveInput(node) ||
+                !node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }) return false
+            val bounds = Rect().also(node::getBoundsInScreen)
+            val identity = target.node
+            val rawText = (node.text?.toString() ?: node.contentDescription?.toString()).orEmpty()
+            if (node.windowId != target.windowId || node.packageName?.toString() != target.packageName ||
+                node.viewIdResourceName.orEmpty() != identity.id || node.className?.toString().orEmpty() != identity.role ||
+                rawText.take(160) != identity.text || AiSemanticClickResolver.textDigest(rawText) != identity.textDigest ||
+                bounds != Rect(identity.left, identity.top, identity.right, identity.bottom)) return false
+            if (!precondition() || !SessionRuntime.isAuthorized(command.sessionId, command.leaseSecret, command.generation) ||
+                keyguard.isDeviceLocked || keyguard.isKeyguardLocked || hasSensitiveFocusedInput()) return false
+            // Exactly one method. A false/ambiguous result never silently
+            // dispatches a second touch, SELECT, FOCUS, or click retry.
+            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        } finally { node.recycle() }
     }
 
     private fun hasSensitiveFocusedInput(): Boolean {
@@ -916,6 +953,10 @@ class AssistAccessibilityService : AccessibilityService() {
                 is TapCommand ->
                     listOf(command.xPx to command.yPx)
 
+                is SemanticClickCommand ->
+                    listOf((command.target.node.left + command.target.node.right) / 2f to
+                        (command.target.node.top + command.target.node.bottom) / 2f)
+
                 is LongPressCommand ->
                     listOf(command.xPx to command.yPx)
 
@@ -1243,11 +1284,11 @@ class AssistAccessibilityService : AccessibilityService() {
         val windowId = root.windowId
         val nodes = mutableListOf<com.aaris.remoteassist.ai.AiUiNode>()
         val hints = JSONArray(); val masks = mutableListOf<Rect>()
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, String>>()
+        queue.add(root to "0")
         var count = 0; var sensitiveFocus = false
         while (queue.isNotEmpty() && count++ < 400) {
-            val node = queue.removeFirst()
+            val (node, treePath) = queue.removeFirst()
             try {
                 if (!node.isVisibleToUser) continue
                 val rect = Rect().also(node::getBoundsInScreen)
@@ -1259,12 +1300,14 @@ class AssistAccessibilityService : AccessibilityService() {
                 }
                 val rawText = (node.text?.toString() ?: node.contentDescription?.toString()).orEmpty()
                 val text = rawText.take(160)
+                val textDigest = AiSemanticClickResolver.textDigest(rawText)
                 val valueDigest = if (node.isEditable && node.isFocused) java.security.MessageDigest.getInstance("SHA-256")
                     .digest(rawText.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) } else ""
-                if (rect.width() > 0 && rect.height() > 0 && (text.isNotBlank() || node.isClickable || node.isEditable)) {
+                val supportsClick = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+                if (rect.width() > 0 && rect.height() > 0 && (text.isNotBlank() || node.isClickable || node.isEditable || supportsClick)) {
                     nodes += com.aaris.remoteassist.ai.AiUiNode(node.viewIdResourceName.orEmpty(), node.className?.toString().orEmpty(),
                         text, rect.left, rect.top, rect.right, rect.bottom, node.isClickable, node.isEditable, node.isFocused,
-                        node.isEnabled, node.textSelectionStart, node.textSelectionEnd, valueDigest)
+                        node.isEnabled, node.textSelectionStart, node.textSelectionEnd, valueDigest, treePath, supportsClick, textDigest)
                 }
                 if (hints.length() < 80 && (text.isNotBlank() || node.isClickable || node.isEditable)) {
                     hints.put(JSONObject().put("text", text).put("role", node.className?.toString()?.substringAfterLast('.').orEmpty())
@@ -1272,12 +1315,12 @@ class AssistAccessibilityService : AccessibilityService() {
                         .put("clickable", node.isClickable).put("editable", node.isEditable))
                 }
                 for (i in 0 until node.childCount.coerceAtMost(100)) node.getChild(i)?.let { child ->
-                    if (queue.size < 400) queue.add(child) else child.recycle()
+                    if (queue.size < 400) queue.add(child to "$treePath/$i") else child.recycle()
                 }
             } finally { node.recycle() }
         }
         val truncated = queue.isNotEmpty()
-        while (queue.isNotEmpty()) queue.removeFirst().recycle()
+        while (queue.isNotEmpty()) queue.removeFirst().first.recycle()
         return AiUiSnapshot(packageName, hints, masks, sensitiveFocus || hasSensitiveFocusedInput(), truncated, windowId, nodes)
     }
 
@@ -1379,3 +1422,4 @@ class AssistAccessibilityService : AccessibilityService() {
         fun browserAgentReply(): Pair<String, String>? = instance.get()?.collectBrowserAgentReply()
     }
 }
+

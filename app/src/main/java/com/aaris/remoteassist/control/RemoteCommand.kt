@@ -16,6 +16,35 @@ data class TapCommand(
     val yPx: Float
 ) : RemoteCommand
 
+/** Immutable on-device identity; resource ids alone are not unique in lists. */
+data class SemanticNodeIdentity(
+    val path: String,
+    val id: String,
+    val role: String,
+    val text: String,
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int,
+    val textDigest: String = ""
+)
+
+data class SemanticClickTarget(
+    val packageName: String,
+    val windowId: Int,
+    val node: SemanticNodeIdentity,
+    val labelDigest: String
+)
+
+/** Explicit AI alternative to touch. Executes one ACTION_CLICK, with no retry. */
+data class SemanticClickCommand(
+    override val sessionId: String,
+    override val leaseSecret: Long,
+    override val generation: Int,
+    override val sequence: Long,
+    val target: SemanticClickTarget
+) : RemoteCommand
+
 data class LongPressCommand(
     override val sessionId: String,
     override val leaseSecret: Long,
@@ -112,3 +141,4 @@ data class SetTextCommand(
     // AI exact/clear operations overwrite the focused field; human typing remains insertion.
     val replaceAll: Boolean = false
 ) : RemoteCommand
+

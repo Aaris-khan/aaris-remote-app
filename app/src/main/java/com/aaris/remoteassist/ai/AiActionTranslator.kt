@@ -5,6 +5,8 @@ import com.aaris.remoteassist.control.ControlPathPoint
 import com.aaris.remoteassist.control.ControlProtocol
 import com.aaris.remoteassist.control.RemoteCommand
 import com.aaris.remoteassist.control.SetTextCommand
+import com.aaris.remoteassist.control.SemanticClickCommand
+import com.aaris.remoteassist.control.SemanticClickTarget
 import com.aaris.remoteassist.session.LiveLease
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -12,8 +14,11 @@ import org.json.JSONObject
 
 object AiActionTranslator {
     private const val MAX_AI_DRAG_POINTS = 24
+    val supportedActions = setOf("tap", "semantic_click", "long_press", "swipe", "drag", "two_finger",
+        "type", "insert_text", "clear_text", "back", "home", "recents", "open_app")
 
-    fun translate(args: JSONObject, lease: LiveLease, sequence: Long, width: Int, height: Int): RemoteCommand {
+    fun translate(args: JSONObject, lease: LiveLease, sequence: Long, width: Int, height: Int,
+        semanticTarget: SemanticClickTarget? = null): RemoteCommand {
         fun unit(value: Any): Float {
             require(value is Number)
             val normalized = value.toDouble()
@@ -62,6 +67,10 @@ object AiActionTranslator {
         val secret = lease.leaseSecret
         val generation = lease.displayGeneration
         val action = args.getString("action")
+        if (action == "semantic_click") {
+            return SemanticClickCommand(lease.sessionId, secret, generation, sequence,
+                requireNotNull(semanticTarget) { "SEMANTIC_TARGET_UNAVAILABLE" })
+        }
         if (action in setOf("type", "insert_text", "clear_text")) {
             // Direct ACTION_SET_TEXT, not simulated keyboard presses. Never interpret
             // a placeholder or previous value as part of the AI's requested content.
@@ -156,3 +165,4 @@ object AiActionTranslator {
         )
     }
 }
+

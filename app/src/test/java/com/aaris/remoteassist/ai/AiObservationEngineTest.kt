@@ -38,6 +38,65 @@ class AiObservationEngineTest {
         engine.changed()
     }
 
+    @Test fun stableSearchButtonAcceptsTapWhileAdjacentAndMostOfVideoChanges() = runBlocking {
+        val search = icon.copy(id = "youtube:id/search", text = "Search", left = 96, right = 108, top = 12, bottom = 20)
+        ui = ui!!.copy(packageName = "youtube", nodes = listOf(search))
+        onFrame = { engine.changed() }
+        val observed = engine.observe()
+        assertFalse(observed.getBoolean("settled"))
+        // The old padded point guard extended BELOW this tiny toolbar button.
+        // Every video pixel changes while the actual search button stays still.
+        pixels = pixels.clone().apply {
+            for (y in 20 until 240) for (x in 0 until 120) this[y * 120 + x] = 175.toByte()
+        }
+        val validation = engine.validate(action(observed).put("x", 0.85).put("y", 16.0 / 240))
+        assertNull(validation.error)
+        assertTrue(validation.stillValid())
+    }
+
+    @Test fun changingDecorativeLabelDoesNotBecomeTheClickTarget() = runBlocking {
+        val badge = icon.copy(id = "badge", role = "TextView", text = "1", left = 92, top = 188,
+            right = 100, bottom = 196, clickable = false, supportsClick = false)
+        ui = ui!!.copy(nodes = listOf(icon, badge))
+        val observed = engine.observe()
+        ui = ui!!.copy(nodes = listOf(icon, badge.copy(text = "2")))
+        assertNull(engine.validate(action(observed)).error)
+        ui = ui!!.copy(nodes = listOf(icon.copy(enabled = false), badge))
+        assertEquals("TARGET_CHANGED", engine.validate(action(observed)).error)
+    }
+
+    @Test fun optionalSemanticClickBindsLiveNodeRatherThanAnimatedPixels() = runBlocking {
+        ui = ui!!.copy(nodes = listOf(icon.copy(treePath = "0/0")))
+        val observed = engine.observe()
+        pixels.fill(175.toByte())
+        assertEquals("TARGET_CHANGED", engine.validate(action(observed)).error)
+        val semantic = engine.validate(action(observed, "semantic_click"))
+        assertNull(semantic.error)
+        assertNotNull(semantic.semanticTarget)
+        assertTrue(semantic.stillValid())
+        ui = ui!!.copy(nodes = listOf(icon.copy(treePath = "0/0", text = "Delete")))
+        assertFalse(semantic.stillValid())
+        assertEquals("TARGET_CHANGED", engine.validate(action(observed, "semantic_click")).error)
+    }
+
+    @Test fun semanticUnavailableDoesNotConsumeTicketAndStopStillRevokesValidatedClick() = runBlocking {
+        val unavailable = engine.observe()
+        assertEquals("SEMANTIC_TARGET_UNAVAILABLE", engine.validate(action(unavailable, "semantic_click")).error)
+        assertNull(engine.validate(action(unavailable)).error)
+        ui = ui!!.copy(nodes = listOf(icon.copy(treePath = "0/0")))
+        val observed = engine.observe()
+        val semantic = engine.validate(action(observed, "semantic_click"))
+        assertNull(semantic.error)
+        engine.invalidate()
+        assertFalse(semantic.stillValid())
+    }
+
+    @Test fun actualPopupStillReturnsNewWindowGuardInsteadOfClickingThroughIt() = runBlocking {
+        val observed = engine.observe()
+        ui = ui!!.copy(windowId = 44)
+        assertEquals("FOREGROUND_CHANGED", engine.validate(action(observed)).error)
+    }
+
     @Test fun continuouslyUpdatingChatStillIssuesUsableHomeAndTapTickets() = runBlocking {
         onFrame = { engine.changed() }
         val observed = engine.observe()
@@ -234,3 +293,4 @@ class AiObservationEngineTest {
         assertEquals("SCREEN_CHANGING", observed.getString("error")); assertFalse(observed.has("image"))
     }
 }
+
