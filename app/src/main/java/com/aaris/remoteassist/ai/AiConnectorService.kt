@@ -323,7 +323,7 @@ class AiConnectorService : Service() {
                             .put("screenVersion", args.getLong("screenVersion"))
                         val firstValidation = engine.validate(firstArgs)
                         if (firstValidation.error != null) {
-                            val image = engine.observe(args.optString("responseQuality") == "detail")
+                            val image = engine.observe()
                             val effect = AiActionEffectAnalyzer.classify("burst", false, null, null)
                             val taskState = taskMemory.recordAction(
                                 actionId = id,
@@ -433,7 +433,7 @@ class AiConnectorService : Service() {
 
                         applied = executedSteps == steps.size && burstState == "completed"
                         engine.invalidate()
-                        val image = engine.observe(args.optString("responseQuality") == "detail")
+                        val image = engine.observe()
                         val (changeRatio, _) = engine.visualChangeRatiosFrom(beforeFingerprint, null)
                         val effect = AiActionEffectAnalyzer.classify(
                             "burst",
@@ -472,7 +472,7 @@ class AiConnectorService : Service() {
                         if (validation.error != null) {
                             val code = if (validation.error in setOf("LOCAL_ONLY_SCREEN", "DEVICE_LOCKED_OR_ACCESSIBILITY_OFF", "FOCUSED_FIELD_REQUIRED", "SEMANTIC_TARGET_UNAVAILABLE", "UNSUPPORTED_ACTION"))
                                 validation.error else "STALE_SCREEN"
-                            val image = engine.observe()
+                            val image = engine.observe(args.optString("responseQuality") == "detail")
                             val effect = AiActionEffectAnalyzer.classify(action, false, null, null)
                             val taskState = taskMemory.recordAction(
                                 actionId = id,
@@ -537,7 +537,7 @@ class AiConnectorService : Service() {
                             withTimeout(3500) { done.await() }
                         }
                         engine.invalidate()
-                        val image = engine.observe()
+                        val image = engine.observe(args.optString("responseQuality") == "detail")
                         val (changeRatio, targetChangeRatio) =
                             engine.visualChangeRatiosFrom(beforeFingerprint, effectScope)
                         val effect = AiActionEffectAnalyzer.classify(
