@@ -248,15 +248,19 @@ class AiObservationEngine internal constructor(
                 // pixels in an animation behind it. Window/privacy/identity,
                 // row labels and the final execution recheck still apply.
                 if (!AiSemanticClickResolver.matches(semanticTarget, ui)) return refused("TARGET_CHANGED")
-            } else if (stableBoundedTap) {
+            } else if (
+                stableBoundedTap &&
+                localChangeRatio != null &&
+                localChangeRatio <= STABLE_CONTROL_LOCAL_CHANGE_LIMIT
+            ) {
                 /*
                  * The live Accessibility target is the same enabled bounded control
-                 * that the screenshot coordinate resolved to. Do not let transient
-                 * pixels from progress HUDs, accessibility overlays, ripples, video,
-                 * or animated text veto the touch. sameTarget() already proved the
-                 * control identity before this frame, and stillValid() proves it
-                 * again immediately before dispatch. A real window/popup/target
-                 * replacement still fails closed.
+                 * that the screenshot coordinate resolved to. Tolerate bounded
+                 * transient pixel churn from progress HUDs, the movable STOP pill,
+                 * ripples, video, or animated text, but retain a visual ceiling:
+                 * a mostly/fully redrawn target still fails closed. sameTarget()
+                 * already proved control identity before this frame, and
+                 * stillValid() proves it again immediately before dispatch.
                  */
             } else if (dynamicCanvasCoordinateTap || gestureOnPage) {
                 // Large background videos are not a scene transition when
@@ -599,6 +603,7 @@ class AiObservationEngine internal constructor(
         private const val SETTLE_POLL_MS = 40L
         private const val DYNAMIC_SCENE_CHANGE_LIMIT = 0.42
         private const val PAGE_GESTURE_SCENE_CHANGE_LIMIT = 0.28
+        private const val STABLE_CONTROL_LOCAL_CHANGE_LIMIT = 0.60
         private const val TAP_NEAR_MISS_RADIUS = 0.035
         private const val TAP_NEAR_MISS_RADIUS_SQ = TAP_NEAR_MISS_RADIUS * TAP_NEAR_MISS_RADIUS
     }
