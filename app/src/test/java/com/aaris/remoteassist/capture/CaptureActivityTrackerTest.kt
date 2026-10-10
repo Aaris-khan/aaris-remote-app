@@ -46,4 +46,47 @@ class CaptureActivityTrackerTest {
         timestamp += 120_000_000L
         assertTrue(tracker.onFrame(timestamp))
     }
+
+    @Test fun cadenceWindowExposesProducerStallThatAverageFpsCannotExplain() {
+        val tracker = CaptureActivityTracker()
+        assertNull(tracker.sample(1_000))
+
+        var timestamp = 1_000_000_000L
+        tracker.onFrame(timestamp)
+        timestamp += 50_000_000L
+        tracker.onFrame(timestamp)
+        timestamp += 250_000_000L
+        tracker.onFrame(timestamp)
+
+        // Forced refreshes reuse the same texture timestamp and must not inflate
+        // either the producer FPS or the inter-frame gap.
+        repeat(5) {
+            tracker.onFrame(timestamp)
+        }
+
+        val sample = checkNotNull(tracker.sample(2_000))
+        assertEquals(3.0, sample.fps, 0.01)
+        assertEquals(250.0, checkNotNull(sample.maxGapMs), 0.01)
+        assertEquals(3, sample.frames)
+    }
+
+
+    @Test fun firstFrameAfterIdleDoesNotReportTheIdleIntervalAsJitter() {
+        val tracker = CaptureActivityTracker()
+        assertNull(tracker.sample(1_000))
+
+        var timestamp = 1_000_000_000L
+        tracker.onFrame(timestamp)
+        val first = checkNotNull(tracker.sample(2_000))
+        assertNull(first.maxGapMs)
+
+        timestamp += 5_000_000_000L
+        tracker.onFrame(timestamp)
+        timestamp += 40_000_000L
+        tracker.onFrame(timestamp)
+
+        val resumed = checkNotNull(tracker.sample(3_000))
+        assertEquals(40.0, checkNotNull(resumed.maxGapMs), 0.01)
+    }
+
 }
