@@ -1,6 +1,7 @@
 package com.aaris.remoteassist.accessibility
 
 import android.graphics.Rect
+import android.app.KeyguardManager
 import android.os.Looper
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -42,6 +43,9 @@ class SemanticClickExecutionTest {
         lease = SessionRuntime.activate("native-test", 1)
         service = Robolectric.buildService(AssistAccessibilityService::class.java).create().get()
         ReflectionHelpers.callInstanceMethod<Unit>(service, "onServiceConnected")
+        val keyguard = service.getSystemService(KeyguardManager::class.java)
+        shadowOf(keyguard).setKeyguardLocked(false)
+        shadowOf(keyguard).setIsDeviceLocked(false)
         val window = AccessibilityWindowInfo.obtain()
         shadowOf(window).setId(7)
         fun node(id: String, text: String, bounds: Rect, clickable: Boolean): AccessibilityNodeInfo =
@@ -69,8 +73,10 @@ class SemanticClickExecutionTest {
         shadowOf(second).setOnPerformActionListener { _, _ -> selectedRowClicks++; clickAccepted }
         shadowOf(service).setRootInActiveWindow(root)
         shadowOf(Looper.getMainLooper()).idle()
-        target = requireNotNull(AiSemanticClickResolver.resolve(
-            requireNotNull(AssistAccessibilityService.aiSnapshot()), 0.5, 0.56, 120, 240))
+        val snapshot = requireNotNull(AssistAccessibilityService.aiSnapshot()) { "Test Accessibility service must supply an unlocked snapshot" }
+        target = requireNotNull(AiSemanticClickResolver.resolve(snapshot, 0.5, 0.56, 120, 240)) {
+            "Test node must expose a bounded click target: package=${snapshot.packageName}, window=${snapshot.windowId}, nodes=${snapshot.nodes}"
+        }
     }
 
     @After fun tearDown() {

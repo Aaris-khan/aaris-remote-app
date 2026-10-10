@@ -54,6 +54,7 @@ android {
     buildFeatures { buildConfig = true }
     testOptions.unitTests.all {
         it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+        it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
