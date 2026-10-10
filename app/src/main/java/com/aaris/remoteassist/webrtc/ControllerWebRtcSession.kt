@@ -2,6 +2,7 @@ package com.aaris.remoteassist.webrtc
 
 import android.content.Context
 import android.hardware.display.DisplayManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.aaris.remoteassist.control.CommandLatencyTracker
@@ -53,6 +54,51 @@ class ControllerWebRtcSession(
     private var lastVideoLivenessMs = 0L
     private val gestureStreamIds = AtomicLong(0L)
     private val handler = Handler(Looper.getMainLooper())
+    private val displayManager =
+        appContext.getSystemService(DisplayManager::class.java)
+    @Volatile
+    private var lastPublishedDisplayRefreshRateHz: Float? = null
+
+    private val displayRefreshUpdate =
+        Runnable {
+            if (closed.get()) return@Runnable
+            val refresh = currentDisplayRefreshRateHz() ?: return@Runnable
+            val previous = lastPublishedDisplayRefreshRateHz
+            if (
+                previous == null ||
+                kotlin.math.abs(refresh - previous) >=
+                    DISPLAY_REFRESH_CHANGE_EPSILON_HZ
+            ) {
+                publishDisplayCapabilities(refresh)
+            }
+        }
+
+    private val displayListener =
+        object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+
+            override fun onDisplayRemoved(displayId: Int) = Unit
+
+            override fun onDisplayChanged(displayId: Int) {
+                if (
+                    displayId == Display.DEFAULT_DISPLAY &&
+                    !closed.get()
+                ) {
+                    /*
+                     * Surface.setFrameRate(), power policy, or adaptive-refresh
+                     * policy can move the active clock. Display callbacks may
+                     * arrive in bursts, so coalesce them and only publish a
+                     * materially different rate. The heartbeat remains the
+                     * periodic freshness signal even when the rate is stable.
+                     */
+                    handler.removeCallbacks(displayRefreshUpdate)
+                    handler.postDelayed(
+                        displayRefreshUpdate,
+                        DISPLAY_REFRESH_SETTLE_MS
+                    )
+                }
+            }
+        }
     private val transport = ControlTransportTracker()
     private val inboundVideoLiveness =
         InboundVideoLivenessMonitor()
@@ -103,7 +149,8 @@ class ControllerWebRtcSession(
                 )
                 // Display capability is control-plane metadata, not proof that
                 // EGL presented a frame. Publish it independently so a renderer
-                // stall cannot make the host forget the controller's FPS ceiling.
+                // stall cannot make the host forget the controller's active
+                // presentation clock.
                 publishDisplayCapabilities()
             }
 
@@ -121,6 +168,19 @@ class ControllerWebRtcSession(
          * yet; otherwise the controller can self-destruct while the user is
          * still legitimately approving screen sharing.
          */
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            displayManager?.registerDisplayListener(
+                appContext.mainExecutor,
+                DisplayManager.EVENT_TYPE_DISPLAY_CHANGED or
+                    DisplayManager.EVENT_TYPE_DISPLAY_REFRESH_RATE,
+                displayListener
+            )
+        } else {
+            displayManager?.registerDisplayListener(
+                displayListener,
+                handler
+            )
+        }
         peer.start()
     }
 
@@ -194,39 +254,57 @@ class ControllerWebRtcSession(
                 ?.takeIf { it.isFinite() && it in 1f..240f }
                 ?: return false
 
-        return peer.sendTelemetry(
-            ControlProtocol.encode(
-                ControlPacket.DisplayCapabilities(
-                    lease,
-                    display.generation,
-                    feedbackSequence.incrementAndGet(),
-                    refresh
+        val sent =
+            peer.sendTelemetry(
+                ControlProtocol.encode(
+                    ControlPacket.DisplayCapabilities(
+                        lease,
+                        display.generation,
+                        feedbackSequence.incrementAndGet(),
+                        refresh
+                    )
                 )
             )
-        )
+        if (sent) {
+            lastPublishedDisplayRefreshRateHz = refresh
+        }
+        return sent
     }
 
+    @Suppress("DEPRECATION")
     private fun currentDisplayRefreshRateHz(): Float? {
-        val manager =
-            appContext.getSystemService(DisplayManager::class.java)
-                ?: return null
         val display =
-            manager.getDisplay(Display.DEFAULT_DISPLAY)
+            displayManager
+                ?.getDisplay(Display.DEFAULT_DISPLAY)
                 ?: return null
-        val mode = display.mode
-        return display.supportedModes
-            .asSequence()
-            .filter {
-                it.physicalWidth == mode.physicalWidth &&
-                    it.physicalHeight == mode.physicalHeight
-            }
-            .map { it.refreshRate }
-            .filter { it.isFinite() && it > 0f }
-            .maxOrNull()
-            ?.coerceAtMost(240f)
-            ?: mode.refreshRate.takeIf {
-                it.isFinite() && it > 0f
-            }
+
+        /*
+         * This value is a presentation clock, not a capability ceiling.
+         *
+         * Display.getRefreshRate() is intentionally read first. Android's
+         * DisplayManager documentation uses that read to subscribe clients to
+         * refresh-rate change callbacks, and it reflects the effective current
+         * display refresh seen by this process. Using the fastest entry from
+         * supportedModes here used to misclassify a 60 Hz active session on a
+         * 120 Hz-capable panel as 120 Hz. That changes DisplayCadencePolicy's
+         * adaptation ladder (for example, a 60 Hz controller can lose the
+         * 50/45 fps relief rungs and fall much more abruptly).
+         *
+         * The physical active mode remains a defensive fallback for OEMs that
+         * return an invalid effective rate.
+         */
+        val effectiveRefresh = display.refreshRate
+        if (
+            effectiveRefresh.isFinite() &&
+            effectiveRefresh in 1f..240f
+        ) {
+            return effectiveRefresh
+        }
+
+        val modeRefresh = display.mode.refreshRate
+        return modeRefresh.takeIf {
+            it.isFinite() && it in 1f..240f
+        }
     }
 
     fun sendPresentationHeartbeat(): Boolean {
@@ -807,6 +885,12 @@ class ControllerWebRtcSession(
         screenReadyArmed.set(false)
         handler.removeCallbacks(helloWatchdog)
         handler.removeCallbacks(heartbeat)
+        handler.removeCallbacks(displayRefreshUpdate)
+        runCatching {
+            displayManager?.unregisterDisplayListener(
+                displayListener
+            )
+        }
         inboundVideoLiveness.reset()
         commandLatency.reset()
         inputToGlass.reset()
@@ -828,6 +912,8 @@ class ControllerWebRtcSession(
 
     companion object {
         private const val HEARTBEAT_MS = 5_000L
+        private const val DISPLAY_REFRESH_SETTLE_MS = 150L
+        private const val DISPLAY_REFRESH_CHANGE_EPSILON_HZ = 0.75f
         private const val HELLO_TIMEOUT_MS = 90_000L
         private const val MAX_REMOTE_TEXT_CHARS = 500
         private const val MAX_GESTURE_PATH_POINTS = 96
