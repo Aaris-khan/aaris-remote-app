@@ -201,6 +201,102 @@ class AdaptiveScreenSmoothnessTest {
     }
 
     @Test
+    fun lowTierInteractionCannotPromotePastTwentyFps() {
+        val governor =
+            VideoCadenceGovernor(
+                maxFps = 60,
+                initialCap = 15
+            )
+        val clean =
+            outbound(
+                fps = 15,
+                processingMs = 20.0,
+                queueMs = 0.0
+            ).copy(
+                roundTripTimeMs = 14,
+                packetLossRatio = 0.0,
+                codecImplementation = "c2.mtk.avc.encoder"
+            )
+
+        assertFalse(
+            governor.tryProbeDuringInteraction(
+                outbound = clean,
+                receiver = null,
+                producerFps = 30.0,
+                interactionActive = true,
+                nowMs = 1_000L,
+                maximumFps = 20
+            )
+        )
+        assertTrue(
+            governor.tryProbeDuringInteraction(
+                outbound = clean,
+                receiver = null,
+                producerFps = 30.0,
+                interactionActive = true,
+                nowMs = 1_500L,
+                maximumFps = 20
+            )
+        )
+        assertEquals(20, governor.cap)
+
+        repeat(4) { index ->
+            assertFalse(
+                governor.tryProbeDuringInteraction(
+                    outbound = clean,
+                    receiver = null,
+                    producerFps = 30.0,
+                    interactionActive = true,
+                    nowMs = 2_000L + index * 500L,
+                    maximumFps = 20
+                )
+            )
+        }
+        assertEquals(20, governor.cap)
+    }
+
+    @Test
+    fun quietRecoveryAlsoHonorsLowTierTwentyFpsCeiling() {
+        val governor =
+            VideoCadenceGovernor(
+                maxFps = 60,
+                initialCap = 15
+            )
+        val quiet =
+            outbound(
+                fps = 1,
+                processingMs = 4.0,
+                queueMs = 0.0
+            ).copy(
+                roundTripTimeMs = 20,
+                packetLossRatio = 0.0,
+                qualityLimitationReason = "none"
+            )
+
+        assertTrue(
+            governor.tryProbeAfterQuiet(
+                outbound = quiet,
+                producerFps = 1.0,
+                telemetryAtMs = 9_000L,
+                nowMs = 10_000L,
+                maximumFps = 20
+            )
+        )
+        assertEquals(20, governor.cap)
+
+        assertFalse(
+            governor.tryProbeAfterQuiet(
+                outbound = quiet,
+                producerFps = 1.0,
+                telemetryAtMs = 10_000L,
+                nowMs = 20_000L,
+                maximumFps = 20
+            )
+        )
+        assertEquals(20, governor.cap)
+    }
+
+    @Test
     fun moderateResidualLossCanEscapeStickyFifteenWhenLocalPathIsClean() {
         val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
         val recovered =

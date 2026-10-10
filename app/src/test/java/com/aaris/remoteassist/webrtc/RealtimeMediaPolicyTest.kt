@@ -31,6 +31,50 @@ class RealtimeMediaPolicyTest {
     }
 
     @Test
+    fun sourceCadenceNeverEscapesTheActiveCaptureProfile() {
+        assertEquals(
+            20,
+            RealtimeMediaPolicy.effectiveSourceFps(
+                idleFps = 15,
+                motionFps = 20,
+                cadenceCap = 60,
+                deviceFpsLimit = 60,
+                freshnessActive = true
+            )
+        )
+        assertEquals(
+            30,
+            RealtimeMediaPolicy.effectiveSourceFps(
+                idleFps = 24,
+                motionFps = 30,
+                cadenceCap = 60,
+                deviceFpsLimit = 60,
+                freshnessActive = true
+            )
+        )
+        assertEquals(
+            24,
+            RealtimeMediaPolicy.effectiveSourceFps(
+                idleFps = 45,
+                motionFps = 60,
+                cadenceCap = 60,
+                deviceFpsLimit = 24,
+                freshnessActive = true
+            )
+        )
+        assertEquals(
+            45,
+            RealtimeMediaPolicy.effectiveSourceFps(
+                idleFps = 45,
+                motionFps = 60,
+                cadenceCap = 60,
+                deviceFpsLimit = 60,
+                freshnessActive = false
+            )
+        )
+    }
+
+    @Test
     fun nativeSpatialReliefMaintainsFrameRateUnderSuddenCodecPressure() {
         assertEquals(
             RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE,
