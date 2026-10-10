@@ -43,9 +43,15 @@ class VideoCadenceGovernor(
         outbound: VideoHealthSnapshot?,
         producerFps: Double?,
         telemetryAtMs: Long,
-        nowMs: Long
+        nowMs: Long,
+        maximumFps: Int = maxFps
     ): Boolean {
-        val ceiling = minOf(maxFps, MOTION_RECOVERY_FPS_CEILING)
+        val ceiling =
+            minOf(
+                maxFps,
+                maximumFps.coerceAtLeast(1),
+                MOTION_RECOVERY_FPS_CEILING
+            )
         if (cap >= ceiling || nowMs < 0L) return false
         if (nowMs - changedAt < QUIET_PROBE_COOLDOWN_MS ||
             nowMs - lastOverloadAtMs < QUIET_PROBE_COOLDOWN_MS) return false
@@ -123,7 +129,8 @@ class VideoCadenceGovernor(
         receiver: VideoHealthWindow?,
         producerFps: Double?,
         interactionActive: Boolean,
-        nowMs: Long
+        nowMs: Long,
+        maximumFps: Int = maxFps
     ): Boolean {
         if (!interactionActive) {
             interactiveHeadroom = 0
@@ -131,6 +138,15 @@ class VideoCadenceGovernor(
             return false
         }
 
+        /*
+         * The governor instance is session-wide so HIGH devices may eventually
+         * reach 60 fps, but the active CaptureProfile is a stricter per-device
+         * contract. Never let interaction rescue/probing escape that contract.
+         * This is especially important for LOW/BALANCED devices whose safe
+         * motion ceilings are intentionally 20/30 fps.
+         */
+        val boundedMaximumFps =
+            maximumFps.coerceIn(1, maxFps)
         val sender = outbound.recent
 
         /*
@@ -141,7 +157,7 @@ class VideoCadenceGovernor(
          * 30/45/60 probes still require their stricter evidence.
          */
         val interactionFloorTarget =
-            minOf(maxFps, INTERACTION_RESCUE_FLOOR_FPS)
+            minOf(boundedMaximumFps, INTERACTION_RESCUE_FLOOR_FPS)
         if (cap < interactionFloorTarget) {
             val floorBudgetMs = 1_000.0 / interactionFloorTarget
             val producerHealthy =
@@ -239,7 +255,8 @@ class VideoCadenceGovernor(
             return false
         }
 
-        val ceiling = minOf(maxFps, INTERACTION_PROBE_FPS)
+        val ceiling =
+            minOf(boundedMaximumFps, INTERACTION_PROBE_FPS)
         if (cap >= ceiling) {
             interactiveHeadroom = 0
             return false
@@ -248,7 +265,7 @@ class VideoCadenceGovernor(
             producerFps != null &&
                 producerFps.isFinite() &&
                 producerFps >= INTERACTION_PROBE_MIN_PRODUCER_FPS
-        val frameBudgetMs = 1000.0 / INTERACTION_PROBE_FPS
+        val frameBudgetMs = 1000.0 / ceiling.coerceAtLeast(1)
         val senderHealthy =
             sender != null &&
                 sender.intervalMs in 500..6000 &&
