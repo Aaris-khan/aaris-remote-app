@@ -233,6 +233,14 @@ class AiObservationEngine internal constructor(
                 observed.nodes.none { it.editable && it.focused } &&
                 ui.nodes.none { it.editable && it.focused }
             val semanticTargetPresent = actionableTargetAtScope(observed, checkNotNull(scope)) != null || args.has("targetId")
+            val stableBoundedTap =
+                action == "tap" &&
+                    actionableTargetAtScope(observed, checkNotNull(scope))?.let { beforeControl ->
+                        val currentControl = actionableTargetAtScope(ui, checkNotNull(scope))
+                        beforeControl.enabled &&
+                            currentControl?.enabled == true &&
+                            beforeControl.forTouchComparison() == currentControl.forTouchComparison()
+                    } == true
             val dynamicCanvasCoordinateTap =
                 action == "tap" && issuedMode == AiInteractionMode.DYNAMIC_CANVAS && !semanticTargetPresent
             if (semanticTarget != null) {
@@ -240,6 +248,16 @@ class AiObservationEngine internal constructor(
                 // pixels in an animation behind it. Window/privacy/identity,
                 // row labels and the final execution recheck still apply.
                 if (!AiSemanticClickResolver.matches(semanticTarget, ui)) return refused("TARGET_CHANGED")
+            } else if (stableBoundedTap) {
+                /*
+                 * The live Accessibility target is the same enabled bounded control
+                 * that the screenshot coordinate resolved to. Do not let transient
+                 * pixels from progress HUDs, accessibility overlays, ripples, video,
+                 * or animated text veto the touch. sameTarget() already proved the
+                 * control identity before this frame, and stillValid() proves it
+                 * again immediately before dispatch. A real window/popup/target
+                 * replacement still fails closed.
+                 */
             } else if (dynamicCanvasCoordinateTap || gestureOnPage) {
                 // Large background videos are not a scene transition when
                 // the intended touch corridor itself remains visually stable,
