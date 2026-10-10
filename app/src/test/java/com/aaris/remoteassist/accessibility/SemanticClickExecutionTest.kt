@@ -71,6 +71,10 @@ class SemanticClickExecutionTest {
         shadowOf(root).addChild(second)
         shadowOf(first).setOnPerformActionListener { _, _ -> firstRowClicks++; true }
         shadowOf(second).setOnPerformActionListener { _, _ -> selectedRowClicks++; clickAccepted }
+        // Android delivers a sealed root to Accessibility services. findFocus
+        // rejects mutable provider-side nodes even in Robolectric.
+        ReflectionHelpers.callInstanceMethod<Unit>(root, "setSealed",
+            ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType!!, true))
         shadowOf(service).setRootInActiveWindow(root)
         shadowOf(Looper.getMainLooper()).idle()
         val snapshot = requireNotNull(AssistAccessibilityService.aiSnapshot()) { "Test Accessibility service must supply an unlocked snapshot" }

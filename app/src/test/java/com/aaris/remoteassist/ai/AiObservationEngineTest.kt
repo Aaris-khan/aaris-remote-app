@@ -92,6 +92,18 @@ class AiObservationEngineTest {
         assertEquals("TARGET_CHANGED", engine.validate(action(observed)).error)
     }
 
+    @Test fun typingIgnoresTreePositionButStillBindsActualValueAndSelection() = runBlocking {
+        val field = icon.copy(editable = true, focused = true, selectionStart = 0, selectionEnd = 0, treePath = "0/1")
+        ui = ui!!.copy(nodes = listOf(field))
+        val observed = engine.observe()
+        ui = ui!!.copy(nodes = listOf(field.copy(treePath = "0/2")))
+        val validation = engine.validate(action(observed, "type"))
+        assertNull(validation.error)
+        assertTrue(validation.stillValid())
+        ui = ui!!.copy(nodes = listOf(field.copy(treePath = "0/2", selectionStart = 1)))
+        assertFalse(validation.stillValid())
+    }
+
     @Test fun optionalSemanticClickBindsLiveNodeRatherThanAnimatedPixels() = runBlocking {
         ui = ui!!.copy(nodes = listOf(icon.copy(treePath = "0/0")))
         val observed = engine.observe()

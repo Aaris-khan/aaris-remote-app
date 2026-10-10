@@ -365,7 +365,9 @@ class AiObservationEngine internal constructor(
         return when (args.getString("action")) {
             "type", "insert_text", "clear_text" -> {
                 val field = ui.nodes.singleOrNull { it.focused && it.editable } ?: return null
-                AiActionScope((field.left + field.right) / 2.0 / width, (field.top + field.bottom) / 2.0 / height)
+                AiActionScope((field.left + field.right) / 2.0 / width, (field.top + field.bottom) / 2.0 / height,
+                    clip = AiScopeRect(field.left.toDouble() / width, field.top.toDouble() / height,
+                        field.right.toDouble() / width, field.bottom.toDouble() / height))
             }
             "drag" -> AiActionScope.fromPath(dragPoints(args))
             "two_finger" -> AiActionScope.fromPaths(twoFingerPaths(args))
@@ -422,7 +424,8 @@ class AiObservationEngine internal constructor(
         }
         if (args.getString("action") in setOf("type", "insert_text", "clear_text")) {
             val field = a.nodes.singleOrNull { it.focused && it.editable } ?: return false
-            return field.enabled && field == b.nodes.singleOrNull { it.focused && it.editable }
+            val currentField = b.nodes.singleOrNull { it.focused && it.editable } ?: return false
+            return field.enabled && field.forTouchComparison() == currentField.forTouchComparison()
         }
         val scope = actionScope(args, a) ?: return false
         if (args.getString("action") in setOf("swipe", "drag", "two_finger") &&
@@ -439,7 +442,7 @@ class AiObservationEngine internal constructor(
             fun relevant(ui: AiUiSnapshot) = ui.nodes.filter {
                 it.area < width.toLong() * height / 3 &&
                     scope.contains((it.left + it.right) / 2.0 / width, (it.top + it.bottom) / 2.0 / height)
-            }.toSet()
+            }.map { it.forTouchComparison() }.toSet()
             return relevant(a) == relevant(b)
         }
         if (args.getString("action") == "tap") {
@@ -450,13 +453,15 @@ class AiObservationEngine internal constructor(
                 val currentControl = actionableTargetAtScope(b, scope) ?: return false
                 // Unrelated siblings can be inserted while a toolbar stays in
                 // place. Tree position alone is not a changed touch target.
-                return control.enabled && control.copy(treePath = "") == currentControl.copy(treePath = "")
+                return control.enabled && control.forTouchComparison() == currentControl.forTouchComparison()
             }
             if (issuedMode == AiInteractionMode.DYNAMIC_CANVAS && !args.has("targetId")) return true
         }
         val target = targetAtScope(a, scope)
-        return target == targetAtScope(b, scope) && target?.enabled != false
+        return target?.forTouchComparison() == targetAtScope(b, scope)?.forTouchComparison() && target?.enabled != false
     }
+
+    private fun AiUiNode.forTouchComparison() = copy(treePath = "")
 
     fun geometry(): Pair<Int, Int> = width to height
 
