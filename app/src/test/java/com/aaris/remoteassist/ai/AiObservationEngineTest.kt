@@ -54,6 +54,30 @@ class AiObservationEngineTest {
         assertTrue(validation.stillValid())
     }
 
+    @Test fun stableBoundedControlIgnoresTransientOverlayPixels() = runBlocking {
+        val search = icon.copy(id = "browser:id/search", text = "Search", left = 88, right = 112, top = 178, bottom = 206)
+        ui = ui!!.copy(packageName = "browser", nodes = listOf(search))
+        val observed = engine.observe()
+
+        // Model a progress/accessibility HUD overlapping a substantial part of
+        // the button between screenshot selection and dispatch. The live bounded
+        // control itself is unchanged and still enabled.
+        pixels = pixels.clone().apply {
+            for (y in 178 until 206) for (x in 88 until 100) this[y * 120 + x] = 175.toByte()
+        }
+        engine.changed()
+
+        val args = action(observed).put("x", 0.83).put("y", 0.80)
+        val validation = engine.validate(args)
+        assertNull(validation.error)
+        assertTrue(validation.stillValid())
+
+        // A real control replacement must still stop the touch.
+        ui = ui!!.copy(nodes = listOf(search.copy(text = "Delete")))
+        assertFalse(validation.stillValid())
+        assertEquals("TARGET_CHANGED", engine.validate(args).error)
+    }
+
     @Test fun stableVisionTargetAllowsLargeVideoMotionWithoutAccessibilityNodes() = runBlocking {
         ui = AiUiSnapshot("video.canvas", JSONArray(), emptyList(), false, false, 8, emptyList())
         val observed = engine.observe()
