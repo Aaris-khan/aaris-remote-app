@@ -1039,11 +1039,15 @@ class HostWebRtcSession(
              * a 60 fps stream. Bind both governors to one temporal target so the
              * cheaper pixel lever reacts before stale frames build up.
              */
+            val profileMaximumFps =
+                minOf(
+                    profile.motionFps,
+                    deviceFpsLimit
+                ).coerceAtLeast(1)
             val motionTargetFps =
                 minOf(
                     cadenceGovernor.cap,
-                    profile.motionFps,
-                    deviceFpsLimit
+                    profileMaximumFps
                 ).coerceAtLeast(1)
             val photonPolicy =
                 photonGovernor.observe(
@@ -1083,7 +1087,7 @@ class HostWebRtcSession(
                         interactionActive = interactionActive
                     ),
                     producerFps = sourceFps,
-                    maximumFps = deviceFpsLimit,
+                    maximumFps = profileMaximumFps,
                     allowHighCadenceProbe =
                         motionActive &&
                             !resolutionChanged &&
@@ -1094,8 +1098,9 @@ class HostWebRtcSession(
                     outbound = snapshot,
                     receiver = receiver,
                     producerFps = sourceFps,
-                    interactionActive = interactionActive && deviceFpsLimit >= 30,
-                    nowMs = now
+                    interactionActive = interactionActive,
+                    nowMs = now,
+                    maximumFps = profileMaximumFps
                 )
             val cadenceChanged =
                 cadencePressureChanged || interactionProbeChanged
@@ -1526,7 +1531,12 @@ class HostWebRtcSession(
             outbound = lastQuietOutbound,
             producerFps = lastQuietSourceFps,
             telemetryAtMs = lastQuietSampleAtMs,
-            nowMs = nowMs
+            nowMs = nowMs,
+            maximumFps =
+                minOf(
+                    deviceFpsLimit,
+                    profile.motionFps
+                ).coerceAtLeast(1)
         )
         // Consume the evidence once. A later touch must not repeatedly borrow
         // a quiet sample from before the previous animation.
@@ -1605,14 +1615,12 @@ class HostWebRtcSession(
     ): CaptureProfile {
         val freshnessActive = freshnessPriorityActive()
         val targetFps =
-            minOf(
-                cadenceGovernor.cap,
-                deviceFpsLimit,
-                if (freshnessActive) {
-                    MAX_SESSION_VIDEO_FPS
-                } else {
-                    target.fps
-                }
+            RealtimeMediaPolicy.effectiveSourceFps(
+                idleFps = target.fps,
+                motionFps = target.motionFps,
+                cadenceCap = cadenceGovernor.cap,
+                deviceFpsLimit = deviceFpsLimit,
+                freshnessActive = freshnessActive
             )
 
         val paced = if (targetFps == target.fps) {
