@@ -54,6 +54,24 @@ class AiObservationEngineTest {
         assertTrue(validation.stillValid())
     }
 
+    @Test fun stableVisionTargetAllowsLargeVideoMotionWithoutAccessibilityNodes() = runBlocking {
+        ui = AiUiSnapshot("video.canvas", JSONArray(), emptyList(), false, false, 8, emptyList())
+        val observed = engine.observe()
+        assertEquals("dynamic_canvas", observed.getString("interactionMode"))
+        pixels = pixels.clone().apply {
+            for (y in 0 until 240) for (x in 0 until 120) {
+                // Preserve the screenshot-selected search target and its
+                // complete padded guard; animate almost everything else.
+                if (x !in 90..104 || y !in 183..201) this[y * 120 + x] = 175.toByte()
+            }
+        }
+        val validation = engine.validate(action(observed))
+        assertNull(validation.error)
+        assertTrue(validation.stillValid())
+        pixels.fill(175.toByte())
+        assertEquals("TARGET_CHANGED", engine.validate(action(observed)).error)
+    }
+
     @Test fun changingDecorativeLabelDoesNotBecomeTheClickTarget() = runBlocking {
         val badge = icon.copy(id = "badge", role = "TextView", text = "1", left = 92, top = 188,
             right = 100, bottom = 196, clickable = false, supportsClick = false)

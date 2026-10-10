@@ -43,7 +43,7 @@ Example optional request after confirmed ordinary no-effect taps:
 | Intent source | Fresh full-screen screenshot | Same screenshot; no Accessibility tree is published |
 | Coordinate resolution | Existing bounded auto-aim, otherwise raw coordinate | Smallest bounded node advertising ACTION_CLICK at the coordinate, including a filename label's clickable parent |
 | Identity guard | App/window, geometry, privacy, actual bounded control, local pixels | App/window, geometry, privacy, tree path, bounds, role/id, full-text digests, descendant labels, supported action |
-| Animated pixels | Padded guard clipped to the actual control; unrelated video/text does not enter it | Fresh semantic identity authorizes the native action despite changing pixels |
+| Animated pixels | Padded guard clipped to the actual control; a stable visual target/corridor can also survive large background video when useful nodes are absent | Fresh semantic identity authorizes the native action despite changing pixels |
 | Execution | Existing `dispatchGesture` and gesture callback | Reacquire live root and node, refresh, recheck authorization/precondition, exactly one ACTION_CLICK |
 | Failure | Fresh screenshot and effect metadata | Fresh screenshot and no silent retry/SELECT/FOCUS/touch fallback |
 | Outcome | `inputMethod: touch_gesture` | `inputMethod: accessibility_click` |

@@ -241,12 +241,12 @@ class AiObservationEngine internal constructor(
                 // row labels and the final execution recheck still apply.
                 if (!AiSemanticClickResolver.matches(semanticTarget, ui)) return refused("TARGET_CHANGED")
             } else if (dynamicCanvasCoordinateTap || gestureOnPage) {
-                // Swipes/pinches on content pages can overlap changing text/animation.
-                // Do not make them depend on the exact Accessibility node set or
-                // every pixel in the gesture corridor. A major page change still
-                // rejects the action, as do all window/privacy/geometry guards.
+                // Large background videos are not a scene transition when
+                // the intended touch corridor itself remains visually stable,
+                // even when Accessibility exposes no useful control nodes.
+                // If the target ALSO animates, retain the coarse scene limit.
                 val limit = if (gestureOnPage) PAGE_GESTURE_SCENE_CHANGE_LIMIT else DYNAMIC_SCENE_CHANGE_LIMIT
-                if (globalChangeRatio == null || globalChangeRatio > limit) return refused("TARGET_CHANGED")
+                if (localChanged && (globalChangeRatio == null || globalChangeRatio > limit)) return refused("TARGET_CHANGED")
             } else if (localChanged) {
                 return refused("TARGET_CHANGED")
             }
