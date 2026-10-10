@@ -30,6 +30,20 @@ internal class MotionVideoBudget {
     private var lastBandwidthPressureAtMs = Long.MIN_VALUE / 2
 
     /*
+     * Entering motion may choose a conservative bitrate/pixel budget before a
+     * complete moving-window sample exists. Do not immediately turn that
+     * prediction into a VideoSource dimension change: vendor MediaCodec
+     * implementations may reconfigure at exactly the first touch/scroll frame.
+     *
+     * The speculative rung may cap bitrate immediately, but source geometry is
+     * held at the pre-motion rung until measured motion pressure satisfies the
+     * existing hysteresis. If motion ends first, the speculative resize is
+     * discarded. Measured pressure still receives app-level pixel relief.
+     */
+    private var warmStartResizePending = false
+    private var preMotionShortEdge = 720
+
+    /*
      * Predict freshness debt before it becomes an absolute queue alarm.
      * These are control-plane scalars only: no frame, texture or packet is
      * retained. The composition flag prevents a newly available receiver
@@ -43,11 +57,14 @@ internal class MotionVideoBudget {
     /**
      * New motion must not blindly pay a MediaCodec resolution restart.
      *
-     * Unknown / software / pressured paths keep the conservative 360-short-edge
-     * warm start. When the immediately preceding quiet WebRTC sample proves a
-     * fast hardware encoder plus real bandwidth headroom, preserve 540 or 720
-     * instead. That keeps the first controller gesture on the already-running
-     * codec configuration instead of creating a visible touch-down reset.
+     * Unknown / software / pressured paths may select a conservative
+     * 360-short-edge control budget. When the immediately preceding quiet
+     * WebRTC sample proves a fast hardware encoder plus real bandwidth
+     * headroom, the control budget may preserve 540 or 720 instead.
+     *
+     * Crucially, a predicted lower rung is not applied to VideoSource geometry
+     * on touch-down. It may cap bitrate immediately, but a real moving-window
+     * pressure sample must confirm the source resize first.
      *
      * Repeated motion pulses only refresh the hold; they never knock a
      * continuously healthy stream back down after the first decision.
@@ -60,7 +77,11 @@ internal class MotionVideoBudget {
     ): Boolean {
         if (nowMs < 0L) return false
 
-        val before = shortEdge to holdingResolution
+        val before = Triple(
+            shortEdge,
+            holdingResolution,
+            warmStartResizePending
+        )
         val enteringMotion = !holdingResolution
         holdingResolution = true
         lastMotionAtMs = nowMs
@@ -69,6 +90,8 @@ internal class MotionVideoBudget {
             pressureSamples = 0
             healthySamples = 0
             resetResidenceGrowth()
+            preMotionShortEdge = shortEdge
+            warmStartResizePending = false
 
             val profileShortEdge =
                 minOf(profile.captureWidthPx, profile.captureHeightPx)
@@ -83,11 +106,16 @@ internal class MotionVideoBudget {
                 shortEdge > warmStartShortEdge
             ) {
                 shortEdge = warmStartShortEdge
+                warmStartResizePending = true
                 changedAtMs = nowMs
             }
         }
 
-        return before != (shortEdge to holdingResolution)
+        return before != Triple(
+            shortEdge,
+            holdingResolution,
+            warmStartResizePending
+        )
     }
 
     fun observe(
@@ -100,9 +128,23 @@ internal class MotionVideoBudget {
         interactionActive: Boolean = false,
         allowResolutionRecovery: Boolean = true
     ): Boolean {
-        val before = shortEdge to holdingResolution
+        val before = Triple(
+            shortEdge,
+            holdingResolution,
+            warmStartResizePending
+        )
         val enteringMotion = !holdingResolution
         if (!motionActive) {
+            /*
+             * If motion ended before a complete moving-window sample validated
+             * the speculative warm-start rung, discard that prediction. This
+             * prevents a delayed idle callback from applying a touch-down
+             * resolution change after the gesture has already finished.
+             */
+            if (warmStartResizePending) {
+                shortEdge = preMotionShortEdge
+                warmStartResizePending = false
+            }
             pressureSamples = 0
             healthySamples = 0
             resetResidenceGrowth()
@@ -111,7 +153,11 @@ internal class MotionVideoBudget {
                 holdingResolution = false
                 shortEdge = 720
             }
-            return before != (shortEdge to holdingResolution)
+            return before != Triple(
+            shortEdge,
+            holdingResolution,
+            warmStartResizePending
+        )
         }
         holdingResolution = true
         lastMotionAtMs = nowMs
@@ -132,7 +178,11 @@ internal class MotionVideoBudget {
             // Short getStats probes do not have a complete sender interval.
             // Ignore them instead of erasing validated congestion evidence.
             // Expire that evidence on the next complete sample after a long gap.
-            return before != (shortEdge to holdingResolution)
+            return before != Triple(
+            shortEdge,
+            holdingResolution,
+            warmStartResizePending
+        )
         }
         if (nowMs - lastMeasuredSenderAtMs !in 0L..MAX_SENDER_SAMPLE_GAP_MS) {
             pressureSamples = 0
@@ -146,6 +196,25 @@ internal class MotionVideoBudget {
         // Detect the encoder actually in use, not just the negotiated MIME type.
         // Hardware remains preferred; software fallback must stay usable as well.
         val implementation = outbound.codecImplementation?.lowercase()
+        val softwarePath =
+            !implementation.isNullOrBlank() &&
+                isSoftwareEncoder(implementation)
+
+        /*
+         * A complete moving-window sample that identifies a software encoder is
+         * sufficient evidence to commit the conservative warm-start pixel rung.
+         * The resize happens here, after measurement, never on the touch event.
+         */
+        if (warmStartResizePending && softwarePath) {
+            lastImplementation = implementation
+            warmStartResizePending = false
+            changedAtMs = nowMs
+            pressureSamples = 0
+            healthySamples = 0
+            resetResidenceGrowth()
+            return true
+        }
+
         if (!implementation.isNullOrBlank() && (implementation != lastImplementation || enteringMotion)) {
             lastImplementation = implementation
             if (isSoftwareEncoder(implementation) && shortEdge > 540) {
@@ -369,12 +438,63 @@ internal class MotionVideoBudget {
                 pipelineDeadlinePressure ||
                 outbound.qualityLimitationReason == "cpu"
 
+        /*
+         * Use exactly the same rung selection for a validated warm-start commit
+         * and for ordinary later pressure relief. This prevents duplicate policy
+         * trees from drifting apart.
+         */
+        fun nextPressureRung(): Int =
+            when {
+                shortEdge > 540 -> 540
+                shortEdge > 360 -> 360
+                shortEdge > 240 &&
+                    (
+                        encodePressure ||
+                            decodePressure ||
+                            bandwidthFreshnessPressure ||
+                            predictiveBandwidthPressure ||
+                            predictiveResidencePressure ||
+                            pipelineDeadlinePressure
+                        ) -> 240
+                shortEdge > 180 &&
+                    (
+                        severeBandwidthFreshnessPressure ||
+                            severePredictiveBandwidthPressure
+                        ) -> 180
+                else -> shortEdge
+            }
+
         if (pressured) {
             healthySamples = 0
             pressureSamples++
             val severe = (queueMs ?: 0.0) >= 150.0 ||
                 (sender.frames >= 2 && sender.fps <= 10.0 && encodePressure) ||
                 severeBandwidthFreshnessPressure
+
+            /*
+             * Do not let one ordinary jitter/render sample turn a speculative
+             * control budget into a real source resize. Reuse the established
+             * confirmation rule: two pressure windows, or an already-strong
+             * signal such as severe queue debt / predictive residence growth.
+             *
+             * Once confirmed, commit the best rung directly. If the evidence
+             * already justifies 240px, avoid a 360px reconfiguration followed by
+             * another resize one control interval later.
+             */
+            if (
+                warmStartResizePending &&
+                (severe || predictiveResidencePressure || pressureSamples >= 2)
+            ) {
+                warmStartResizePending = false
+                val confirmed = nextPressureRung()
+                if (confirmed != shortEdge) {
+                    shortEdge = confirmed
+                }
+                changedAtMs = nowMs
+                pressureSamples = 0
+                resetResidenceGrowth()
+                return true
+            }
             /*
              * A 45/60 Hz stream has a 22.2/16.7 ms frame budget. If two
              * consecutive telemetry windows prove encode/decode/presentation
@@ -415,31 +535,10 @@ internal class MotionVideoBudget {
                 (severe || predictiveResidencePressure || pressureSamples >= 2) &&
                 nowMs - changedAtMs >= settleMs
             ) {
-                val next = when {
-                    shortEdge > 540 -> 540
-                    shortEdge > 360 -> 360
-                    // When a moving source is bandwidth-limited, a 360-wide
-                    // frame is still too expensive if the pacer is holding old
-                    // packets. Spend pixels before sacrificing temporal motion.
-                    shortEdge > 240 &&
-                        (
-                            encodePressure ||
-                                decodePressure ||
-                                bandwidthFreshnessPressure ||
-                                predictiveBandwidthPressure ||
-                                predictiveResidencePressure ||
-                                pipelineDeadlinePressure
-                            ) -> 240
-                    // 180 is deliberately reserved for strong bandwidth proof.
-                    // A sustained BWE estimate far below the current rung is
-                    // actionable even before a stale sender queue is visible.
-                    shortEdge > 180 &&
-                        (
-                            severeBandwidthFreshnessPressure ||
-                                severePredictiveBandwidthPressure
-                            ) -> 180
-                    else -> shortEdge
-                }
+                // When a moving source is bandwidth-limited, spend
+                // pixels before sacrificing temporal motion. The 180 rung
+                // remains reserved for strong bandwidth proof.
+                val next = nextPressureRung()
                 if (next != shortEdge) {
                     shortEdge = next
                     changedAtMs = nowMs
@@ -492,16 +591,35 @@ internal class MotionVideoBudget {
                 resetResidenceGrowth()
             }
         }
-        return before != (shortEdge to holdingResolution)
+        return before != Triple(
+            shortEdge,
+            holdingResolution,
+            warmStartResizePending
+        )
     }
 
     fun apply(profile: CaptureProfile, motionActive: Boolean): CaptureProfile {
         if (!motionActive && !holdingResolution) return profile
+
+        /*
+         * Keep source geometry stable during the unvalidated warm-start window.
+         * shortEdge is still allowed to cap bitrate/cadence immediately; only
+         * the dimension actuator waits for measured moving-window evidence.
+         */
+        val sourceShortEdge =
+            if (warmStartResizePending) {
+                preMotionShortEdge
+            } else {
+                shortEdge
+            }
         val edge = minOf(profile.captureWidthPx, profile.captureHeightPx)
-        if (edge <= shortEdge) return profile
-        val scale = shortEdge.toDouble() / edge
+        if (edge <= sourceShortEdge) return profile
+        val scale = sourceShortEdge.toDouble() / edge
         fun even(value: Int) = ((value * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
-        return profile.copy(captureWidthPx = even(profile.captureWidthPx), captureHeightPx = even(profile.captureHeightPx))
+        return profile.copy(
+            captureWidthPx = even(profile.captureWidthPx),
+            captureHeightPx = even(profile.captureHeightPx)
+        )
     }
 
     fun cadenceFloor(
