@@ -37,10 +37,11 @@ internal class MotionVideoBudget {
      * prediction into a VideoSource dimension change: vendor MediaCodec
      * implementations may reconfigure at exactly the first touch/scroll frame.
      *
-     * The speculative rung may cap bitrate immediately, but source geometry is
-     * held at the pre-motion rung until measured motion pressure satisfies the
-     * existing hysteresis. If motion ends first, the speculative resize is
-     * discarded. Measured pressure still receives app-level pixel relief.
+     * The speculative rung may tighten prediction/cadence admission immediately,
+     * but neither source geometry nor its matching sender ceiling moves until
+     * measured motion pressure satisfies the existing hysteresis. If motion ends
+     * first, the speculative resize is discarded. Measured pressure still
+     * receives app-level pixel relief.
      */
     private var warmStartResizePending = false
     private var preMotionShortEdge = 720
@@ -49,8 +50,9 @@ internal class MotionVideoBudget {
      * Spatial policy has two different states and they must never be conflated:
      *
      * shortEdge is the control-plane budget. It may move speculatively at the
-     * first sign of motion so bitrate/cadence admission can become conservative
-     * immediately.
+     * first sign of motion so pressure prediction and cadence admission can
+     * become conservative immediately. It is NOT the sender/source operating
+     * point until measured evidence commits the spatial change.
      *
      * committedSourceShortEdge is the geometry that measured evidence has
      * actually authorized the producer/VideoSource to use. On a native
@@ -85,8 +87,8 @@ internal class MotionVideoBudget {
      * headroom, the control budget may preserve 540 or 720 instead.
      *
      * Crucially, a predicted lower rung is not applied to VideoSource geometry
-     * on touch-down. It may cap bitrate immediately, but a real moving-window
-     * pressure sample must confirm the source resize first.
+     * or the matching sender bitrate ceiling on touch-down. A real moving-window
+     * pressure sample must confirm the spatial operating-point change first.
      *
      * Repeated motion pulses only refresh the hold; they never knock a
      * continuously healthy stream back down after the first decision.
@@ -695,7 +697,7 @@ internal class MotionVideoBudget {
         /*
          * Keep source geometry stable until measured evidence explicitly commits
          * a spatial actuator move. The control-plane shortEdge may already be
-         * lower for bitrate admission, but it is not producer geometry.
+         * lower for prediction/admission, but it is not producer geometry.
          */
         val edge = minOf(profile.captureWidthPx, profile.captureHeightPx)
         val sourceShortEdge =
@@ -754,15 +756,30 @@ internal class MotionVideoBudget {
         if (!motionActive && !holdingResolution) return profile.maxVideoBitrateBps
 
         /*
-         * maxBitrateBps is only a ceiling; GCC still decides the actual send
-         * rate. Let higher cadence use proportionally more headroom on reduced
-         * pixel rungs so the predictor and actuator describe the same operating
-         * point instead of predicting 360@60 against 1.8 Mbps while hard-capping
-         * the sender at the old 900 kbps 30-fps ceiling.
+         * maxBitrateBps is only a ceiling; GCC/TWCC still decides the actual
+         * send rate. The important invariant is that this ceiling describes the
+         * geometry we have ACTUALLY admitted to VideoSource/MediaCodec.
+         *
+         * shortEdge may be a speculative 360/240 control-plane prediction while
+         * committedSourceShortEdge is still native 720/1080. Applying the
+         * speculative bitrate ceiling at that moment creates a contradictory
+         * operating point: more motion FPS at full pixels, but a sharply lower
+         * encoder ceiling. Vendor rate control can answer that step with a
+         * large QP/key-frame transient or temporary under-delivery, which looks
+         * exactly like first-motion judder.
+         *
+         * Once measured pressure commits a spatial rung, source geometry and
+         * bitrate ceiling move together. Congested links remain protected
+         * before that point because WebRTC congestion control is authoritative;
+         * a higher max ceiling never forces the sender to transmit above BWE.
          */
+        val profileShortEdge =
+            minOf(profile.captureWidthPx, profile.captureHeightPx)
+        val admittedShortEdge =
+            minOf(profileShortEdge, committedSourceShortEdge)
         val motionCeiling =
-            if (shortEdge <= 540) {
-                nominalMotionBitrateBps(shortEdge, targetFps)
+            if (admittedShortEdge <= 540) {
+                nominalMotionBitrateBps(admittedShortEdge, targetFps)
                     .roundToInt()
             } else {
                 profile.maxVideoBitrateBps
