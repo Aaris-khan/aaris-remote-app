@@ -96,6 +96,26 @@ class HostWebRtcSession(
     private var profile =
         CaptureProfile.current(appContext, captureTier)
 
+    /*
+     * RAM and "hardware codec exists" are only bootstrap hints. Android codec
+     * performance points/achievable rates provide a device-local upper bound
+     * for the exact screen geometry, preventing periodic 45/60 fps trials that
+     * a vendor MediaCodec cannot sustain in realtime.
+     */
+    private val preferredScreenCodec =
+        WebRtcRuntime.preferredScreenCodec(
+            appContext,
+            sender = true
+        ).uppercase()
+    private val screenEncoderPerformance =
+        mapOf(
+            "H264" to ScreenEncoderPerformance.probe("H264"),
+            "VP8" to ScreenEncoderPerformance.probe("VP8")
+        )
+
+    @Volatile
+    private var activeScreenCodec = preferredScreenCodec
+
     private val captureQualityGovernor =
         CaptureQualityGovernor(
             initialTier = captureTier,
@@ -993,6 +1013,17 @@ class HostWebRtcSession(
 
             val now = android.os.SystemClock.elapsedRealtime()
 
+            /*
+             * Codec recovery may legally move H264 <-> VP8 without rebuilding
+             * this session. Bind the throughput guard to the codec WebRTC is
+             * actually encoding, not just the startup preference.
+             */
+            snapshot.codec
+                ?.substringAfterLast('/')
+                ?.uppercase()
+                ?.takeIf(screenEncoderPerformance::containsKey)
+                ?.let { activeScreenCodec = it }
+
             // A quick getStats() kick may arrive before WebRTC has assembled a
             // complete outbound delta. Do not drain producer FPS or feed an
             // empty sender/receiver interval to the freshness governors: that
@@ -1045,10 +1076,21 @@ class HostWebRtcSession(
              * a 60 fps stream. Bind both governors to one temporal target so the
              * cheaper pixel lever reacts before stale frames build up.
              */
+            val currentSpatialProfile =
+                motionVideoBudget.apply(
+                    profile,
+                    motionActive
+                )
+            val encoderFpsLimit =
+                encoderFpsLimit(
+                    currentSpatialProfile.captureWidthPx,
+                    currentSpatialProfile.captureHeightPx
+                )
             val profileMaximumFps =
                 minOf(
                     profile.motionFps,
-                    deviceFpsLimit
+                    deviceFpsLimit,
+                    encoderFpsLimit
                 ).coerceAtLeast(1)
             val motionTargetFps =
                 minOf(
@@ -1063,7 +1105,7 @@ class HostWebRtcSession(
                     interactionActive = interactionActive,
                     nowMs = now
                 )
-            val resolutionChanged = motionVideoBudget.observe(
+            val motionBudgetChanged = motionVideoBudget.observe(
                 outbound = snapshot,
                 receiver = receiver,
                 sourceFps = sourceFps,
@@ -1079,41 +1121,67 @@ class HostWebRtcSession(
                     !interactionActive &&
                     photonPolicy.allowResolutionRecovery
             )
+
+            /*
+             * One health window may move ONE expensive media actuator.
+             *
+             * libwebrtc already has its own QP/encode-overuse spatial adapter
+             * under MAINTAIN_FRAMERATE. If our measured pixel budget also moves,
+             * do not simultaneously change the app cadence ceiling from the
+             * same stale evidence. That double-step used to reconfigure source
+             * geometry and sender cadence together, making otherwise recoverable
+             * pressure look like visible micro-stutter on the controller.
+             *
+             * Keep the learned cadence cap, but invalidate pre-resize trial and
+             * fast-presentation evidence. The next complete stats window can
+             * still take cadence relief immediately if pressure persists.
+             */
+            if (motionBudgetChanged) {
+                cadenceGovernor.onSpatialBudgetTransition(now)
+            }
+
             val requestedFps = effectiveCaptureProfile(profile).fps
             val cadencePressureChanged =
-                cadenceGovernor.observe(
-                    outbound = snapshot,
-                    receiver = receiver,
-                    requestedFps = requestedFps,
-                    nowMs = now,
-                    minimumFps = motionVideoBudget.cadenceFloor(
-                        profile = profile,
-                        motionActive = motionActive,
+                if (motionBudgetChanged) {
+                    false
+                } else {
+                    cadenceGovernor.observe(
+                        outbound = snapshot,
+                        receiver = receiver,
+                        requestedFps = requestedFps,
                         nowMs = now,
-                        interactionActive = interactionActive
-                    ),
-                    producerFps = sourceFps,
-                    maximumFps = profileMaximumFps,
-                    allowHighCadenceProbe =
-                        motionActive &&
-                            !resolutionChanged &&
-                            photonPolicy.allowCadencePromotion
-                )
+                        minimumFps = motionVideoBudget.cadenceFloor(
+                            profile = profile,
+                            motionActive = motionActive,
+                            nowMs = now,
+                            interactionActive = interactionActive
+                        ),
+                        producerFps = sourceFps,
+                        maximumFps = profileMaximumFps,
+                        allowHighCadenceProbe =
+                            motionActive &&
+                                photonPolicy.allowCadencePromotion
+                    )
+                }
             val interactionProbeChanged =
-                cadenceGovernor.tryProbeDuringInteraction(
-                    outbound = snapshot,
-                    receiver = receiver,
-                    producerFps = sourceFps,
-                    interactionActive = interactionActive,
-                    nowMs = now,
-                    maximumFps = profileMaximumFps
-                )
+                if (motionBudgetChanged) {
+                    false
+                } else {
+                    cadenceGovernor.tryProbeDuringInteraction(
+                        outbound = snapshot,
+                        receiver = receiver,
+                        producerFps = sourceFps,
+                        interactionActive = interactionActive,
+                        nowMs = now,
+                        maximumFps = profileMaximumFps
+                    )
+                }
             val cadenceChanged =
                 cadencePressureChanged || interactionProbeChanged
-            if (motionChanged || cadenceChanged || resolutionChanged || oldDeviceLimit != deviceFpsLimit) {
+            if (motionChanged || cadenceChanged || motionBudgetChanged || oldDeviceLimit != deviceFpsLimit) {
                 applyVideoPolicy(profile)
             }
-            if (resolutionChanged) {
+            if (motionBudgetChanged) {
                 val effective = effectiveCaptureProfile(profile)
                 listener.onDiagnostic(
                     "Motion video budget → ${effective.captureWidthPx}x${effective.captureHeightPx}@${effective.fps}" +
@@ -1619,25 +1687,53 @@ class HostWebRtcSession(
         )
     }
 
+    private fun encoderFpsLimit(
+        widthPx: Int,
+        heightPx: Int
+    ): Int =
+        screenEncoderPerformance[activeScreenCodec]
+            ?.maxFps(widthPx, heightPx)
+            ?: MAX_SESSION_VIDEO_FPS
+
     private fun effectiveCaptureProfile(
         target: CaptureProfile
     ): CaptureProfile {
         val freshnessActive = freshnessPriorityActive()
+
+        /*
+         * Resolve the current spatial ceiling first. Encoder throughput is a
+         * function of pixels AND cadence, so querying the pre-relief native
+         * geometry would incorrectly pin a healthy 540/360 rung to the lower
+         * FPS limit measured for 1080/1440-class input.
+         */
+        val spatial =
+            motionVideoBudget.apply(
+                target,
+                freshnessActive
+            )
+        val encoderFpsLimit =
+            encoderFpsLimit(
+                spatial.captureWidthPx,
+                spatial.captureHeightPx
+            )
         val targetFps =
             RealtimeMediaPolicy.effectiveSourceFps(
                 idleFps = target.fps,
                 motionFps = target.motionFps,
                 cadenceCap = cadenceGovernor.cap,
-                deviceFpsLimit = deviceFpsLimit,
+                deviceFpsLimit =
+                    minOf(
+                        deviceFpsLimit,
+                        encoderFpsLimit
+                    ),
                 freshnessActive = freshnessActive
             )
 
-        val paced = if (targetFps == target.fps) {
-            target
+        return if (targetFps == spatial.fps) {
+            spatial
         } else {
-            target.copy(fps = targetFps)
+            spatial.copy(fps = targetFps)
         }
-        return motionVideoBudget.apply(paced, freshnessActive)
     }
 
     private fun applyVideoPolicy(target: CaptureProfile) {
