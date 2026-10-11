@@ -188,42 +188,40 @@ class HostWebRtcSession(
      * cannot starve forced freshness on OEMs whose MediaProjection producer is
      * temporarily sparse.
      *
+     * The deadline belongs to the existing latency-sensitive policy lane, not
+     * Android's UI looper. A busy app/game main thread must not postpone the
+     * request for pixels after Accessibility has already applied remote input.
      * CaptureRefreshPolicy still cancels the pull when a natural frame arrived,
-     * so this adds no duplicate encoder path and keeps at most one scheduled
-     * probe on the main looper.
+     * and SurfaceTextureHelper.forceFrame() posts the actual GL work onto its
+     * own capture HandlerThread, so this adds no cross-thread GL access, second
+     * projection, encoder path or frame queue.
      */
     private val interactionRefreshProbeScheduled = AtomicBoolean(false)
     private val interactionRefreshProbe = Runnable {
         interactionRefreshProbeScheduled.set(false)
-        if (!closed.get()) {
-            val forcedRefresh =
-                capture.requestInteractionRefresh()
-            val observedAtMs =
-                android.os.SystemClock.elapsedRealtime()
+        if (closed.get()) return@Runnable
 
-            /*
-             * requestInteractionRefresh() is causal: it returns true only when
-             * an Accessibility command was applied, one display opportunity
-             * elapsed, and no newer natural MediaProjection sample arrived.
-             *
-             * Keep this signal off the main/capture lanes. The policy thread
-             * folds repeated misses into a short-lived scalar that can unlock
-             * producer-side pixel relief when a cold 2-6 fps capture path never
-             * reaches PassiveMotionPriority's normal >=8 fps entry threshold.
-             */
-            policyHandler.post {
-                /*
-                 * A delayed main-thread result from the previous gesture must
-                 * not repopulate freshness debt after the policy lane already
-                 * ended that interaction.
-                 */
-                if (!closed.get() && interactionActive) {
-                    interactionCaptureFreshness.observe(
-                        forcedRefresh = forcedRefresh,
-                        nowMs = observedAtMs
-                    )
-                }
-            }
+        /*
+         * Always complete the causal refresh once an applied command armed it.
+         * A quick tap may end interaction mode before this one-display-tick
+         * deadline, but the resulting screen change still needs fresh pixels.
+         */
+        val forcedRefresh =
+            capture.requestInteractionRefresh()
+        val observedAtMs =
+            android.os.SystemClock.elapsedRealtime()
+
+        /*
+         * requestInteractionRefresh() is causal: it returns true only when an
+         * Accessibility command was applied, one display opportunity elapsed,
+         * and no newer natural MediaProjection sample arrived. Only the
+         * longer-lived starvation pressure is interaction-scoped.
+         */
+        if (interactionActive) {
+            interactionCaptureFreshness.observe(
+                forcedRefresh = forcedRefresh,
+                nowMs = observedAtMs
+            )
         }
     }
 
@@ -801,7 +799,7 @@ class HostWebRtcSession(
                             interactionRefreshProbeScheduled
                                 .compareAndSet(false, true)
                         ) {
-                            displayHandler.postDelayed(
+                            policyHandler.postDelayed(
                                 interactionRefreshProbe,
                                 interactionRefreshDelayMs()
                             )
@@ -1778,20 +1776,10 @@ class HostWebRtcSession(
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun interactionRefreshDelayMs(): Long {
-        val refreshRate =
-            runCatching {
-                displayManager
-                    .getDisplay(Display.DEFAULT_DISPLAY)
-                    ?.mode
-                    ?.refreshRate
-            }.getOrNull()
-
-        return InteractionRefreshTiming.oneDisplayTickMs(
-            refreshRate
+    private fun interactionRefreshDelayMs(): Long =
+        InteractionRefreshTiming.oneDisplayTickMs(
+            sourceDisplayRefreshRateHz()?.toFloat()
         )
-    }
 
     /**
      * MediaProjection follows the host's physical presentation clock. The
@@ -2085,7 +2073,7 @@ class HostWebRtcSession(
         displayHandler.removeCallbacks(startupControlRecovery)
         displayHandler.removeCallbacks(captureFrameWatchdog)
         displayHandler.removeCallbacks(displayGeometryWatchdog)
-        displayHandler.removeCallbacks(interactionRefreshProbe)
+        policyHandler.removeCallbacks(interactionRefreshProbe)
         interactionRefreshProbeScheduled.set(false)
         displayHandler.removeCallbacks(
             leaseWatchdog
