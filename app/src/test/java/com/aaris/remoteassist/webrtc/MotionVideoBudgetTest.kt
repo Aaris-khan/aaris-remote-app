@@ -1142,6 +1142,17 @@ class MotionVideoBudgetTest {
         )
         assertEquals(180, budget.shortEdge)
         assertEquals(350_000, budget.bitrateCeiling(profile, true))
+        // Spatial relief is now exhausted, so ordinary active-control pressure
+        // may fall back to the established 24 fps bandwidth floor.
+        assertEquals(
+            24,
+            budget.cadenceFloor(
+                profile,
+                true,
+                2_000L,
+                interactionActive = true
+            )
+        )
         assertFalse(
             cadence.observe(
                 outbound = recorded,
