@@ -1616,7 +1616,13 @@ class HostWebRtcSession(
                  */
                 val interactionCadenceRecovered =
                     cadenceGovernor.ensureInteractionFloor(
-                        minimumFps = minOf(24, profile.motionFps),
+                        minimumFps =
+                            motionVideoBudget.cadenceFloor(
+                                profile = profile,
+                                motionActive = true,
+                                nowMs = now,
+                                interactionActive = true
+                            ),
                         nowMs = now
                     )
                 if (interactionCadenceRecovered) {
