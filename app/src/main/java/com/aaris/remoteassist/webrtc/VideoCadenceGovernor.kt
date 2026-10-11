@@ -1115,20 +1115,22 @@ class VideoCadenceGovernor(
                 .let { "${it}ms" }
         }
 
+        val clarityBandwidthSummary =
+            if (clarityBandwidthVoteTarget > 0) {
+                "$clarityBandwidthVoteTarget(" +
+                    "$clarityBandwidthPressure/" +
+                    "$CLARITY_BANDWIDTH_SAMPLES_TO_REDUCE)"
+            } else {
+                "idle"
+            }
+
         return "cap=${cap}fps decision=$lastDecision " +
             "$lastDeadlineSummary " +
             highCadencePressureGate.compact(nowMs) + " " +
             "changeAgo=${ageMs(changedAt)} " +
             "overloadAgo=${ageMs(lastOverloadAtMs)} " +
             "floorProof=$interactiveFloorHeadroom/$INTERACTION_FLOOR_SAMPLES " +
-            "clarityBwe=" +
-            if (clarityBandwidthVoteTarget > 0) {
-                "$clarityBandwidthVoteTarget(" +
-                    "$clarityBandwidthPressure/" +
-                    "$CLARITY_BANDWIDTH_SAMPLES_TO_REDUCE) "
-            } else {
-                "idle "
-            } +
+            "clarityBwe=$clarityBandwidthSummary " +
             highCadenceProbe.debugSummary(nowMs)
     }
 
