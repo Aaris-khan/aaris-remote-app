@@ -1982,6 +1982,8 @@ class WebRtcPeer(
                 parameters.encodings.all {
                     it.maxBitrateBps == videoMaxBitrateBps &&
                         it.maxFramerate == videoMaxFramerate &&
+                        it.bitratePriority ==
+                        RealtimeMediaPolicy.VIDEO_BITRATE_PRIORITY &&
                         it.networkPriority ==
                         RealtimeMediaPolicy.VIDEO_NETWORK_PRIORITY
                 }) return@runCatching
@@ -1996,6 +1998,8 @@ class WebRtcPeer(
                  */
                 encoding.networkPriority =
                     RealtimeMediaPolicy.VIDEO_NETWORK_PRIORITY
+                encoding.bitratePriority =
+                    RealtimeMediaPolicy.VIDEO_BITRATE_PRIORITY
                 encoding.maxBitrateBps = videoMaxBitrateBps
                 encoding.maxFramerate = videoMaxFramerate
             }
