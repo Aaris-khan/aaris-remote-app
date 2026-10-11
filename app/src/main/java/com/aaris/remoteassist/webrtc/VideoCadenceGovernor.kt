@@ -538,6 +538,47 @@ class VideoCadenceGovernor(
             ?.let { lastSourceRefreshRateHz = it }
 
         val sender = outbound.recent ?: return false
+
+        /*
+         * A high-cadence trial may start before controller display capability
+         * arrives. Once both physical clocks are known, do not leave a previously
+         * admitted non-harmonic cap running indefinitely just because network and
+         * codec health are otherwise clean. That produces deterministic pulldown
+         * judder which ordinary congestion signals cannot diagnose.
+         *
+         * Reconcile at most one cadence actuator here and return immediately.
+         * The host applies the new VideoSource envelope before the next complete
+         * health window, preserving the governor's one-expensive-change rule.
+         */
+        if (
+            nowMs >= 0L &&
+            cap > 30 &&
+            minimumFps <= 30 &&
+            lastDisplayRefreshRateHz != null &&
+            lastSourceRefreshRateHz != null
+        ) {
+            val clockAlignedCap =
+                DisplayCadencePolicy.nearestAtOrBelow(
+                    limitFps = cap,
+                    refreshRateHz = lastDisplayRefreshRateHz,
+                    ceilingFps = minOf(maxFps, maximumFps.coerceAtLeast(1)),
+                    floorFps = minimumFps.coerceAtLeast(1),
+                    sourceRefreshRateHz = lastSourceRefreshRateHz
+                )
+
+            if (clockAlignedCap < cap) {
+                cap = clockAlignedCap
+                changedAt = nowMs
+                pressure = 0
+                healthy = 0
+                interactiveHeadroom = 0
+                interactiveFloorHeadroom = 0
+                highCadencePressureGate.reset()
+                lastDecision = "dual-clock-align->$clockAlignedCap"
+                return true
+            }
+        }
+
         lastSenderFps = sender.fps.takeIf {
             nowMs >= 0L &&
                 sender.intervalMs in FAST_PRESENTATION_MIN_WINDOW_MS..
