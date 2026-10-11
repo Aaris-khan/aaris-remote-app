@@ -4,18 +4,20 @@ import com.aaris.remoteassist.capture.CaptureProfile
 import kotlin.math.roundToInt
 
 /**
- * Motion trades pixels before cadence. One-second interval telemetry drives a
- * 720 -> 540 -> 360 -> 240 ladder, with a final 180 short-edge freshness rung
- * only when moving-source evidence proves a bandwidth-limited stale queue.
+ * Motion normally trades pixels before low cadence. One-second interval
+ * telemetry drives a 720 -> 540 -> 360 -> 240 ladder, with a final 180
+ * short-edge freshness rung only when moving-source evidence proves a
+ * bandwidth-limited stale queue.
+ *
+ * A narrow clarity guard handles one important exception: when WebRTC's BWE
+ * says only the 45/60 fps demand no longer fits while the SAME admitted pixels
+ * still fit at >=30 fps, temporal excess is spent first. This avoids turning a
+ * mild bandwidth dip into needless text/UI blur. Real codec, queue, loss,
+ * decode or presentation pressure still unlocks the spatial ladder immediately.
+ *
  * On Android 12+ the committed spatial envelope is also allowed to resize the
  * MediaProjection VirtualDisplay; older Android versions keep their producer
  * geometry fixed and only adapt the WebRTC output.
- *
- * The key invariant is "new pixels beat old pixels": under congestion we spend
- * resolution before cadence so WebRTC's MAINTAIN_FRAMERATE policy is not
- * accidentally defeated by our own source cap. The cadence governor remains
- * the final escape hatch when even the smallest frame cannot be delivered
- * promptly.
  */
 internal class MotionVideoBudget {
     var shortEdge = 720
