@@ -26,19 +26,11 @@ class ScreenCodecPolicyTest {
     @Test fun failedH264CanEscapeToVp8WithoutReassertingTheBrokenCodec() {
         assertEquals(listOf("VP8"), ScreenCodecPolicy.recoveryCandidates("H264"))
         assertEquals(listOf("VP8"), ScreenCodecPolicy.recoveryCandidates("h264"))
-        assertFalse(
-            ScreenCodecPolicy.isSoftwareImplementation(
-                "OMX.qcom.video.encoder.avc"
-            )
-        )
     }
 
     @Test fun failedVp8ChangesCodecOnlyIfLocalAndRemoteCapabilitiesPermit() {
         assertEquals(listOf("H264"), ScreenCodecPolicy.recoveryCandidates("VP8"))
         assertTrue(ScreenCodecPolicy.order(listOf(vp8, vp8Rtx), "H264", exclusive = true).isEmpty())
-        assertTrue(
-            ScreenCodecPolicy.isSoftwareImplementation("libvpx")
-        )
     }
 
     @Test fun repairUsesOnlySelectedCodecAndItsRetransmissionPayload() {

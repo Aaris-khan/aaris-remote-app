@@ -6,12 +6,6 @@ import org.webrtc.RtpCapabilities
 internal object ScreenCodecPolicy {
     fun preferred(hardware: Set<String>): String = if (hardware.any { it.equals("H264", true) }) "H264" else "VP8"
 
-    fun isSoftwareImplementation(name: String?): Boolean {
-        val value = name?.lowercase()?.trim().orEmpty()
-        if (value.isBlank()) return false
-        return listOf("libvpx", "libaom", "openh264", "software").any(value::contains)
-    }
-
     /**
      * Called only after repeated requests without recent decode proof.
      * Reasserting the same codec does not recreate its stalled encoder/decoder.
