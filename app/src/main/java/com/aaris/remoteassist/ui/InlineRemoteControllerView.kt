@@ -218,6 +218,14 @@ class InlineRemoteControllerView(
     }
 
     private val renderSink = VideoSink { frame ->
+        /*
+         * Decoded pixels are latency-critical. Hand the texture to EglRenderer
+         * before geometry/status bookkeeping so app-side work can never sit in
+         * front of the newest frame. EglRenderer remains latest-frame-wins; no
+         * extra queue, copy or presentation clock is introduced here.
+         */
+        eglRenderer?.onFrame(frame)
+
         lastRawFrameAtMs = android.os.SystemClock.elapsedRealtime()
         val rotatedWidth = frame.rotatedWidth
         val rotatedHeight = frame.rotatedHeight
@@ -258,7 +266,6 @@ class InlineRemoteControllerView(
             }
         }
 
-        eglRenderer?.onFrame(frame)
     }
 
     private val mediaWatchdog: Runnable =
@@ -1384,7 +1391,11 @@ class InlineRemoteControllerView(
                         if (
                             attached &&
                             eglRenderer === renderer &&
-                            generation == recoveryGeneration.get()
+                            generation == recoveryGeneration.get() &&
+                            RendererContinuityPolicy.isFreshPresentationCallback(
+                                nowMs = android.os.SystemClock.elapsedRealtime(),
+                                presentedAtMs = presentedAtMs
+                            )
                         ) {
                             session()?.sendPresentationHeartbeat()
                         }
@@ -1398,7 +1409,11 @@ class InlineRemoteControllerView(
                             if (
                                 attached &&
                                 eglRenderer === renderer &&
-                                generation == recoveryGeneration.get()
+                                generation == recoveryGeneration.get() &&
+                                RendererContinuityPolicy.isFreshPresentationCallback(
+                                    nowMs = android.os.SystemClock.elapsedRealtime(),
+                                    presentedAtMs = presentedAtMs
+                                )
                             ) {
                                 surfaceFrameRateHints
                                     .observe(window, presentedAtMs)
@@ -1419,7 +1434,15 @@ class InlineRemoteControllerView(
                     renderConfirmationPosted.compareAndSet(false, true)) {
                     activity.runOnUiThread {
                         try {
-                            if (attached && eglRenderer === renderer && generation == recoveryGeneration.get()) {
+                            if (
+                                attached &&
+                                eglRenderer === renderer &&
+                                generation == recoveryGeneration.get() &&
+                                RendererContinuityPolicy.isFreshPresentationCallback(
+                                    nowMs = android.os.SystemClock.elapsedRealtime(),
+                                    presentedAtMs = presentedAtMs
+                                )
+                            ) {
                                 // Commit health only after checking the generation on
                                 // the UI thread. An old queued swap must not latch true
                                 // and hide every fresh confirmation after recovery.
