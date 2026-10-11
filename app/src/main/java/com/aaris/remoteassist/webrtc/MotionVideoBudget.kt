@@ -765,15 +765,19 @@ internal class MotionVideoBudget {
         if (!motionActive) return 1
 
         /*
-         * Finger/control activity is the strongest motion signal in a remote
-         * control session. Keep the source ceiling at >=24 fps while the
-         * controller is actively interacting; libwebrtc may still drop/adapt
-         * frames under congestion, and truly severe loss/RTT can bypass this
-         * floor in VideoCadenceGovernor. This prevents the 24 -> 20 -> 15
-         * collapse seen while commands are visibly changing the remote UI.
+         * A live controller gesture is stronger evidence than passive motion:
+         * temporal freshness is the UX contract while the user is actively
+         * steering the remote phone. Hold ordinary adaptation at a 30 fps
+         * source ceiling and spend the cheaper 720 -> 540 -> 360 -> 240 -> 180
+         * pixel ladder first. VideoCadenceGovernor deliberately ignores this
+         * floor for severe transport/CPU pressure, so genuinely incapable links
+         * can still escape below 30 fps instead of accumulating stale frames.
+         *
+         * Keep passive bandwidth relief at 24 fps below; passive animation does
+         * not justify the same latency budget as direct remote interaction.
          */
         if (interactionActive) {
-            return minOf(BANDWIDTH_CADENCE_FLOOR_FPS, profile.motionFps)
+            return minOf(INTERACTION_CADENCE_FLOOR_FPS, profile.motionFps)
         }
 
         // Keep at least 24 fps while a recent bandwidth-limited moving source
@@ -1099,6 +1103,7 @@ internal class MotionVideoBudget {
         const val PROVEN_NETWORK_RTT_MS = 650
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val MIN_BANDWIDTH_SHORT_EDGE = 180
+        const val INTERACTION_CADENCE_FLOOR_FPS = 30
         const val BANDWIDTH_CADENCE_FLOOR_FPS = 24
         const val IDLE_RESTORE_MS = 8_000L
     }
