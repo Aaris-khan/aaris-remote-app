@@ -177,7 +177,7 @@ class DisplayCadencePolicyTest {
     }
 
     @Test
-    fun sourceHarmonicsCanAddUsefulNonLegacyCadence() {
+    fun dualClockPolicyRejectsControllerPulldownEvenWhenSourceCadenceIsExact() {
         val ladder =
             DisplayCadencePolicy.descending(
                 refreshRateHz = 60.0,
@@ -186,13 +186,12 @@ class DisplayCadencePolicyTest {
             )
 
         assertEquals(
-            listOf(48, 36, 30, 24, 20, 15),
+            listOf(30, 24, 20, 15),
             ladder
         )
-        assertEquals(
-            48,
+        assertNull(
             DisplayCadencePolicy.nextHigher(
-                currentFps = 36,
+                currentFps = 30,
                 refreshRateHz = 60.0,
                 ceilingFps = 60,
                 floorFps = 30,
@@ -200,6 +199,38 @@ class DisplayCadencePolicyTest {
             )
         )
     }
+
+    @Test
+    fun dualClockPolicyKeepsOnlyExactCommonHighCadenceHarmonics() {
+        assertEquals(
+            listOf(60, 30, 24, 20, 15),
+            DisplayCadencePolicy.descending(
+                refreshRateHz = 60.0,
+                ceilingFps = 60,
+                sourceRefreshRateHz = 120.0
+            )
+        )
+        assertEquals(
+            30,
+            DisplayCadencePolicy.nextLower(
+                currentFps = 60,
+                refreshRateHz = 60.0,
+                floorFps = 30,
+                ceilingFps = 60,
+                sourceRefreshRateHz = 120.0
+            )
+        )
+
+        assertEquals(
+            listOf(45, 30, 24, 20, 15),
+            DisplayCadencePolicy.descending(
+                refreshRateHz = 90.0,
+                ceilingFps = 60,
+                sourceRefreshRateHz = 90.0
+            )
+        )
+    }
+
 
     @Test
     fun mismatchedSixtyToNinetyStaysAtSmoothSafetyCadenceUntilDisplayClockChanges() {

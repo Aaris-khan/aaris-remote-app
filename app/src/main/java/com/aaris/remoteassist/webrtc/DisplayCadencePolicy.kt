@@ -11,12 +11,13 @@ package com.aaris.remoteassist.webrtc
  * 48/60 every five, 45/60 every four, and 40/60 every three.
  *
  * We therefore FILTER the already-proven high-cadence (>30 fps) adaptation
- * ladder by display compatibility instead of inventing extra intermediate
- * rates. This preserves the governor's validated recovery timing while removing
- * rungs whose reduced refresh ratio has a long beat period. 60 fps remains the
- * product ceiling even
- * on unusual high-refresh panels because Android may switch the Surface to a
- * compatible mode after the existing 60 fps frame-rate hint.
+ * ladder by the clocks that physically produce and present the frame. When both
+ * clocks are known, a high-cadence rung must be an exact divisor of BOTH clocks;
+ * otherwise deterministic pulldown can look like network/decoder stutter even
+ * on a perfectly healthy path. When only the controller clock is known, retain
+ * the legacy short-repeat rule until source-clock evidence arrives.
+ *
+ * 60 fps remains the product ceiling even on unusual high-refresh panels.
  *
  * <=30 fps is the pressure/recovery safety ladder, where freshness and encoder
  * headroom matter more than perfect phase matching.
@@ -56,14 +57,22 @@ internal object DisplayCadencePolicy {
          * are perfect. That periodic long interval is perceived as judder.
          *
          * Once the host source clock is known, keep high-cadence rungs on an
-         * integer divisor of that clock. The controller clock still applies the
-         * existing short-repeat filter, so a rung must be cheap on BOTH sides.
-         * <=30 fps remains the pressure safety ladder and is intentionally left
-         * untouched. Unknown source cadence preserves the legacy behavior.
+         * integer divisor of that clock. If the controller clock is also known,
+         * require an integer divisor there too. A 40 fps source on a 60 Hz glass
+         * clock, for example, necessarily alternates presentation intervals even
+         * if encode, RTP, decode and EGL are all healthy.
+         *
+         * The older short-repeat controller filter is retained only while source
+         * clock evidence is unavailable. <=30 fps remains the pressure/recovery
+         * safety ladder and is intentionally left untouched.
          */
         fun admitHigh(fps: Int): Boolean =
             fps in firstHigh..ceiling &&
-                (refresh == null || shortRepeatCycle(refresh, fps)) &&
+                controllerClockCompatible(
+                    controllerRefreshHz = refresh,
+                    sourceRefreshHz = sourceRefresh,
+                    fps = fps
+                ) &&
                 sourceClockCompatible(sourceRefresh, fps)
 
         if (ceiling >= firstHigh) {
@@ -75,7 +84,7 @@ internal object DisplayCadencePolicy {
             /*
              * Some useful source harmonics are not in the historical ladder
              * (for example 48 fps from a 144 Hz producer). Add only exact source
-             * divisors that also have a short controller repeat cycle.
+             * divisors that also satisfy the controller-clock rule above.
              */
             sourceRefresh
                 ?.let { source ->
@@ -228,6 +237,30 @@ internal object DisplayCadencePolicy {
         if (sourceRefreshHz == null || fps <= LOW_CADENCE_MAX_FPS) return true
         if (fps <= 0 || fps > sourceRefreshHz) return false
         return sourceRefreshHz % fps == 0
+    }
+
+    /**
+     * Controller cadence is strict once both physical clocks are known.
+     *
+     * A short repeat cycle is less bad than a long beat, but it is still
+     * deterministic uneven pulldown. During remote control that looks like a
+     * periodic hitch exactly when the user scrolls or drags. With complete clock
+     * evidence, prefer a stable <=30 fps safety rung over a numerically higher
+     * cadence that cannot be presented evenly.
+     */
+    private fun controllerClockCompatible(
+        controllerRefreshHz: Int?,
+        sourceRefreshHz: Int?,
+        fps: Int
+    ): Boolean {
+        if (controllerRefreshHz == null || fps <= LOW_CADENCE_MAX_FPS) return true
+        if (fps <= 0 || fps > controllerRefreshHz) return false
+
+        return if (sourceRefreshHz != null) {
+            controllerRefreshHz % fps == 0
+        } else {
+            shortRepeatCycle(controllerRefreshHz, fps)
+        }
     }
 
     private fun shortRepeatCycle(refreshHz: Int, fps: Int): Boolean {
