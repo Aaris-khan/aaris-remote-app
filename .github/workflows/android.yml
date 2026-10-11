@@ -33,14 +33,16 @@ jobs:
           api-level: 35
           arch: x86_64
           target: google_apis
+          disk-size: 2048M
+          emulator-boot-timeout: 300
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -no-metrics
           script: >
             test_status=0;
             gradle :app:connectedDebugAndroidTest
             -Pandroid.testInstrumentationRunnerArguments.class=com.aaris.remoteassist.webrtc.LiveVideoLoopbackTest
             --stacktrace || test_status=$?;
-            adb logcat -d -s AarisLiveVideo:I '*:S';
+            adb logcat -d -s AarisLiveVideo:I EglRenderer:I HardwareVideoEncoder:I AndroidVideoDecoder:I '*:S';
             exit "$test_status"
 
   browser-cloudflare-smoke:
