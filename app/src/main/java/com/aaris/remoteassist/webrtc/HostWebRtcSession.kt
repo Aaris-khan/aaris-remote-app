@@ -1183,28 +1183,65 @@ class HostWebRtcSession(
                     interactionActive = interactionActive,
                     nowMs = now
                 )
-            val motionBudgetChanged = motionVideoBudget.observe(
-                outbound = snapshot,
-                receiver = receiver,
-                sourceFps = sourceFps,
-                motionActive = motionActive,
-                targetFps = motionTargetFps,
-                nowMs = now,
-                interactionActive = interactionActive,
-                // Upscaling changes the encoder input dimensions. Do not pay
-                // that MediaCodec reconfiguration in the middle of a controller
-                // gesture; active control values fresh motion over extra detail.
-                allowResolutionRecovery =
-                    !cadenceGovernor.probingHighCadence &&
-                    !interactionActive &&
-                    photonPolicy.allowResolutionRecovery,
-                sourceMaxGapMs = sourceMaxGapMs,
-                sourceMotionActive = sourceMotionActive,
-                interactionCaptureStarved =
-                    interactionCaptureFreshness.isStarved(now),
-                canResizeProducerSurface =
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-            )
+
+            /*
+             * Clarity-first BWE pre-relief.
+             *
+             * If WebRTC's own bandwidth estimate says 45/60 fps no longer fits
+             * but the SAME admitted pixels still fit at >=30 fps, let the
+             * cadence owner spend temporal excess before MotionVideoBudget
+             * commits a visible source resize. The suggestion is emitted only
+             * while encode/queue/loss/RTT/decode/glass are otherwise healthy.
+             *
+             * Skipping the spatial observation while this two-window vote is
+             * pending is intentional: otherwise the second BWE sample could
+             * resize the source in the same instant the cadence governor proves
+             * that pixels could have been preserved.
+             */
+            val clarityCadenceCeiling =
+                motionVideoBudget.clarityPreservingCadenceCeiling(
+                    profile = profile,
+                    outbound = snapshot,
+                    receiver = receiver,
+                    sourceFps = sourceFps,
+                    motionActive = motionActive,
+                    targetFps = motionTargetFps,
+                    interactionActive = interactionActive
+                )
+            val clarityCadenceChanged =
+                cadenceGovernor.observeClarityBandwidthCeiling(
+                    ceilingFps = clarityCadenceCeiling,
+                    requestedFps = motionTargetFps,
+                    nowMs = now
+                )
+
+            val motionBudgetChanged =
+                if (clarityCadenceCeiling != null) {
+                    false
+                } else {
+                    motionVideoBudget.observe(
+                        outbound = snapshot,
+                        receiver = receiver,
+                        sourceFps = sourceFps,
+                        motionActive = motionActive,
+                        targetFps = motionTargetFps,
+                        nowMs = now,
+                        interactionActive = interactionActive,
+                        // Upscaling changes the encoder input dimensions. Do not pay
+                        // that MediaCodec reconfiguration in the middle of a controller
+                        // gesture; active control values fresh motion over extra detail.
+                        allowResolutionRecovery =
+                            !cadenceGovernor.probingHighCadence &&
+                            !interactionActive &&
+                            photonPolicy.allowResolutionRecovery,
+                        sourceMaxGapMs = sourceMaxGapMs,
+                        sourceMotionActive = sourceMotionActive,
+                        interactionCaptureStarved =
+                            interactionCaptureFreshness.isStarved(now),
+                        canResizeProducerSurface =
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                    )
+                }
 
             /*
              * One health window may move ONE expensive media actuator.
@@ -1226,7 +1263,7 @@ class HostWebRtcSession(
 
             val requestedFps = effectiveCaptureProfile(profile).fps
             val cadencePressureChanged =
-                if (motionBudgetChanged) {
+                if (motionBudgetChanged || clarityCadenceChanged) {
                     false
                 } else {
                     cadenceGovernor.observe(
@@ -1244,12 +1281,17 @@ class HostWebRtcSession(
                         maximumFps = profileMaximumFps,
                         allowHighCadenceProbe =
                             motionActive &&
+                                clarityCadenceCeiling == null &&
                                 photonPolicy.allowCadencePromotion,
                         sourceRefreshRateHz = sourceRefreshRateHz
                     )
                 }
             val interactionProbeChanged =
-                if (motionBudgetChanged) {
+                if (
+                    motionBudgetChanged ||
+                    clarityCadenceChanged ||
+                    clarityCadenceCeiling != null
+                ) {
                     false
                 } else {
                     cadenceGovernor.tryProbeDuringInteraction(
@@ -1262,7 +1304,9 @@ class HostWebRtcSession(
                     )
                 }
             val cadenceChanged =
-                cadencePressureChanged || interactionProbeChanged
+                clarityCadenceChanged ||
+                    cadencePressureChanged ||
+                    interactionProbeChanged
             if (motionChanged || cadenceChanged || motionBudgetChanged || oldDeviceLimit != deviceFpsLimit) {
                 applyVideoPolicy(profile)
             }
@@ -1274,7 +1318,11 @@ class HostWebRtcSession(
                         " • source=${sourceFps?.toInt()}fps"
                 )
             }
-            if (interactionProbeChanged) {
+            if (clarityCadenceChanged) {
+                listener.onDiagnostic(
+                    "Bandwidth clarity guard → ${cadenceGovernor.cap}fps • preserving current screen pixels"
+                )
+            } else if (interactionProbeChanged) {
                 listener.onDiagnostic(
                     "Interactive path has headroom → ${cadenceGovernor.cap}fps freshness probe"
                 )
