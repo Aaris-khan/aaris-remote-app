@@ -123,6 +123,135 @@ class CaptureQualityGovernorTest {
     }
 
     @Test
+    fun quietRtpWindowCannotRepeatStaleNetworkOrCpuDowngrades() {
+        val governor =
+            CaptureQualityGovernor(
+                initialTier = CaptureTier.STANDARD,
+                maxTier = CaptureTier.STANDARD
+            )
+
+        repeat(6) {
+            assertNull(
+                governor.observeQualityLimitation(
+                    reason = "cpu",
+                    roundTripTimeMs = 950,
+                    packetLossRatio = 0.14,
+                    outboundFrameCount = it % 2
+                )
+            )
+        }
+        assertEquals(CaptureTier.STANDARD, governor.currentTier())
+
+        // A current moving interval still receives urgent loss relief.
+        assertEquals(
+            CaptureTier.BALANCED,
+            governor.observeQualityLimitation(
+                reason = "none",
+                roundTripTimeMs = 180,
+                packetLossRatio = 0.14,
+                outboundFrameCount = 2
+            )
+        )
+    }
+
+    @Test
+    fun quietIntervalBreaksOldNetworkPressureStreak() {
+        val governor =
+            CaptureQualityGovernor(
+                initialTier = CaptureTier.STANDARD,
+                maxTier = CaptureTier.STANDARD
+            )
+
+        assertNull(
+            governor.observeQualityLimitation(
+                reason = "bandwidth",
+                roundTripTimeMs = 700,
+                outboundFrameCount = 2
+            )
+        )
+        assertNull(
+            governor.observeQualityLimitation(
+                reason = "bandwidth",
+                roundTripTimeMs = 700,
+                outboundFrameCount = 0
+            )
+        )
+        assertNull(
+            governor.observeQualityLimitation(
+                reason = "bandwidth",
+                roundTripTimeMs = 700,
+                outboundFrameCount = 2
+            )
+        )
+        assertEquals(
+            CaptureTier.BALANCED,
+            governor.observeQualityLimitation(
+                reason = "bandwidth",
+                roundTripTimeMs = 700,
+                outboundFrameCount = 2
+            )
+        )
+    }
+
+    @Test
+    fun quietSourceRecoversClarityDespiteStaleRemotePressure() {
+        val governor =
+            CaptureQualityGovernor(
+                initialTier = CaptureTier.BALANCED,
+                maxTier = CaptureTier.STANDARD
+            )
+
+        repeat(CaptureQualityGovernor.UPGRADE_SAMPLE_COUNT - 1) {
+            assertNull(
+                governor.observeQualityLimitation(
+                    reason = if (it % 2 == 0) "cpu" else "bandwidth",
+                    roundTripTimeMs = 950,
+                    packetLossRatio = 0.14,
+                    outboundFrameCount = it % 2
+                )
+            )
+        }
+        assertEquals(
+            CaptureTier.STANDARD,
+            governor.observeQualityLimitation(
+                reason = "cpu",
+                roundTripTimeMs = 950,
+                packetLossRatio = 0.14,
+                outboundFrameCount = 0
+            )
+        )
+    }
+
+    @Test
+    fun quietSourceStillHonorsMeasuredLocalPipelinePressure() {
+        val governor =
+            CaptureQualityGovernor(
+                initialTier = CaptureTier.STANDARD,
+                maxTier = CaptureTier.STANDARD
+            )
+
+        assertNull(
+            governor.observeQualityLimitation(
+                reason = "cpu",
+                encodeTimeMs = 40.0,
+                deliveredFps = 3.0,
+                requestedFps = 30,
+                outboundFrameCount = 0
+            )
+        )
+        assertEquals(
+            CaptureTier.BALANCED,
+            governor.observeQualityLimitation(
+                reason = "cpu",
+                encodeTimeMs = 40.0,
+                deliveredFps = 3.0,
+                requestedFps = 30,
+                outboundFrameCount = 0
+            )
+        )
+    }
+
+    @Test
     fun isolatedSevereRttSpikeDoesNotBlurCaptureImmediately() {
         val governor =
             CaptureQualityGovernor(

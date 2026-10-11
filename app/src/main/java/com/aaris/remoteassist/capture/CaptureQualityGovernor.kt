@@ -38,8 +38,22 @@ class CaptureQualityGovernor(
         encodeTimeMs: Double? = null,
         sendQueueMs: Double? = null,
         deliveredFps: Double? = null,
-        requestedFps: Int = 30
+        requestedFps: Int = 30,
+        outboundFrameCount: Int? = null
     ): CaptureTier? {
+        // RTCP loss/RTT and quality-limitation labels can outlive the last
+        // moving frame. A quiet source cannot prove that lowering its pixels
+        // would relieve the current path, nor should stale remote-only values
+        // pin it to a blurry tier. Require a populated outbound window before
+        // those signals may downshift or block recovery. Null preserves the
+        // behavior of callers without RTP deltas; measured local pressure
+        // remains authoritative in every window.
+        val networkPressureEligible =
+            outboundFrameCount == null ||
+                outboundFrameCount >= MIN_NETWORK_EVIDENCE_FRAMES
+        val quietSourceWindow =
+            outboundFrameCount != null &&
+                !networkPressureEligible
         val normalizedReason =
             reason?.trim()?.lowercase()
         val normalizedRtt =
@@ -55,15 +69,18 @@ class CaptureQualityGovernor(
                 normalizedLoss != null
 
         val severeLoss =
-            normalizedLoss
-                ?.let { it >= SEVERE_PACKET_LOSS_RATIO }
-                ?: false
+            networkPressureEligible &&
+                normalizedLoss?.let {
+                    it >= SEVERE_PACKET_LOSS_RATIO
+                } == true
         val severeRtt =
-            normalizedRtt
-                ?.let { it >= SEVERE_RTT_MS }
-                ?: false
+            networkPressureEligible &&
+                normalizedRtt?.let {
+                    it >= SEVERE_RTT_MS
+                } == true
         val cpuPressure =
-            normalizedReason == "cpu"
+            networkPressureEligible &&
+                normalizedReason == "cpu"
         val bandwidthPressure =
             normalizedReason == "bandwidth"
 
@@ -83,6 +100,22 @@ class CaptureQualityGovernor(
                 requestedFps = requestedFps
             )
 
+        // This is deliberately not a claim that the network is healthy. It is
+        // evidence that remote-only pressure cannot be attributed to the
+        // current (static) pixel workload. Slowly restore capture detail while
+        // idle; the first populated interval re-enables normal RTT/loss/CPU
+        // protection before it can trigger another tier decision.
+        val quietSourceRecoveryEvidence =
+            quietSourceWindow &&
+                !localPipelinePressure &&
+                when (normalizedReason) {
+                    null,
+                    "none",
+                    "bandwidth",
+                    "cpu" -> true
+                    else -> false
+                }
+
         val pressuredLoss =
             normalizedLoss
                 ?.let { it >= PRESSURE_PACKET_LOSS_RATIO }
@@ -92,7 +125,8 @@ class CaptureQualityGovernor(
                 ?.let { it >= PRESSURE_RTT_MS }
                 ?: false
         val networkPressure =
-            pressuredLoss || pressuredRtt
+            networkPressureEligible &&
+                (pressuredLoss || pressuredRtt)
 
         val transportHealthy =
             (
@@ -112,7 +146,8 @@ class CaptureQualityGovernor(
                 hasTransportTelemetry &&
                 transportHealthy
         val healthyBandwidth =
-            bandwidthPressure &&
+            networkPressureEligible &&
+                bandwidthPressure &&
                 hasTransportTelemetry &&
                 transportHealthy
 
@@ -198,7 +233,9 @@ class CaptureQualityGovernor(
              * gets a conservative safety fallback, just much later than real
              * corroborated congestion.
              */
-            bandwidthPressure && !hasTransportTelemetry -> {
+            bandwidthPressure &&
+                !hasTransportTelemetry &&
+                networkPressureEligible -> {
                 localPipelinePressureSamples = 0
                 constrainedSamples = 0
                 resetRecoveryCounters()
@@ -215,7 +252,9 @@ class CaptureQualityGovernor(
                 }
             }
 
-            explicitHealthy || inferredHealthy -> {
+            quietSourceRecoveryEvidence ||
+                explicitHealthy ||
+                inferredHealthy -> {
                 localPipelinePressureSamples = 0
                 resetPressureCounters()
                 bandwidthProbeSamples = 0
@@ -316,6 +355,7 @@ class CaptureQualityGovernor(
             }
 
     companion object {
+        internal const val MIN_NETWORK_EVIDENCE_FRAMES = 2
         internal const val DOWNGRADE_SAMPLE_COUNT = 2
         internal const val BANDWIDTH_ONLY_DOWNGRADE_SAMPLE_COUNT = 4
         internal const val UPGRADE_SAMPLE_COUNT = 6
