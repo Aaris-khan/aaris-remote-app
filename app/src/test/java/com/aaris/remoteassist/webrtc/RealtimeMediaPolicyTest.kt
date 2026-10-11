@@ -1,5 +1,6 @@
 package com.aaris.remoteassist.webrtc
 
+import com.aaris.remoteassist.capture.CaptureTier
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -43,6 +44,32 @@ class RealtimeMediaPolicyTest {
             RealtimeMediaPolicy.VIDEO_BITRATE_PRIORITY,
             0.0
         )
+    }
+
+    @Test
+    fun nativeOverusePolicyPreservesQuietDetailButPrioritizesFreshMotion() {
+        CaptureTier.entries.forEach { tier ->
+            assertEquals(
+                InteractiveVideoPolicy(
+                    preserveResolution = true,
+                    motionPriority = false
+                ),
+                InteractiveVideoPolicy.forState(
+                    tier = tier,
+                    interactionActive = false
+                )
+            )
+            assertEquals(
+                InteractiveVideoPolicy(
+                    preserveResolution = false,
+                    motionPriority = true
+                ),
+                InteractiveVideoPolicy.forState(
+                    tier = tier,
+                    interactionActive = true
+                )
+            )
+        }
     }
 
     @Test
