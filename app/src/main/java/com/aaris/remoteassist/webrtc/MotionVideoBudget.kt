@@ -767,17 +767,23 @@ internal class MotionVideoBudget {
         /*
          * A live controller gesture is stronger evidence than passive motion:
          * temporal freshness is the UX contract while the user is actively
-         * steering the remote phone. Hold ordinary adaptation at a 30 fps
-         * source ceiling and spend the cheaper 720 -> 540 -> 360 -> 240 -> 180
-         * pixel ladder first. VideoCadenceGovernor deliberately ignores this
-         * floor for severe transport/CPU pressure, so genuinely incapable links
-         * can still escape below 30 fps instead of accumulating stale frames.
+         * steering the remote phone. While a cheaper spatial rung still exists,
+         * hold ordinary adaptation at 30 fps and spend
+         * 720 -> 540 -> 360 -> 240 -> 180 pixels before temporal continuity.
          *
-         * Keep passive bandwidth relief at 24 fps below; passive animation does
-         * not justify the same latency budget as direct remote interaction.
+         * Once the 180-pixel emergency rung is already exhausted, ordinary
+         * pressure may use the established 24 fps bandwidth floor. Severe
+         * transport/CPU pressure can bypass either floor in VideoCadenceGovernor,
+         * so genuinely incapable links never have to accumulate stale frames.
          */
         if (interactionActive) {
-            return minOf(INTERACTION_CADENCE_FLOOR_FPS, profile.motionFps)
+            val floor =
+                if (shortEdge > MIN_BANDWIDTH_SHORT_EDGE) {
+                    INTERACTION_CADENCE_FLOOR_FPS
+                } else {
+                    BANDWIDTH_CADENCE_FLOOR_FPS
+                }
+            return minOf(floor, profile.motionFps)
         }
 
         // Keep at least 24 fps while a recent bandwidth-limited moving source
