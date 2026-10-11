@@ -765,15 +765,25 @@ internal class MotionVideoBudget {
         if (!motionActive) return 1
 
         /*
-         * Finger/control activity is the strongest motion signal in a remote
-         * control session. Keep the source ceiling at >=24 fps while the
-         * controller is actively interacting; libwebrtc may still drop/adapt
-         * frames under congestion, and truly severe loss/RTT can bypass this
-         * floor in VideoCadenceGovernor. This prevents the 24 -> 20 -> 15
-         * collapse seen while commands are visibly changing the remote UI.
+         * A live controller gesture is stronger evidence than passive motion:
+         * temporal freshness is the UX contract while the user is actively
+         * steering the remote phone. While a cheaper spatial rung still exists,
+         * hold ordinary adaptation at 30 fps and spend
+         * 720 -> 540 -> 360 -> 240 -> 180 pixels before temporal continuity.
+         *
+         * Once the 180-pixel emergency rung is already exhausted, ordinary
+         * pressure may use the established 24 fps bandwidth floor. Severe
+         * transport/CPU pressure can bypass either floor in VideoCadenceGovernor,
+         * so genuinely incapable links never have to accumulate stale frames.
          */
         if (interactionActive) {
-            return minOf(BANDWIDTH_CADENCE_FLOOR_FPS, profile.motionFps)
+            val floor =
+                if (shortEdge > MIN_BANDWIDTH_SHORT_EDGE) {
+                    INTERACTION_CADENCE_FLOOR_FPS
+                } else {
+                    BANDWIDTH_CADENCE_FLOOR_FPS
+                }
+            return minOf(floor, profile.motionFps)
         }
 
         // Keep at least 24 fps while a recent bandwidth-limited moving source
@@ -1099,6 +1109,7 @@ internal class MotionVideoBudget {
         const val PROVEN_NETWORK_RTT_MS = 650
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val MIN_BANDWIDTH_SHORT_EDGE = 180
+        const val INTERACTION_CADENCE_FLOOR_FPS = 30
         const val BANDWIDTH_CADENCE_FLOOR_FPS = 24
         const val IDLE_RESTORE_MS = 8_000L
     }

@@ -1110,7 +1110,11 @@ class MotionVideoBudgetTest {
             nowMs = 1_000L,
             interactionActive = true
         )
-        assertEquals(24, floor)
+        assertEquals(30, floor)
+        // cadence.observe() only applies pressure/relief; HostWebRtcSession's
+        // touch-down path owns upward rescue through ensureInteractionFloor().
+        // This direct unit starts at 24 to prove severe/sparse evidence is not
+        // accidentally interpreted as permission to promote.
         assertFalse(
             cadence.observe(
                 outbound = recorded,
@@ -1138,6 +1142,17 @@ class MotionVideoBudgetTest {
         )
         assertEquals(180, budget.shortEdge)
         assertEquals(350_000, budget.bitrateCeiling(profile, true))
+        // Spatial relief is now exhausted, so ordinary active-control pressure
+        // may fall back to the established 24 fps bandwidth floor.
+        assertEquals(
+            24,
+            budget.cadenceFloor(
+                profile,
+                true,
+                2_000L,
+                interactionActive = true
+            )
+        )
         assertFalse(
             cadence.observe(
                 outbound = recorded,
@@ -1334,6 +1349,42 @@ class MotionVideoBudgetTest {
         // freshness budget. The old permanent 30-FPS floor blocked all relief.
         assertEquals(720, budget.shortEdge)
         assertEquals(24, cadence.cap)
+    }
+
+    @Test fun activeInteractionHoldsThirtyFpsAgainstOrdinaryJitterPressure() {
+        val budget = MotionVideoBudget()
+        val cadence = VideoCadenceGovernor(30, 30)
+        val delayed = receiver().copy(jitterMs = 95.0)
+
+        repeat(2) { index ->
+            val now = (index + 1) * 1_000L
+            budget.observe(
+                outbound = sender(),
+                receiver = delayed,
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = now,
+                interactionActive = true
+            )
+            cadence.observe(
+                outbound = sender(),
+                receiver = delayed,
+                requestedFps = 30,
+                nowMs = now,
+                minimumFps =
+                    budget.cadenceFloor(
+                        profile = profile,
+                        motionActive = true,
+                        nowMs = now,
+                        interactionActive = true
+                    ),
+                producerFps = 30.0
+            )
+        }
+
+        assertEquals(30, budget.cadenceFloor(profile, true, 2_000L, true))
+        assertEquals(30, cadence.cap)
     }
 
     @Test fun thirtyFpsSessionRecoversWithoutProbingFortyFiveOrSixty() {
