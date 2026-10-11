@@ -4,18 +4,20 @@ import com.aaris.remoteassist.capture.CaptureProfile
 import kotlin.math.roundToInt
 
 /**
- * Motion trades pixels before cadence. One-second interval telemetry drives a
- * 720 -> 540 -> 360 -> 240 ladder, with a final 180 short-edge freshness rung
- * only when moving-source evidence proves a bandwidth-limited stale queue.
+ * Motion normally trades pixels before low cadence. One-second interval
+ * telemetry drives a 720 -> 540 -> 360 -> 240 ladder, with a final 180
+ * short-edge freshness rung only when moving-source evidence proves a
+ * bandwidth-limited stale queue.
+ *
+ * A narrow clarity guard handles one important exception: when WebRTC's BWE
+ * says only the 45/60 fps demand no longer fits while the SAME admitted pixels
+ * still fit at >=30 fps, temporal excess is spent first. This avoids turning a
+ * mild bandwidth dip into needless text/UI blur. Real codec, queue, loss,
+ * decode or presentation pressure still unlocks the spatial ladder immediately.
+ *
  * On Android 12+ the committed spatial envelope is also allowed to resize the
  * MediaProjection VirtualDisplay; older Android versions keep their producer
  * geometry fixed and only adapt the WebRTC output.
- *
- * The key invariant is "new pixels beat old pixels": under congestion we spend
- * resolution before cadence so WebRTC's MAINTAIN_FRAMERATE policy is not
- * accidentally defeated by our own source cap. The cadence governor remains
- * the final escape hatch when even the smallest frame cannot be delivered
- * promptly.
  */
 internal class MotionVideoBudget {
     var shortEdge = 720
@@ -146,6 +148,156 @@ internal class MotionVideoBudget {
             holdingResolution,
             warmStartResizePending
         )
+    }
+
+    /**
+     * Prefer temporal relief before visible blur when WebRTC's own bandwidth
+     * estimate says the current high-cadence demand no longer fits, but the
+     * SAME admitted source geometry still fits at a >=30 fps interactive rate.
+     *
+     * This is deliberately only an early-warning lane. Encoder, sender queue,
+     * loss/RTT and receiver presentation must still look healthy. Once those
+     * stages are already under pressure, the existing spatial ladder remains
+     * free to shed pixels immediately. The returned value is only a cadence
+     * ceiling suggestion; GCC/TWCC remains authoritative for the actual rate.
+     */
+    fun clarityPreservingCadenceCeiling(
+        profile: CaptureProfile,
+        outbound: VideoHealthSnapshot,
+        receiver: VideoHealthWindow?,
+        sourceFps: Double?,
+        motionActive: Boolean,
+        targetFps: Int,
+        interactionActive: Boolean = false
+    ): Int? {
+        val target =
+            targetFps.coerceIn(1, MAX_MOTION_TARGET_FPS)
+        if (
+            !motionActive ||
+            target <= CLARITY_PRESERVING_FPS_FLOOR
+        ) {
+            return null
+        }
+
+        val sender = outbound.recent ?: return null
+        val bandwidthEstimateBps =
+            outbound.availableOutgoingBitrateBps.valid()
+                ?: return null
+        val measuredSourceFps =
+            sourceFps.valid()
+        val movingDemandProven =
+            measuredSourceFps?.let {
+                it >= MIN_MOVING_SOURCE_FPS
+            } == true ||
+                (
+                    interactionActive &&
+                        measuredSourceFps == null &&
+                        sender.fps >= MIN_MOVING_SOURCE_FPS
+                    )
+        if (!movingDemandProven) return null
+
+        /*
+         * This lane exists only before a real backlog forms. If codec,
+         * pacer/network residence, loss/RTT or controller decode/glass already
+         * shows material pressure, pixel relief is allowed to remain the faster
+         * safety valve.
+         */
+        val frameMs = 1_000.0 / target
+        val encodeMs =
+            sender.processingMs.valid()
+                ?: return null
+        val queueMs =
+            sender.sendQueueMs.valid()
+                ?: return null
+        if (
+            encodeMs > frameMs * CLARITY_PRESERVING_CODEC_BUDGET_RATIO ||
+            queueMs >= CLARITY_PRESERVING_MAX_QUEUE_MS ||
+            outbound.qualityLimitationReason.equals(
+                "cpu",
+                ignoreCase = true
+            ) ||
+            outbound.roundTripTimeMs?.let {
+                it >= CLARITY_PRESERVING_MAX_RTT_MS
+            } == true ||
+            outbound.packetLossRatio?.let {
+                it >= CLARITY_PRESERVING_MAX_LOSS_RATIO
+            } == true
+        ) {
+            return null
+        }
+
+        receiver
+            ?.takeIf { it.frames >= 2 }
+            ?.let { window ->
+                if (
+                    window.processingMs.valid()?.let {
+                        it > frameMs *
+                            CLARITY_PRESERVING_CODEC_BUDGET_RATIO
+                    } == true ||
+                    window.jitterMs.valid()?.let {
+                        it >= CLARITY_PRESERVING_MAX_JITTER_MS
+                    } == true ||
+                    (window.dropped ?: 0) > 0 ||
+                    (window.freezes ?: 0) > 0 ||
+                    (window.maxRenderGapMs ?: 0) >=
+                        CLARITY_PRESERVING_MAX_RENDER_GAP_MS
+                ) {
+                    return null
+                }
+            }
+
+        /*
+         * Budget the geometry actually admitted to the encoder, not a
+         * speculative control-plane rung. This prevents a touch-down prediction
+         * from claiming that 360px is safe while MediaCodec is still consuming
+         * native 720/1080-wide frames.
+         */
+        val profileShortEdge =
+            minOf(
+                profile.captureWidthPx,
+                profile.captureHeightPx
+            )
+        val admittedShortEdge =
+            minOf(
+                profileShortEdge,
+                committedSourceShortEdge
+            )
+        val currentDemandBps =
+            nominalMotionBitrateBps(
+                admittedShortEdge,
+                target
+            )
+        if (
+            bandwidthEstimateBps >=
+            currentDemandBps * BWE_PRESSURE_HEADROOM_RATIO
+        ) {
+            return null
+        }
+
+        val floorDemandBps =
+            nominalMotionBitrateBps(
+                admittedShortEdge,
+                CLARITY_PRESERVING_FPS_FLOOR
+            )
+        val protectedFloorBps =
+            floorDemandBps *
+                CLARITY_PRESERVING_BWE_HEADROOM_RATIO
+        if (bandwidthEstimateBps < protectedFloorBps) {
+            // Cadence alone cannot preserve this geometry. Let spatial relief
+            // handle the genuinely constrained path.
+            return null
+        }
+
+        return (
+            CLARITY_PRESERVING_FPS_FLOOR.toDouble() *
+                bandwidthEstimateBps /
+                protectedFloorBps
+            )
+            .toInt()
+            .coerceIn(
+                CLARITY_PRESERVING_FPS_FLOOR,
+                target - 1
+            )
     }
 
     fun observe(
@@ -1219,6 +1371,21 @@ internal class MotionVideoBudget {
         const val BWE_PREDICTIVE_SETTLE_MS = 1_000L
         const val BWE_PRESSURE_HEADROOM_RATIO = 1.10
         const val BWE_SEVERE_HEADROOM_RATIO = 0.60
+
+        /*
+         * Clarity guard: if high cadence is the only thing that no longer fits,
+         * keep the current pixels and hand a lower temporal ceiling to the
+         * cadence owner. Two stable BWE windows are required by
+         * VideoCadenceGovernor before it acts.
+         */
+        const val CLARITY_PRESERVING_FPS_FLOOR = 30
+        const val CLARITY_PRESERVING_BWE_HEADROOM_RATIO = 1.10
+        const val CLARITY_PRESERVING_CODEC_BUDGET_RATIO = 0.80
+        const val CLARITY_PRESERVING_MAX_QUEUE_MS = 35.0
+        const val CLARITY_PRESERVING_MAX_RTT_MS = 450
+        const val CLARITY_PRESERVING_MAX_LOSS_RATIO = 0.04
+        const val CLARITY_PRESERVING_MAX_JITTER_MS = 60.0
+        const val CLARITY_PRESERVING_MAX_RENDER_GAP_MS = 100
         const val BWE_RECOVERY_HEADROOM_RATIO = 1.20
 
         /*

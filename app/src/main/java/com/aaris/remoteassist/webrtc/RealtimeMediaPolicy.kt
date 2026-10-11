@@ -26,6 +26,15 @@ internal object RealtimeMediaPolicy {
     const val VIDEO_NETWORK_PRIORITY = Priority.HIGH
 
     /*
+     * networkPriority only controls packet classification. bitratePriority is
+     * the separate libwebrtc allocation weight. Mark the remote screen as the
+     * high-priority RTP sender without setting a minimum bitrate: GCC/TWCC may
+     * still reduce the stream all the way down when the path is constrained,
+     * avoiding a forced-rate queue/RTT spiral.
+     */
+    const val VIDEO_BITRATE_PRIORITY = 4.0
+
+    /*
      * Do not force M150's min=0 "render as soon as possible" path for WAN
      * remoting. That path intentionally bypasses timestamp-based render timing;
      * its 8 ms decode pacing protects the decoder from bursts, but it does not

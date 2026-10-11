@@ -28,9 +28,100 @@ class VideoCadenceGovernor(
     private var lastSenderAtMs = Long.MIN_VALUE / 2
     private var lastDisplayRefreshRateHz: Double? = null
     private var lastSourceRefreshRateHz: Double? = null
+    private var clarityBandwidthPressure = 0
+    private var clarityBandwidthVoteCap = 0
+    private var clarityBandwidthVoteTarget = 0
     private val highCadenceProbe = HighCadenceProbe()
     private val highCadencePressureGate = HighCadencePressureGate()
     val probingHighCadence: Boolean get() = highCadenceProbe.probing
+
+    /**
+     * Consume MotionVideoBudget's "same pixels still fit at lower cadence"
+     * early-warning signal.
+     *
+     * Two consecutive windows must resolve to the same display-compatible
+     * target. That filters BWE noise without waiting for sender queues to grow.
+     * This method can only move cadence downward to >=30 fps; it never changes
+     * resolution, raises FPS, or forces a transmit bitrate.
+     */
+    fun observeClarityBandwidthCeiling(
+        ceilingFps: Int?,
+        requestedFps: Int,
+        nowMs: Long
+    ): Boolean {
+        if (nowMs < 0L || requestedFps <= CLARITY_BANDWIDTH_MIN_FPS) {
+            resetClarityBandwidthVotes()
+            return false
+        }
+
+        val current =
+            minOf(
+                cap,
+                requestedFps,
+                maxFps
+            ).coerceAtLeast(1)
+        val rawCeiling =
+            ceilingFps
+                ?.takeIf {
+                    it in CLARITY_BANDWIDTH_MIN_FPS until current
+                }
+                ?: run {
+                    resetClarityBandwidthVotes()
+                    return false
+                }
+        val target =
+            DisplayCadencePolicy.nearestAtOrBelow(
+                limitFps = rawCeiling,
+                refreshRateHz = lastDisplayRefreshRateHz,
+                ceilingFps = current,
+                floorFps = CLARITY_BANDWIDTH_MIN_FPS,
+                sourceRefreshRateHz = lastSourceRefreshRateHz
+            )
+        if (target >= current) {
+            resetClarityBandwidthVotes()
+            return false
+        }
+
+        if (
+            clarityBandwidthVoteCap != current ||
+            clarityBandwidthVoteTarget != target
+        ) {
+            clarityBandwidthVoteCap = current
+            clarityBandwidthVoteTarget = target
+            clarityBandwidthPressure = 1
+        } else {
+            clarityBandwidthPressure =
+                (clarityBandwidthPressure + 1)
+                    .coerceAtMost(CLARITY_BANDWIDTH_SAMPLES_TO_REDUCE)
+        }
+
+        if (
+            clarityBandwidthPressure <
+                CLARITY_BANDWIDTH_SAMPLES_TO_REDUCE ||
+            nowMs - changedAt <
+                CLARITY_BANDWIDTH_CHANGE_INTERVAL_MS
+        ) {
+            return false
+        }
+
+        cap = target
+        changedAt = nowMs
+        lastOverloadAtMs = nowMs
+        pressure = 0
+        healthy = 0
+        interactiveHeadroom = 0
+        interactiveFloorHeadroom = 0
+        highCadencePressureGate.reset()
+        lastDecision = "clarity-bwe-relief->$target"
+        resetClarityBandwidthVotes()
+        return true
+    }
+
+    private fun resetClarityBandwidthVotes() {
+        clarityBandwidthPressure = 0
+        clarityBandwidthVoteCap = 0
+        clarityBandwidthVoteTarget = 0
+    }
 
     /**
      * Source geometry is an expensive encoder operating-point transition.
@@ -51,6 +142,7 @@ class VideoCadenceGovernor(
         lastSenderFps = null
         lastSenderAtMs = Long.MIN_VALUE / 2
         highCadencePressureGate.reset()
+        resetClarityBandwidthVotes()
         highCadenceProbe.onSpatialBudgetTransition(
             currentFps = cap,
             nowMs = nowMs
@@ -1023,12 +1115,22 @@ class VideoCadenceGovernor(
                 .let { "${it}ms" }
         }
 
+        val clarityBandwidthSummary =
+            if (clarityBandwidthVoteTarget > 0) {
+                "$clarityBandwidthVoteTarget(" +
+                    "$clarityBandwidthPressure/" +
+                    "$CLARITY_BANDWIDTH_SAMPLES_TO_REDUCE)"
+            } else {
+                "idle"
+            }
+
         return "cap=${cap}fps decision=$lastDecision " +
             "$lastDeadlineSummary " +
             highCadencePressureGate.compact(nowMs) + " " +
             "changeAgo=${ageMs(changedAt)} " +
             "overloadAgo=${ageMs(lastOverloadAtMs)} " +
             "floorProof=$interactiveFloorHeadroom/$INTERACTION_FLOOR_SAMPLES " +
+            "clarityBwe=$clarityBandwidthSummary " +
             highCadenceProbe.debugSummary(nowMs)
     }
 
@@ -1042,6 +1144,9 @@ class VideoCadenceGovernor(
         const val MIN_DISPLAY_REFRESH_HZ = 30.0
         const val MAX_DISPLAY_REFRESH_HZ = 240.0
         const val MOTION_RECOVERY_FPS_CEILING = 30
+        const val CLARITY_BANDWIDTH_MIN_FPS = 30
+        const val CLARITY_BANDWIDTH_SAMPLES_TO_REDUCE = 2
+        const val CLARITY_BANDWIDTH_CHANGE_INTERVAL_MS = 900L
         const val INTERACTION_RESCUE_FLOOR_FPS = 24
         const val INTERACTION_FLOOR_CODEC_BUDGET_RATIO = 0.85
         const val INTERACTION_FLOOR_MAX_QUEUE_MS = 25.0

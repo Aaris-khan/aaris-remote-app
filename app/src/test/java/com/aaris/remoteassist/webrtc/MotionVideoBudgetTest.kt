@@ -959,6 +959,90 @@ class MotionVideoBudgetTest {
         assertEquals(500_000, budget.bitrateCeiling(profile, true))
     }
 
+    @Test fun mildBandwidthDipCanPreservePixelsBySpendingHighCadenceFirst() {
+        val budget = nativeWarmBudget()
+        val mildDip =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            ).copy(
+                availableOutgoingBitrateBps = 4_200_000.0
+            )
+
+        /*
+         * Native 720-short-edge motion is budgeted at ~3.2 Mbps @30 fps and
+         * ~6.4 Mbps @60 fps. 4.2 Mbps cannot sustain the latter with headroom,
+         * but it can keep the same pixels around the 30-36 fps region.
+         */
+        assertEquals(
+            35,
+            budget.clarityPreservingCadenceCeiling(
+                profile = profile.copy(maxVideoBitrateBps = 10_000_000),
+                outbound = mildDip,
+                receiver = receiver(fps = 60, decode = 5.0, presented = 60),
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+        assertEquals(720, budget.shortEdge)
+    }
+
+    @Test fun severeBandwidthConstraintStillFallsThroughToSpatialRelief() {
+        val budget = nativeWarmBudget()
+        val constrained =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            ).copy(
+                availableOutgoingBitrateBps = 2_800_000.0
+            )
+
+        // 2.8 Mbps cannot protect native 720 pixels even at the 30 fps floor,
+        // so cadence-only relief must not block the existing spatial ladder.
+        assertNull(
+            budget.clarityPreservingCadenceCeiling(
+                profile = profile.copy(maxVideoBitrateBps = 10_000_000),
+                outbound = constrained,
+                receiver = receiver(fps = 60, decode = 5.0, presented = 60),
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+    }
+
+    @Test fun codecOrQueuePressureNeverHidesBehindTheClarityGuard() {
+        val budget = nativeWarmBudget()
+        val overloaded =
+            sender(
+                fps = 45,
+                encode = 20.0,
+                queue = 95.0,
+                implementation = "c2.qti.avc.encoder"
+            ).copy(
+                availableOutgoingBitrateBps = 4_200_000.0
+            )
+
+        assertNull(
+            budget.clarityPreservingCadenceCeiling(
+                profile = profile.copy(maxVideoBitrateBps = 10_000_000),
+                outbound = overloaded,
+                receiver = receiver(fps = 45, decode = 5.0, presented = 45),
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+    }
+
     @Test fun bandwidthEstimateSpendsPixelsBeforeQueuesBuild() {
         val budget = MotionVideoBudget()
         assertTrue(budget.primeForMotion(profile, 0L))
