@@ -21,6 +21,148 @@ class MotionVideoBudgetTest {
         assertEquals(720, shortEdge)
     }
 
+    @Test fun isolatedHugeFrameWithoutRepairDoesNotSpendPixels() {
+        val budget = nativeWarmBudget()
+        val cleanHuge =
+            sender().let { snapshot ->
+                snapshot.copy(
+                    recent =
+                        snapshot.recent!!.copy(
+                            hugeFrames = 1,
+                            retransmitRatio = 0.01,
+                            nacks = 0,
+                            plis = 0,
+                            firs = 0
+                        )
+                )
+            }
+
+        assertFalse(
+            budget.observe(
+                cleanHuge,
+                receiver(),
+                30.0,
+                true,
+                30,
+                4_000L,
+                interactionActive = true
+            )
+        )
+        assertFalse(
+            budget.observe(
+                cleanHuge,
+                receiver(),
+                30.0,
+                true,
+                30,
+                5_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(720, budget.shortEdge)
+    }
+
+    @Test fun repairedHugeFramesSpendPixelsBeforeInteractiveCadence() {
+        val budget = nativeWarmBudget()
+        val repairedBurst =
+            sender().let { snapshot ->
+                snapshot.copy(
+                    recent =
+                        snapshot.recent!!.copy(
+                            hugeFrames = 1,
+                            retransmitRatio = 0.10,
+                            nacks = 3,
+                            plis = 0,
+                            firs = 0
+                        )
+                )
+            }
+
+        assertFalse(
+            budget.observe(
+                repairedBurst,
+                receiver(),
+                30.0,
+                true,
+                30,
+                4_000L,
+                interactionActive = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                repairedBurst,
+                receiver(),
+                30.0,
+                true,
+                30,
+                5_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(540, budget.shortEdge)
+        assertEquals(
+            30,
+            budget.cadenceFloor(
+                profile,
+                motionActive = true,
+                nowMs = 5_000L,
+                interactionActive = true
+            )
+        )
+
+        // The resize can itself generate a key/huge frame. Burst-only evidence
+        // must not immediately cascade into another codec reconfiguration.
+        assertFalse(
+            budget.observe(
+                repairedBurst,
+                receiver(),
+                30.0,
+                true,
+                30,
+                5_500L,
+                interactionActive = true
+            )
+        )
+        assertFalse(
+            budget.observe(
+                repairedBurst,
+                receiver(),
+                30.0,
+                true,
+                30,
+                6_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(540, budget.shortEdge)
+
+        // Persisting repair pressure after the spatial guard is real evidence.
+        assertFalse(
+            budget.observe(
+                repairedBurst,
+                receiver(),
+                30.0,
+                true,
+                30,
+                8_000L,
+                interactionActive = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                repairedBurst,
+                receiver(),
+                30.0,
+                true,
+                30,
+                9_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(360, budget.shortEdge)
+    }
+
     @Test fun retainedGlassHitchCannotBecomeASecondResolutionPressureVote() {
         val budget = nativeWarmBudget()
         val hitch = receiver(presented = 10).copy(maxRenderGapMs = 160)
