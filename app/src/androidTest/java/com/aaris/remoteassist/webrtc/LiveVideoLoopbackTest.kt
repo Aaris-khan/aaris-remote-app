@@ -1,16 +1,25 @@
 package com.aaris.remoteassist.webrtc
 
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.Build
 import android.os.SystemClock
+import android.util.Base64
 import android.util.Log
+import android.view.PixelCopy
 import android.view.SurfaceView
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.aaris.remoteassist.control.ControlPacket
 import com.aaris.remoteassist.control.ControlProtocol
 import com.aaris.remoteassist.ui.InlineRemoteControllerView
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
@@ -32,6 +41,7 @@ import org.webrtc.*
 class LiveVideoLoopbackTest {
     @Test fun vp8PixelsAndControlChangesReachTheActualControllerDisplay() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        dismissStaleEmulatorSystemUiDialog()
         val context = instrumentation.targetContext
         val factory = WebRtcRuntime.factory(context)
         val source = factory.createVideoSource(false)
@@ -48,7 +58,19 @@ class LiveVideoLoopbackTest {
         var controller: PeerConnection? = null
         var hostControl: DataChannel? = null
         var viewer: InlineRemoteControllerView? = null
-        val decodedProbe = VideoSink { decodedFrames.incrementAndGet() }
+        val decodedColors = AtomicReference("waiting")
+        val decodedProbe = VideoSink { frame ->
+            decodedFrames.incrementAndGet()
+            if (decodedColors.compareAndSet("waiting", "sampling")) {
+                try {
+                    val pixels = checkNotNull(frame.buffer.toI420())
+                    try {
+                        decodedColors.set("Y=${pixels.dataY.get(0).toInt() and 255} " +
+                            "U=${pixels.dataU.get(0).toInt() and 255} V=${pixels.dataV.get(0).toInt() and 255}")
+                    } finally { pixels.release() }
+                } catch (error: Throwable) { decodedColors.set(error.toString()) }
+            }
+        }
         val hostInbox = CandidateInbox()
         val controllerInbox = CandidateInbox()
         val scenario = ActivityScenario.launch(LiveVideoTestActivity::class.java)
@@ -166,6 +188,10 @@ class LiveVideoLoopbackTest {
             Log.i("AarisLiveVideo", "PASS native VP8: source=${sourceFrames.get()} decoded=${decodedFrames.get()} " +
                 "taps=${taps.get()} red=${Integer.toHexString(redPixel)} green=${Integer.toHexString(greenPixel)} " +
                 "afterEglRebuild=${Integer.toHexString(recoveredPixel)}")
+        } catch (error: Throwable) {
+            Log.e("AarisLiveVideo", "SOURCE_DIAG source=${sourceFrames.get()} decoded=${decodedFrames.get()} " +
+                "firstDecoded=${decodedColors.get()} sourceFailure=${failure.get()}")
+            throw error
         } finally {
             executor.shutdownNow()
             executor.awaitTermination(5, TimeUnit.SECONDS)
@@ -185,25 +211,53 @@ class LiveVideoLoopbackTest {
     private fun waitForDisplayColor(scenario: ActivityScenario<LiveVideoTestActivity>,
         viewer: InlineRemoteControllerView, green: Boolean): Int {
         var lastPixel = Color.BLACK
-        waitFor("visible ${if (green) "green" else "red"} video pixels, last=${Integer.toHexString(lastPixel)}") {
-            val bounds = Rect()
-            scenario.onActivity {
+        val lastBounds = Rect()
+        try {
+            waitFor("visible ${if (green) "green" else "red"} video pixels") {
+                dismissStaleEmulatorSystemUiDialog()
+                val bounds = Rect()
+                scenario.onActivity {
+                    val surface = field(viewer, "surfaceView") as SurfaceView
+                    val location = IntArray(2)
+                    surface.getLocationOnScreen(location)
+                    bounds.set(location[0], location[1], location[0] + surface.width, location[1] + surface.height)
+                    lastBounds.set(bounds)
+                }
+                val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+                    ?: return@waitFor false
+                try {
+                    if (bounds.isEmpty) return@waitFor false
+                    lastPixel = screenshot.getPixel(bounds.centerX().coerceIn(0, screenshot.width - 1),
+                        bounds.centerY().coerceIn(0, screenshot.height - 1))
+                    if (green) Color.green(lastPixel) > 150 && Color.red(lastPixel) < 100
+                    else Color.red(lastPixel) > 150 && Color.green(lastPixel) < 100
+                } finally {
+                    screenshot.recycle()
+                }
+            }
+        } catch (error: AssertionError) {
+            scenario.onActivity { activity ->
                 val surface = field(viewer, "surfaceView") as SurfaceView
-                val location = IntArray(2)
-                surface.getLocationOnScreen(location)
-                bounds.set(location[0], location[1], location[0] + surface.width, location[1] + surface.height)
+                val fallback = field(viewer, "fallbackImageView") as android.view.View
+                Log.e("AarisLiveVideo", "DISPLAY_DIAG lastPixel=${Integer.toHexString(lastPixel)} bounds=$lastBounds " +
+                    "surface=${surface.visibility}/${surface.isShown} fallback=${fallback.visibility} " +
+                    "focus=${activity.hasWindowFocus()} rendered=${(field(viewer, "renderedFrameSeen") as AtomicBoolean).get()}")
+                val sampled = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+                PixelCopy.request(surface.holder.surface, Rect(surface.width / 2, surface.height / 2,
+                    surface.width / 2 + 1, surface.height / 2 + 1), sampled, { status ->
+                    Log.e("AarisLiveVideo", "SURFACE_DIAG status=$status pixel=${Integer.toHexString(sampled.getPixel(0, 0))}")
+                    sampled.recycle()
+                }, Handler(Looper.getMainLooper()))
             }
             val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
-                ?: return@waitFor false
-            try {
-                if (bounds.isEmpty) return@waitFor false
-                lastPixel = screenshot.getPixel(bounds.centerX().coerceIn(0, screenshot.width - 1),
-                    bounds.centerY().coerceIn(0, screenshot.height - 1))
-                if (green) Color.green(lastPixel) > 150 && Color.red(lastPixel) < 100
-                else Color.red(lastPixel) > 150 && Color.green(lastPixel) < 100
-            } finally {
+            if (screenshot != null) {
+                val bytes = ByteArrayOutputStream()
+                screenshot.compress(Bitmap.CompressFormat.PNG, 100, bytes)
                 screenshot.recycle()
+                val chunks = Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP).chunked(2800)
+                chunks.forEachIndexed { index, chunk -> Log.i("AarisLiveImage", "PNG $index/${chunks.size} $chunk") }
             }
+            throw AssertionError("Display stayed ${Integer.toHexString(lastPixel)} inside $lastBounds", error)
         }
         return lastPixel
     }
@@ -217,9 +271,23 @@ class LiveVideoLoopbackTest {
         throw AssertionError("Timed out waiting for $label")
     }
 
+    /** A slow CPU-emulated boot can leave a System UI ANR over an otherwise live viewer. */
+    private fun dismissStaleEmulatorSystemUiDialog() {
+        if (!(Build.FINGERPRINT.contains("generic") || Build.HARDWARE.contains("ranchu"))) return
+        val window = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow ?: return
+        if (window.packageName?.toString() != "android" ||
+            window.findAccessibilityNodeInfosByText("System UI isn't responding").isEmpty()) return
+        val button = window.findAccessibilityNodeInfosByText("Wait").firstOrNull() ?: return
+        var target: AccessibilityNodeInfo? = button
+        while (target != null && !target.isClickable) target = target.parent
+        if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) {
+            Log.i("AarisLiveVideo", "Dismissed stale test-emulator System UI ANR with Wait")
+        }
+    }
+
     private fun field(viewer: InlineRemoteControllerView, name: String): Any =
-        InlineRemoteControllerView::class.java.getDeclaredField(name)
-            .apply { isAccessible = true }.get(viewer)
+        checkNotNull(InlineRemoteControllerView::class.java.getDeclaredField(name)
+            .apply { isAccessible = true }.get(viewer))
 
     private fun fill(buffer: ByteBuffer, value: Int) {
         buffer.clear()
