@@ -207,6 +207,63 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
     // Public optional encoder hint: emit after at most one queued frame when
     // supported. Android specifies that unsupported encoders ignore this key.
     format.setInteger(MediaFormat.KEY_LATENCY, 1);
+
+    /*
+     * Keep Surface-input MediaCodec from turning a scheduler hiccup into
+     * catch-up work. WebRTC already adapts source cadence before encode, but a
+     * delayed EGL/codec submission can still arrive in a short burst. Android's
+     * public API 29 guard drops excessive Surface frames at the codec boundary
+     * instead of letting obsolete frames become encoder/pacer debt.
+     *
+     * This is deliberately only a ceiling. VideoSource remains the sole dynamic
+     * cadence actuator, so 60 -> 30 fps relief does not reconfigure MediaCodec.
+     * Buffer-input fallback paths are untouched.
+     */
+    if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+        isSurfaceInput(format)
+    ) {
+      Float configuredFrameRate = configuredFrameRate(format);
+      if (
+          configuredFrameRate != null &&
+          configuredFrameRate > 0.0f &&
+          !configuredFrameRate.isNaN() &&
+          !configuredFrameRate.isInfinite()
+      ) {
+        format.setFloat(
+            MediaFormat.KEY_MAX_FPS_TO_ENCODER,
+            configuredFrameRate);
+      }
+    }
+  }
+
+  private static boolean isSurfaceInput(MediaFormat format) {
+    if (!format.containsKey(MediaFormat.KEY_COLOR_FORMAT)) {
+      return false;
+    }
+
+    try {
+      return format.getInteger(MediaFormat.KEY_COLOR_FORMAT)
+          == MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface;
+    } catch (RuntimeException malformedFormat) {
+      return false;
+    }
+  }
+
+  private static @Nullable Float configuredFrameRate(MediaFormat format) {
+    if (!format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+      return null;
+    }
+
+    try {
+      return (float) format.getInteger(MediaFormat.KEY_FRAME_RATE);
+    } catch (RuntimeException notInteger) {
+      try {
+        return format.getFloat(MediaFormat.KEY_FRAME_RATE);
+      } catch (RuntimeException malformedRate) {
+        return null;
+      }
+    }
   }
 
   private static final class RealtimeMediaCodecWrapperFactory
