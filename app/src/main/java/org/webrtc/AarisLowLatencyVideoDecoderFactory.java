@@ -130,52 +130,48 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
       return supportedCodecsDelegate.getSupportedCodecs();
     }
 
-    private @Nullable MediaCodecInfo findHardwareDecoder(VideoCodecMimeType type) {
-      MediaCodecList codecList =
-          new MediaCodecList(MediaCodecList.ALL_CODECS);
-      MediaCodecInfo firstCompatible = null;
+  }
 
-      for (MediaCodecInfo info : codecList.getCodecInfos()) {
-        if (info == null || info.isEncoder()) {
-          continue;
-        }
-        if (!MediaCodecUtils.isHardwareAccelerated(info)) {
-          continue;
-        }
-        if (!MediaCodecUtils.codecSupportsType(info, type)) {
-          continue;
-        }
-
-        try {
-          CodecCapabilities capabilities =
-              info.getCapabilitiesForType(type.mimeType());
-          if (MediaCodecUtils.selectColorFormat(
-                  MediaCodecUtils.DECODER_COLOR_FORMATS,
-                  capabilities)
-              == null) {
-            continue;
-          }
-
-          if (firstCompatible == null) {
-            firstCompatible = info;
-          }
-
-          /*
-           * Do not assume MediaCodecList order is latency-optimal. Some devices
-           * expose a generic C2/OMX decoder first and a dedicated low-latency
-           * decoder later. Prefer the first compatible decoder that explicitly
-           * advertises Android's FEATURE_LowLatency; if none does, preserve the
-           * normal first-compatible WebRTC behavior.
-           */
-          if (LowLatencyCapability.isSupported(capabilities)) {
-            return info;
-          }
-        } catch (RuntimeException ignored) {
-          // Broken vendor entries are skipped exactly like an unavailable codec.
-        }
-      }
-      return firstCompatible;
+  static @Nullable MediaCodecInfo findHardwareDecoder(VideoCodecMimeType type) {
+    final MediaCodecInfo[] codecs;
+    try {
+      // ALL_CODECS also includes secure-only and tunneled-only decoders. A
+      // low-latency feature does not make those compatible with WebRTC's
+      // ordinary SurfaceTexture + null MediaCrypto configuration.
+      codecs = new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos();
+    } catch (RuntimeException unavailableMetadata) {
+      return null;
     }
+
+    MediaCodecInfo firstCompatible = null;
+    for (MediaCodecInfo info : codecs) {
+      try {
+        if (info == null || info.isEncoder()
+            || !MediaCodecUtils.isHardwareAccelerated(info)
+            || !MediaCodecUtils.codecSupportsType(info, type)) {
+          continue;
+        }
+        CodecCapabilities capabilities = info.getCapabilitiesForType(type.mimeType());
+        // Defensive per-MIME guard for incomplete OEM regular-codec metadata.
+        // Optional secure/tunneled support is fine; requiring it is not.
+        if (capabilities.isFeatureRequired(CodecCapabilities.FEATURE_SecurePlayback)
+            || capabilities.isFeatureRequired(CodecCapabilities.FEATURE_TunneledPlayback)
+            || MediaCodecUtils.selectColorFormat(
+                MediaCodecUtils.DECODER_COLOR_FORMATS, capabilities) == null) {
+          continue;
+        }
+        if (firstCompatible == null) {
+          firstCompatible = info;
+        }
+        // Prefer low latency only within the compatible regular decoder set.
+        if (LowLatencyCapability.isSupported(capabilities)) {
+          return info;
+        }
+      } catch (RuntimeException incompleteVendorMetadata) {
+        // Broken entries must not prevent discovery of a later valid decoder.
+      }
+    }
+    return firstCompatible;
   }
 
   private static final class LowLatencyCapability {
