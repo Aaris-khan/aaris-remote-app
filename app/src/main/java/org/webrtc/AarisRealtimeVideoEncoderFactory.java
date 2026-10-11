@@ -29,9 +29,11 @@ import java.nio.ByteBuffer;
  * <p>This factory preserves WebRTC's codec allow-list, ordering, H.264 profile
  * checks, vendor bitrate adjusters, Qualcomm key-frame workaround and software
  * fallback. It changes only the MediaFormat passed to the already-selected
- * hardware encoder: realtime priority and a one-frame latency request. Both are
- * public Android API 26 contracts; unsupported latency hints are documented to
- * be ignored. No vendor option, reflection, queue or second encoder is added.</p>
+ * hardware encoder: realtime priority, a one-frame latency request, and on API
+ * 29+ Surface input an ingress-FPS ceiling equal to WebRTC's configured encoder
+ * rate. These are public Android contracts; unsupported latency hints are
+ * documented to be ignored. No vendor option, reflection, queue or second
+ * encoder is added.</p>
  */
 public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFactory {
   private final VideoEncoderFactory delegate;
