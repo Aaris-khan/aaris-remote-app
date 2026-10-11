@@ -55,7 +55,8 @@ class HighCadenceProbeTest {
         loss: Double = 0.0,
         rtt: Int = 40,
         allow: Boolean = true,
-        maximum: Int = 60
+        maximum: Int = 60,
+        sourceClock: Double? = null
     ): Boolean =
         g.observe(
             sender(fps, encode, queue, loss, rtt),
@@ -64,8 +65,53 @@ class HighCadenceProbeTest {
             time,
             producerFps = source,
             maximumFps = maximum,
-            allowHighCadenceProbe = allow
+            allowHighCadenceProbe = allow,
+            sourceRefreshRateHz = sourceClock
         )
+
+    @Test
+    fun lateDualClockEvidenceDropsNonHarmonicHighCapWithoutWaitingForCongestion() {
+        val g = VideoCadenceGovernor(60, 40)
+
+        assertTrue(
+            sample(
+                g = g,
+                time = 1_000L,
+                fps = 40,
+                recv = receiver(
+                    fps = 40,
+                    refresh = 60.0,
+                    presented = 40,
+                    gap = 34
+                ),
+                source = 40.0,
+                sourceClock = 120.0
+            )
+        )
+        assertEquals(30, g.cap)
+    }
+
+    @Test
+    fun exactDualClockHighCadenceDoesNotTriggerAlignmentRelief() {
+        val g = VideoCadenceGovernor(60, 40)
+
+        assertFalse(
+            sample(
+                g = g,
+                time = 1_000L,
+                fps = 40,
+                recv = receiver(
+                    fps = 40,
+                    refresh = 120.0,
+                    presented = 40,
+                    gap = 26
+                ),
+                source = 40.0,
+                sourceClock = 120.0
+            )
+        )
+        assertEquals(40, g.cap)
+    }
 
     private fun driveCleanUntil(
         g: VideoCadenceGovernor,
