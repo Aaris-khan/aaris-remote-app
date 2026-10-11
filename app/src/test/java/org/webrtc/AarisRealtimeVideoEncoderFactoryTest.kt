@@ -55,6 +55,33 @@ class AarisRealtimeVideoEncoderFactoryTest {
 
     @Test
     @Config(sdk = [29])
+    fun legacyThirtyFpsSurfaceConfigDoesNotPinHighCadenceStream() {
+        val format =
+            MediaFormat.createVideoFormat(
+                MediaFormat.MIMETYPE_VIDEO_AVC,
+                720,
+                1280
+            ).apply {
+                setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+                )
+                // WebRTC's FramerateBitrateAdjuster uses a fixed 30 fps codec
+                // configuration on legacy Exynos H.264 while compensating
+                // bitrate for a potentially higher real stream cadence.
+                setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            }
+
+        AarisRealtimeVideoEncoderFactory.applyRealtimeHints(
+            format,
+            MediaCodec.CONFIGURE_FLAG_ENCODE
+        )
+
+        assertFalse(format.containsKey(MediaFormat.KEY_MAX_FPS_TO_ENCODER))
+    }
+
+    @Test
+    @Config(sdk = [29])
     fun bufferInputEncoderDoesNotReceiveSurfaceIngressCap() {
         val format =
             MediaFormat.createVideoFormat(
