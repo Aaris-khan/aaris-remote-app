@@ -220,6 +220,15 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
      * This is deliberately only a ceiling. VideoSource remains the sole dynamic
      * cadence actuator, so 60 -> 30 fps relief does not reconfigure MediaCodec.
      * Buffer-input fallback paths are untouched.
+     *
+     * Do not derive a 30 fps ingress ceiling from MediaFormat. WebRTC's
+     * FramerateBitrateAdjuster intentionally configures some legacy Exynos
+     * H.264 encoders at a fixed 30 fps while compensating bitrate for the real
+     * stream cadence. Treating that codec-configuration workaround as a hard
+     * Surface admission limit would silently pin an otherwise 45/60 fps stream
+     * to 30. High-cadence values (>30) are safe because they cannot be that
+     * fixed vendor compatibility value; low-cadence freshness remains owned by
+     * VideoSource/libwebrtc exactly as before.
      */
     if (
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
@@ -228,7 +237,7 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
       Float configuredFrameRate = configuredFrameRate(format);
       if (
           configuredFrameRate != null &&
-          configuredFrameRate > 0.0f &&
+          configuredFrameRate > LEGACY_FIXED_CODEC_FRAMERATE_FPS &&
           !configuredFrameRate.isNaN() &&
           !configuredFrameRate.isInfinite()
       ) {
@@ -267,6 +276,8 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
       }
     }
   }
+
+  private static final float LEGACY_FIXED_CODEC_FRAMERATE_FPS = 30.0f;
 
   private static final class RealtimeMediaCodecWrapperFactory
       implements MediaCodecWrapperFactory {
