@@ -1700,7 +1700,7 @@ class HostWebRtcSession(
                     !active && freshnessActive ->
                         "Remote interaction ended • visible motion remains freshness-first"
                     !active ->
-                        "Remote interaction ended • native motion adaptation remains enabled"
+                        "Remote interaction ended • preserving quiet-screen clarity"
                     policy.motionPriority ->
                         "Remote interaction active • prioritizing fresh motion frames"
                     else ->
