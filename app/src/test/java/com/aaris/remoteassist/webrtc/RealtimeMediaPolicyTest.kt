@@ -48,7 +48,7 @@ class RealtimeMediaPolicyTest {
 
     @Test
     fun nativeOverusePolicyPreservesQuietDetailButPrioritizesFreshMotion() {
-        CaptureTier.entries.forEach { tier ->
+        CaptureTier.values().forEach { tier ->
             assertEquals(
                 InteractiveVideoPolicy(
                     preserveResolution = true,
