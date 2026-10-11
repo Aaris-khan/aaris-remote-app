@@ -29,9 +29,11 @@ import java.nio.ByteBuffer;
  * <p>This factory preserves WebRTC's codec allow-list, ordering, H.264 profile
  * checks, vendor bitrate adjusters, Qualcomm key-frame workaround and software
  * fallback. It changes only the MediaFormat passed to the already-selected
- * hardware encoder: realtime priority and a one-frame latency request. Both are
- * public Android API 26 contracts; unsupported latency hints are documented to
- * be ignored. No vendor option, reflection, queue or second encoder is added.</p>
+ * hardware encoder: realtime priority, a one-frame latency request, and on API
+ * 29+ Surface input an ingress-FPS ceiling equal to WebRTC's configured encoder
+ * rate. These are public Android contracts; unsupported latency hints are
+ * documented to be ignored. No vendor option, reflection, queue or second
+ * encoder is added.</p>
  */
 public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFactory {
   private final VideoEncoderFactory delegate;
@@ -207,7 +209,75 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
     // Public optional encoder hint: emit after at most one queued frame when
     // supported. Android specifies that unsupported encoders ignore this key.
     format.setInteger(MediaFormat.KEY_LATENCY, 1);
+
+    /*
+     * Keep Surface-input MediaCodec from turning a scheduler hiccup into
+     * catch-up work. WebRTC already adapts source cadence before encode, but a
+     * delayed EGL/codec submission can still arrive in a short burst. Android's
+     * public API 29 guard drops excessive Surface frames at the codec boundary
+     * instead of letting obsolete frames become encoder/pacer debt.
+     *
+     * This is deliberately only a ceiling. VideoSource remains the sole dynamic
+     * cadence actuator, so 60 -> 30 fps relief does not reconfigure MediaCodec.
+     * Buffer-input fallback paths are untouched.
+     *
+     * Do not derive a 30 fps ingress ceiling from MediaFormat. WebRTC's
+     * FramerateBitrateAdjuster intentionally configures some legacy Exynos
+     * H.264 encoders at a fixed 30 fps while compensating bitrate for the real
+     * stream cadence. Treating that codec-configuration workaround as a hard
+     * Surface admission limit would silently pin an otherwise 45/60 fps stream
+     * to 30. High-cadence values (>30) are safe because they cannot be that
+     * fixed vendor compatibility value; low-cadence freshness remains owned by
+     * VideoSource/libwebrtc exactly as before.
+     */
+    if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+        isSurfaceInput(format)
+    ) {
+      Float configuredFrameRate = configuredFrameRate(format);
+      if (
+          configuredFrameRate != null &&
+          configuredFrameRate > LEGACY_FIXED_CODEC_FRAMERATE_FPS &&
+          !configuredFrameRate.isNaN() &&
+          !configuredFrameRate.isInfinite()
+      ) {
+        format.setFloat(
+            MediaFormat.KEY_MAX_FPS_TO_ENCODER,
+            configuredFrameRate);
+      }
+    }
   }
+
+  private static boolean isSurfaceInput(MediaFormat format) {
+    if (!format.containsKey(MediaFormat.KEY_COLOR_FORMAT)) {
+      return false;
+    }
+
+    try {
+      return format.getInteger(MediaFormat.KEY_COLOR_FORMAT)
+          == MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface;
+    } catch (RuntimeException malformedFormat) {
+      return false;
+    }
+  }
+
+  private static @Nullable Float configuredFrameRate(MediaFormat format) {
+    if (!format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+      return null;
+    }
+
+    try {
+      return (float) format.getInteger(MediaFormat.KEY_FRAME_RATE);
+    } catch (RuntimeException notInteger) {
+      try {
+        return format.getFloat(MediaFormat.KEY_FRAME_RATE);
+      } catch (RuntimeException malformedRate) {
+        return null;
+      }
+    }
+  }
+
+  private static final float LEGACY_FIXED_CODEC_FRAMERATE_FPS = 30.0f;
 
   private static final class RealtimeMediaCodecWrapperFactory
       implements MediaCodecWrapperFactory {
