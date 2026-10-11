@@ -175,11 +175,11 @@ class GamingSmoothnessLabTest {
                             baseJitterMs = 22.0
                         )
                     },
-                    minFinalCap = 24,
-                    minRecoveredCap = 24,
+                    minFinalCap = 30,
+                    minRecoveredCap = 30,
                     recoveryDeadlineMs = null,
                     maxPostRecoveryLagWindows = 10,
-                    minTailPresentFps = 18.0
+                    minTailPresentFps = 25.0
                 )
             )
 
