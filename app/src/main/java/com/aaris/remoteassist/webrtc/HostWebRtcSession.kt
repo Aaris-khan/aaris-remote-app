@@ -855,6 +855,7 @@ class HostWebRtcSession(
                 policyHandler.post {
                     if (!closed.get()) {
                         primaryRecoveryRequests = 0
+                        mediaRecoveryPolicy.primaryPresented()
                         fallbackStreamer.disable()
                     }
                 }
@@ -1012,6 +1013,7 @@ class HostWebRtcSession(
 
     private var primaryRecoveryRequests = 0
     private var lastPrimaryRepairRequestMs = 0L
+    private val mediaRecoveryPolicy = MediaRecoveryPolicy()
 
     private fun handleMediaRecoveryRequest() {
         policyHandler.post {
@@ -1031,38 +1033,28 @@ class HostWebRtcSession(
             )
         } == true
 
-        /*
-         * Fresh decoded RTP means transport + codec are alive and the fault is
-         * downstream in Surface/EGL presentation. Starting compatibility video
-         * here would synchronously copy a capture texture to I420 on the primary
-         * capture callback thread, adding exactly the producer jitter the
-         * renderer is trying to recover from. Keep renderer-only recovery on the
-         * primary zero-copy path and explicitly retire any older fallback lane.
-         */
-        if (decodedRecently) {
-            fallbackStreamer.disable()
-            primaryRecoveryRequests = 0
-            lastPrimaryRepairRequestMs = now
-            // A fresh sample helps a rebuilt Surface without pausing/replacing
-            // the healthy encoder or creating a parallel recovery pipeline.
+        val action = mediaRecoveryPolicy.request(decodedRecently, now)
+        if (action == MediaRecoveryAction.REFRESH_PRIMARY) {
+            // Give the existing Surface/EGL repair one bounded zero-copy grace
+            // period. A repeated request after that deadline means decode
+            // alone is not restoring the controller's picture.
             runCatching { capture.requestSnapshot() }
             listener.onDiagnostic(
-                "Primary decoder is progressing • renderer-only recovery kept on RTP"
+                "Primary decoder is progressing • bounded renderer repair on RTP"
             )
             return
         }
 
-        /*
-         * No recent decode proof means primary media itself may be black or
-         * stalled. Only this branch pays the bounded compatibility-copy cost.
-         */
+        // Keep compatibility pixels until the viewer confirms an actual EGL
+        // presentation. A decoder-only display failure must not stay black.
         fallbackStreamer.enable()
         fallbackStreamer.requestKeyframe()
         // Pausing the track here also pauses the primary encoder we want to
         // recover. Request current pixels without disabling capture/video.
         runCatching { capture.requestSnapshot() }
 
-        if (now - lastPrimaryRepairRequestMs >= 2500L) {
+        if (action == MediaRecoveryAction.COMPATIBILITY_AND_CODEC &&
+            now - lastPrimaryRepairRequestMs >= 2500L) {
             lastPrimaryRepairRequestMs = now
             primaryRecoveryRequests++
             if (primaryRecoveryRequests >= 2) peer.recoverPrimaryVideoCodec()

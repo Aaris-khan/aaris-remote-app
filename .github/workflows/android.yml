@@ -9,6 +9,40 @@ on:
   pull_request:
 
 jobs:
+  android-live-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager "platforms;android-36"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.6.0"
+      - name: Enable emulator acceleration
+        run: sudo chmod 666 /dev/kvm
+      - name: Real native WebRTC pixels and controls on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: >
+            test_status=0;
+            gradle :app:connectedDebugAndroidTest
+            -Pandroid.testInstrumentationRunnerArguments.class=com.aaris.remoteassist.webrtc.LiveVideoLoopbackTest
+            --stacktrace || test_status=$?;
+            adb logcat -d -s AarisLiveVideo:I '*:S';
+            exit "$test_status"
+
   browser-cloudflare-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 4
