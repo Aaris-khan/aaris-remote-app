@@ -6,43 +6,15 @@ import org.webrtc.RtpCapabilities
 internal object ScreenCodecPolicy {
     fun preferred(hardware: Set<String>): String = if (hardware.any { it.equals("H264", true) }) "H264" else "VP8"
 
-    fun isSoftwareImplementation(name: String?): Boolean {
-        val value = name?.lowercase()?.trim().orEmpty()
-        if (value.isBlank()) return false
-        return listOf("libvpx", "libaom", "openh264", "software").any(value::contains)
-    }
-
     /**
-     * Recovery must prefer a codec backed by hardware on this sender. A healthy
-     * hardware H264 path must never be replaced by software VP8 merely because
-     * the receiver's renderer/presentation signal disappeared.
-     *
-     * The first item is the only automatic repair candidate. Additional entries
-     * are diagnostic fallbacks for future explicit/user-driven recovery.
+     * Called only after repeated requests without recent decode proof.
+     * Reasserting the same codec does not recreate its stalled encoder/decoder.
+     * Change the codec once; the normal factory still prefers hardware, while
+     * software VP8 remains available when hardware H264 cannot start.
+     * Renderer-only faults are filtered by the host before reaching this path.
      */
-    fun recoveryCandidates(
-        current: String,
-        implementation: String?,
-        hardwareEncoders: Set<String>
-    ): List<String> {
-        val normalizedCurrent = current.uppercase()
-        val alternate = if (normalizedCurrent == "H264") "VP8" else "H264"
-        val hardware = hardwareEncoders.map(String::uppercase).toSet()
-        val currentIsHardware =
-            normalizedCurrent in hardware && !isSoftwareImplementation(implementation)
-        val alternateIsHardware = alternate in hardware
-
-        return when {
-            currentIsHardware && !alternateIsHardware ->
-                listOf(normalizedCurrent)
-            alternateIsHardware ->
-                listOf(alternate, normalizedCurrent).distinct()
-            normalizedCurrent in hardware ->
-                listOf(normalizedCurrent)
-            else ->
-                listOf(normalizedCurrent, alternate).distinct()
-        }
-    }
+    fun recoveryCandidates(current: String): List<String> =
+        listOf(if (current.equals("H264", true)) "VP8" else "H264")
 
     private fun usable(codec: RtpCapabilities.CodecCapability, primary: String): Boolean =
         codec.name.equals(primary, true) && (primary != "H264" ||

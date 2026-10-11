@@ -187,6 +187,7 @@ class InlineRemoteControllerView(
     private var fallbackCompositeFrameId = -1L
     private var mediaRecoveryAttempts = 0
     private var rendererRecoveryAttempts = 0
+    private var mediaWatchdogArmed = false
     private val rawFrameSeen = AtomicBoolean(false)
     @Volatile private var lastRawFrameAtMs = 0L
     @Volatile private var lastPresentedFrameAtMs = 0L
@@ -325,11 +326,10 @@ class InlineRemoteControllerView(
                             else "Video frames are here • rebuilding display…"
                         )
 
-                        if (rendererRecoveryAttempts == 1) {
-                            // Compatibility recovery does not disturb the
-                            // primary transport or authoritative controls.
-                            session()?.requestMediaRecovery()
-                        }
+                        // A second bounded request proves the fresh sample and
+                        // EGL rebuild still did not present. Decode counters
+                        // must not veto compatibility pixels indefinitely.
+                        session()?.requestMediaRecovery()
 
                         rebuildRenderer()
                         mainHandler.postDelayed(this, RENDER_RECOVERY_RETRY_MS)
@@ -354,6 +354,7 @@ class InlineRemoteControllerView(
         object : ControllerWebRtcSession.Listener {
             override fun onLive(geometry: RemoteGeometry) {
                 activity.runOnUiThread {
+                    if (!attached) return@runOnUiThread
                     this@InlineRemoteControllerView.geometry = geometry
                     adoptLatestFrameForGeometry(geometry)
                     syncControllerOrientation(geometry)
@@ -363,6 +364,13 @@ class InlineRemoteControllerView(
                     } else {
                         "Video connected • preparing display…"
                     })
+                    // HELLO proves controls, not a video track or inbound RTP.
+                    // Neither onTrack nor inbound getStats is guaranteed when
+                    // the initial video m-section never produces any media.
+                    if (!mediaWatchdogArmed) {
+                        mediaWatchdogArmed = true
+                        mainHandler.postDelayed(mediaWatchdog, FIRST_FRAME_DEADLINE_MS)
+                    }
                 }
             }
 
@@ -408,6 +416,7 @@ class InlineRemoteControllerView(
                     attachTrack(track)
 
                     mainHandler.removeCallbacks(mediaWatchdog)
+                    mediaWatchdogArmed = true
                     mainHandler.postDelayed(
                         mediaWatchdog,
                         FIRST_FRAME_DEADLINE_MS
@@ -519,6 +528,7 @@ class InlineRemoteControllerView(
         mainHandler.removeCallbacks(interactionIdle)
         endRemoteMotion()
         attached = false
+        mediaWatchdogArmed = false
 
         mainHandler.removeCallbacks(mediaWatchdog)
         mainHandler.removeCallbacks(controlsAutoHide)

@@ -23,42 +23,14 @@ class ScreenCodecPolicyTest {
         assertSame(baseline, order[0]); assertSame(baselineRtx, order[1])
         assertEquals(all.toSet(), order.toSet())
     }
-    @Test fun hardwareH264RecoveryNeverFallsToSoftwareVp8() {
-        assertEquals(
-            listOf("H264"),
-            ScreenCodecPolicy.recoveryCandidates(
-                current = "H264",
-                implementation = "OMX.qcom.video.encoder.avc",
-                hardwareEncoders = setOf("H264")
-            )
-        )
-        assertFalse(
-            ScreenCodecPolicy.isSoftwareImplementation(
-                "OMX.qcom.video.encoder.avc"
-            )
-        )
+    @Test fun failedH264CanEscapeToVp8WithoutReassertingTheBrokenCodec() {
+        assertEquals(listOf("VP8"), ScreenCodecPolicy.recoveryCandidates("H264"))
+        assertEquals(listOf("VP8"), ScreenCodecPolicy.recoveryCandidates("h264"))
     }
 
-    @Test fun recoveryCanUseHardwareAlternateButSoftwareVp8PrefersHardwareH264() {
-        assertEquals(
-            listOf("VP8", "H264"),
-            ScreenCodecPolicy.recoveryCandidates(
-                current = "H264",
-                implementation = "c2.qti.avc.encoder",
-                hardwareEncoders = setOf("H264", "VP8")
-            )
-        )
-        assertEquals(
-            listOf("H264", "VP8"),
-            ScreenCodecPolicy.recoveryCandidates(
-                current = "VP8",
-                implementation = "libvpx",
-                hardwareEncoders = setOf("H264")
-            )
-        )
-        assertTrue(
-            ScreenCodecPolicy.isSoftwareImplementation("libvpx")
-        )
+    @Test fun failedVp8ChangesCodecOnlyIfLocalAndRemoteCapabilitiesPermit() {
+        assertEquals(listOf("H264"), ScreenCodecPolicy.recoveryCandidates("VP8"))
+        assertTrue(ScreenCodecPolicy.order(listOf(vp8, vp8Rtx), "H264", exclusive = true).isEmpty())
     }
 
     @Test fun repairUsesOnlySelectedCodecAndItsRetransmissionPayload() {

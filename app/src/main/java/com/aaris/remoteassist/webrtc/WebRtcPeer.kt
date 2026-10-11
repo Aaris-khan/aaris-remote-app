@@ -1795,10 +1795,9 @@ class WebRtcPeer(
     /**
      * One bounded codec repair within the existing peer.
      *
-     * Recovery is hardware-first. If H264 is currently running on a hardware
-     * encoder and this device has no hardware VP8 encoder, a transient
-     * decoder/display stall reasserts H264 instead of negotiating libvpx. This
-     * prevents a renderer problem from turning into a CPU/queue collapse.
+     * The host invokes this only without recent decode progress. Changing
+     * codec recreates the broken media path without replacing ICE/controls.
+     * Reasserting the same preference would leave the stalled codec running.
      */
     fun recoverPrimaryVideoCodec(): Boolean {
         if (
@@ -1814,9 +1813,6 @@ class WebRtcPeer(
         val current =
             (latestOutboundCodec ?: WebRtcRuntime.preferredScreenCodec(appContext, true))
                 .uppercase()
-        val implementation = latestOutboundCodecImplementation
-        val hardware = WebRtcRuntime.hardwareScreenEncoders(appContext)
-        val normalizedHardware = hardware.map(String::uppercase).toSet()
         val remote = peerConnection.remoteDescription?.description ?: return false
         val codecs =
             factory.getRtpSenderCapabilities(
@@ -1825,11 +1821,7 @@ class WebRtcPeer(
 
         val candidate =
             ScreenCodecPolicy
-                .recoveryCandidates(
-                    current = current,
-                    implementation = implementation,
-                    hardwareEncoders = normalizedHardware
-                )
+                .recoveryCandidates(current)
                 .firstOrNull { codec ->
                     ScreenCodecPolicy.remoteSupports(remote, codec) &&
                         ScreenCodecPolicy.order(
@@ -1857,21 +1849,8 @@ class WebRtcPeer(
             transceiver.setCodecPreferences(selected).throwError()
             codecRepairAttempted.set(true)
 
-            val stickyHardware =
-                candidate.equals(current, ignoreCase = true) &&
-                    current in normalizedHardware &&
-                    !ScreenCodecPolicy.isSoftwareImplementation(implementation)
-
             listener.onDiagnostic(
-                if (stickyHardware) {
-                    "Primary video recovery • reasserting hardware " +
-                        candidate +
-                        "; software fallback suppressed"
-                } else {
-                    "Primary video recovery • negotiating hardware-preferred " +
-                        candidate +
-                        " without restarting control"
-                }
+                "Primary video recovery • changing $current to $candidate without restarting control"
             )
 
             createOffer(
@@ -1880,6 +1859,7 @@ class WebRtcPeer(
                 },
                 onFailure = {
                     offerPreparationInFlight.set(false)
+                    codecRepairAttempted.set(false)
                     preferBaselineScreenCodec(
                         transceiver,
                         true
@@ -1889,6 +1869,7 @@ class WebRtcPeer(
             true
         } catch (failure: Exception) {
             offerPreparationInFlight.set(false)
+            codecRepairAttempted.set(false)
             preferBaselineScreenCodec(
                 transceiver,
                 true
