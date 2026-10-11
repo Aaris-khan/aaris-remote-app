@@ -37,6 +37,15 @@ class RealtimeMediaPolicyTest {
     }
 
     @Test
+    fun realtimeScreenUsesHighRelativeBitratePriorityWithoutAForcedFloor() {
+        assertEquals(
+            4.0,
+            RealtimeMediaPolicy.VIDEO_BITRATE_PRIORITY,
+            0.0
+        )
+    }
+
+    @Test
     fun sourceCadenceNeverEscapesTheActiveCaptureProfile() {
         assertEquals(
             20,
