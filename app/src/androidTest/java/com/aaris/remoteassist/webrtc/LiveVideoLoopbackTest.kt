@@ -6,7 +6,6 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.Build
 import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
