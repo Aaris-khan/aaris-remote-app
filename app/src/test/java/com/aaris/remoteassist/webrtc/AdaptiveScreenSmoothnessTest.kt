@@ -69,6 +69,71 @@ class AdaptiveScreenSmoothnessTest {
     }
 
     @Test
+    fun clarityBandwidthReliefRequiresTwoStableWindows() {
+        val governor =
+            VideoCadenceGovernor(
+                maxFps = 60,
+                initialCap = 60
+            )
+
+        assertFalse(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 35,
+                requestedFps = 60,
+                nowMs = 1_000L
+            )
+        )
+        assertEquals(60, governor.cap)
+
+        assertTrue(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 35,
+                requestedFps = 60,
+                nowMs = 2_000L
+            )
+        )
+        // With no physical clock evidence yet, use the existing safe cadence
+        // ladder and choose the nearest rung under the measured BWE ceiling.
+        assertEquals(33, governor.cap)
+        assertTrue(
+            governor.debugSummary(2_000L)
+                .contains("clarity-bwe-relief->33")
+        )
+    }
+
+    @Test
+    fun transientBandwidthVoteCannotDownshiftCadenceLater() {
+        val governor =
+            VideoCadenceGovernor(
+                maxFps = 60,
+                initialCap = 60
+            )
+
+        assertFalse(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 35,
+                requestedFps = 60,
+                nowMs = 1_000L
+            )
+        )
+        assertFalse(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = null,
+                requestedFps = 60,
+                nowMs = 1_500L
+            )
+        )
+        assertFalse(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 35,
+                requestedFps = 60,
+                nowMs = 2_000L
+            )
+        )
+        assertEquals(60, governor.cap)
+    }
+
+    @Test
     fun startupCadenceBeginsAtThirtyAndRecoversThroughFineCadenceSteps() {
         val governor =
             VideoCadenceGovernor(
