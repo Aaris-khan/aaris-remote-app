@@ -201,7 +201,9 @@ internal class PhotonFreshnessGovernor {
 
         val hardPressure =
             queueMs?.let { it >= PRESSURE_QUEUE_MS } == true ||
-                playoutMs?.let { it >= PRESSURE_PLAYOUT_MS } == true ||
+                playoutMs?.let {
+                    it >= RealtimeMediaPolicy.PLAYOUT_FRESHNESS_PRESSURE_MS
+                } == true ||
                 receiver?.presentationAgeMs
                     ?.let { it >= PRESSURE_PRESENTATION_AGE_MS } == true ||
                 glassRatio?.let { it < PRESSURE_GLASS_RATIO } == true ||
@@ -348,7 +350,6 @@ internal class PhotonFreshnessGovernor {
 
         const val CLEAN_PLAYOUT_MS = 55.0
         const val WATCH_PLAYOUT_MS = 90.0
-        const val PRESSURE_PLAYOUT_MS = 160.0
 
         const val CLEAN_PACKET_LOSS = 0.025
 
