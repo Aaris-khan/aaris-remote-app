@@ -141,6 +141,39 @@ class PhotonFreshnessGovernorTest {
     }
 
     @Test
+    fun nativePlayoutFreshnessBoundaryEscalatesExactlyAtSharedPressureBudget() {
+        val below =
+            PhotonFreshnessGovernor().observe(
+                outbound(),
+                receiver(
+                    playoutMs =
+                        RealtimeMediaPolicy.PLAYOUT_FRESHNESS_PRESSURE_MS -
+                            1.0
+                ),
+                60,
+                true,
+                1_000
+            )
+        assertEquals(PhotonFreshnessState.WATCH, below.state)
+
+        val atBudget =
+            PhotonFreshnessGovernor().observe(
+                outbound(),
+                receiver(
+                    playoutMs =
+                        RealtimeMediaPolicy.PLAYOUT_FRESHNESS_PRESSURE_MS
+                            .toDouble()
+                ),
+                60,
+                true,
+                1_000
+            )
+        assertEquals(PhotonFreshnessState.PRESSURE, atBudget.state)
+        assertFalse(atBudget.allowCadencePromotion)
+        assertFalse(atBudget.allowResolutionRecovery)
+    }
+
+    @Test
     fun queueOrPoorGlassResetsCleanEvidence() {
         val g = PhotonFreshnessGovernor()
         g.observe(outbound(), receiver(), 60, false, 1_000)

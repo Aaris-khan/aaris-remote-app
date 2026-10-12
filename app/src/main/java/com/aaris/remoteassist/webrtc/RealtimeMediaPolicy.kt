@@ -14,7 +14,10 @@ import org.webrtc.RtpParameters
  */
 internal object RealtimeMediaPolicy {
     const val PLAYOUT_DELAY_MIN_MS = 10
-    const val PLAYOUT_DELAY_MAX_MS = 500
+    const val PLAYOUT_FRESHNESS_PRESSURE_MS = 160
+    private const val PLAYOUT_RECOVERY_MARGIN_MS = 20
+    const val PLAYOUT_DELAY_MAX_MS =
+        PLAYOUT_FRESHNESS_PRESSURE_MS + PLAYOUT_RECOVERY_MARGIN_MS
 
     /*
      * Interactive remoting is a single latency-sensitive video stream. DSCP is
@@ -42,12 +45,18 @@ internal object RealtimeMediaPolicy {
      * bounded while allowing native jitter/timestamp timing to absorb ordinary
      * mobile/TURN variance before the frame reaches the vsync-aligned EGL lane.
      *
-     * max=500 is only a best-effort recovery ceiling, not a fixed half-second
-     * hold. WebRTC remains the single owner of packet/jitter buffering and timed
-     * decode; the app still retains no second decoded-frame playback queue.
+     * Remote control must not accumulate a call-style half-second stale-frame
+     * reservoir. The app already treats ~160 ms of receiver playout residence
+     * as hard freshness pressure, so cap native adaptive playout just above that
+     * alarm. WebRTC still has enough room to smooth ordinary mobile/TURN jitter,
+     * while sustained variance is repaired by GCC/TWCC plus the existing
+     * cadence/spatial governors instead of hiding it behind older video.
+     *
+     * Keep a small positive minimum: unlike zero-playout mode, timestamp-based
+     * smoothing remains active. Only the maximum stale residence is tightened.
      */
     const val FIELD_TRIALS =
-        "WebRTC-ForceSendPlayoutDelay/min_ms:10,max_ms:500/"
+        "WebRTC-ForceSendPlayoutDelay/min_ms:10,max_ms:180/"
 
     /*
      * getStats() is diagnostic/adaptation work, not part of the media hot path.
