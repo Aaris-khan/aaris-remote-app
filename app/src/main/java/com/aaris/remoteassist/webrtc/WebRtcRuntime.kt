@@ -68,9 +68,10 @@ object WebRtcRuntime {
              * encoder selection, vendor bitrate workarounds and software fallback,
              * while marking selected H264/VP8 MediaCodec sessions as realtime and
              * requesting one-frame encoder latency. AarisLowLatencyVideoDecoderFactory
-             * enables MediaCodec's official decoder low-latency mode only when the
-             * selected hardware codec advertises FEATURE_LowLatency; unsupported
-             * codecs keep WebRTC's normal behavior.
+             * also gives Android an exact-geometry decoder operating-rate target
+             * only when the selected hardware codec publishes measured/guaranteed
+             * throughput, and enables official low-latency mode only when the codec
+             * advertises FEATURE_LowLatency. Missing OEM metadata keeps stock behavior.
              *
              * The same EGL context is shared by capture, codecs and rendering
              * so texture-backed frames stay on the GPU path without adding a
