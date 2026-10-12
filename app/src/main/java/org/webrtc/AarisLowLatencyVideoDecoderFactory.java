@@ -114,12 +114,18 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
 
       boolean lowLatencySupported =
           LowLatencyCapability.isSupported(capabilities);
+      VideoCapabilities videoCapabilities;
+      try {
+        videoCapabilities = capabilities.getVideoCapabilities();
+      } catch (RuntimeException incompleteVendorMetadata) {
+        videoCapabilities = null;
+      }
 
       return new AndroidVideoDecoder(
           new LowLatencyMediaCodecWrapperFactory(
               type.mimeType(),
               lowLatencySupported,
-              capabilities.getVideoCapabilities()),
+              videoCapabilities),
           mediaCodecInfo.getName(),
           type,
           colorFormat,
