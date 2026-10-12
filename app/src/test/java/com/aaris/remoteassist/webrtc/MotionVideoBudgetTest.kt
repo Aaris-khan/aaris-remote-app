@@ -1433,7 +1433,7 @@ class MotionVideoBudgetTest {
         val recorded = sender(
             fps = 6,
             encode = 16.0,
-            queue = 120.0,
+            queue = 353.0,
             implementation = "c2.mtk.avc.encoder"
         ).copy(
             qualityLimitationReason = "bandwidth",
