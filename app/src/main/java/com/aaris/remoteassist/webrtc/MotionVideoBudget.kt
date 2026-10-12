@@ -4,16 +4,19 @@ import com.aaris.remoteassist.capture.CaptureProfile
 import kotlin.math.roundToInt
 
 /**
- * Motion normally trades pixels before low cadence. One-second interval
- * telemetry drives a 720 -> 540 -> 360 -> 240 ladder, with a final 180
- * short-edge freshness rung only when moving-source evidence proves a
- * bandwidth-limited stale queue.
+ * Remote control is a detail-sensitive workload: text, forms and icons must
+ * remain readable while motion stays fresh. One-second telemetry may reduce
+ * the normal spatial envelope through 720 -> 540 -> 360, but 360 is the
+ * readability floor for ordinary encoder/decode/presentation/BWE pressure.
  *
- * A narrow clarity guard handles one important exception: when WebRTC's BWE
- * says only the 45/60 fps demand no longer fits while the SAME admitted pixels
- * still fit at >=30 fps, temporal excess is spent first. This avoids turning a
- * mild bandwidth dip into needless text/UI blur. Real codec, queue, loss,
- * decode or presentation pressure still unlocks the spatial ladder immediately.
+ * A 240-short-edge rung exists only as a last-resort transport escape after
+ * cadence has already reached the 24 fps bandwidth floor AND independently
+ * corroborated severe network pressure proves that 360 cannot stay fresh.
+ * There is deliberately no 180-short-edge primary-video rung.
+ *
+ * WebRTC's BWE clarity guard spends high-cadence excess first when the same
+ * admitted pixels still fit at a lower interactive cadence. This avoids
+ * turning transient or estimator-only bandwidth pressure into unreadable UI.
  *
  * On Android 12+ the committed spatial envelope is also allowed to resize the
  * MediaProjection VirtualDisplay; older Android versions keep their producer
@@ -718,8 +721,8 @@ internal class MotionVideoBudget {
          * pixel demand. An actively held finger does not prove that the screen
          * producer is generating 30/60 distinct pictures every second. In a
          * static or capture-starved interval (source=1fps, queue=0ms), applying
-         * the full motion bitrate model would downshift 360 -> 240 -> 180 even
-         * though reducing pixels cannot create the absent source frames.
+         * the motion bitrate model could otherwise downshift readable pixels
+         * even though reducing resolution cannot create absent source frames.
          *
          * Require either measured natural producer activity or an explicitly
          * unknown producer with independently measured sender activity. Genuine
@@ -746,15 +749,6 @@ internal class MotionVideoBudget {
                         it >= BWE_PREDICTIVE_PRESSURE_UTILIZATION_RATIO
                     } ?: bandwidthHeadroomRatio?.let {
                         it < BWE_PRESSURE_HEADROOM_RATIO
-                    } == true
-                    )
-        val severePredictiveBandwidthPressure =
-            bandwidthDemandProven &&
-                (
-                    observedBandwidthUtilization?.let {
-                        it >= BWE_PREDICTIVE_SEVERE_UTILIZATION_RATIO
-                    } ?: bandwidthHeadroomRatio?.let {
-                        it < BWE_SEVERE_HEADROOM_RATIO
                     } == true
                     )
 
@@ -859,30 +853,33 @@ internal class MotionVideoBudget {
          * and for ordinary later pressure relief. This prevents duplicate policy
          * trees from drifting apart.
          */
+        /*
+         * 360 is the normal readability floor. A bandwidth estimator, codec
+         * overuse signal or render hitch by itself must never make forms/text
+         * unreadable. The 240 rung is reserved for a genuinely failing path:
+         * cadence has already been reduced to the bandwidth floor, the moving
+         * stream is severely under-delivering, and transport independently
+         * corroborates congestion (queue/loss/RTT).
+         *
+         * This is intentionally asymmetric. A remote-control session may look
+         * slightly less fluid at 20-24 fps on a bad link, but a 180/240-style
+         * image that cannot be read is not useful control feedback.
+         */
+        val emergencyBandwidthPressure =
+            goal <= BANDWIDTH_CADENCE_FLOOR_FPS &&
+                severeBandwidthFreshnessPressure &&
+                transportProvesCongestion
+
         fun nextPressureRung(): Int =
             when {
-                severeProducerStarvation && shortEdge > 360 -> 360
+                severeProducerStarvation && shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
+                    CLARITY_FLOOR_SHORT_EDGE
                 shortEdge > 540 -> 540
-                shortEdge > 360 -> 360
-                shortEdge > 240 &&
-                    (
-                        encodePressure ||
-                            decodePressure ||
-                            bandwidthFreshnessPressure ||
-                            predictiveBandwidthPressure ||
-                            rtpBurstPressure ||
-                            predictiveResidencePressure ||
-                            pipelineDeadlinePressure ||
-                            (
-                                producerStarvationPressure &&
-                                    !warmStartResizePending
-                                )
-                        ) -> 240
-                shortEdge > 180 &&
-                    (
-                        severeBandwidthFreshnessPressure ||
-                            severePredictiveBandwidthPressure
-                        ) -> 180
+                shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
+                    CLARITY_FLOOR_SHORT_EDGE
+                shortEdge > EMERGENCY_SHORT_EDGE &&
+                    emergencyBandwidthPressure ->
+                    EMERGENCY_SHORT_EDGE
                 else -> shortEdge
             }
 
@@ -1012,9 +1009,9 @@ internal class MotionVideoBudget {
                 (severe || predictiveResidencePressure || pressureSamples >= 2) &&
                 nowMs - changedAtMs >= settleMs
             ) {
-                // When a moving source is bandwidth-limited, spend
-                // pixels before sacrificing temporal motion. The 180 rung
-                // remains reserved for strong bandwidth proof.
+                // Ordinary pressure may spend pixels only down to the 360
+                // readability floor. A 240 emergency transition is legal only
+                // after cadence relief and corroborated severe transport proof.
                 val next = nextPressureRung()
                 if (next != shortEdge) {
                     shortEdge = next
@@ -1039,8 +1036,8 @@ internal class MotionVideoBudget {
             }
             val nextRecoveryRung =
                 when {
-                    shortEdge < 240 -> 240
-                    shortEdge < 360 -> 360
+                    shortEdge < CLARITY_FLOOR_SHORT_EDGE ->
+                        CLARITY_FLOOR_SHORT_EDGE
                     shortEdge < 540 -> 540
                     else -> 720
                 }
@@ -1242,42 +1239,60 @@ internal class MotionVideoBudget {
         if (!motionActive) return 1
 
         /*
-         * A live controller gesture is stronger evidence than passive motion:
-         * temporal freshness is the UX contract while the user is actively
-         * steering the remote phone. While a cheaper spatial rung still exists,
-         * hold ordinary adaptation at 30 fps and spend
-         * 720 -> 540 -> 360 -> 240 -> 180 pixels before temporal continuity.
+         * 360 is both the normal spatial floor and still a useful interactive
+         * operating point. Do NOT interpret merely reaching 360 as permission
+         * to cap every healthy gesture at 24 fps; that creates visible judder
+         * even after the path has recovered.
          *
-         * Once the 180-pixel emergency rung is already exhausted, ordinary
-         * pressure may use the established 24 fps bandwidth floor. Severe
-         * transport/CPU pressure can bypass either floor in VideoCadenceGovernor,
-         * so genuinely incapable links never have to accumulate stale frames.
+         * Keep the ordinary active-control floor at 30 fps while the stream is
+         * at 360 or above. VideoCadenceGovernor's severe pressure path is
+         * allowed to bypass that floor and prove a 24/20 fps operating point
+         * when queue/codec/transport evidence really demands it. Once the
+         * last-resort 240 rung has actually been committed, stop spending
+         * pixels and let ordinary interaction use the 20 fps emergency floor.
          */
         if (interactionActive) {
             val floor =
-                if (shortEdge > MIN_BANDWIDTH_SHORT_EDGE) {
+                if (shortEdge > EMERGENCY_SHORT_EDGE) {
                     INTERACTION_CADENCE_FLOOR_FPS
                 } else {
-                    BANDWIDTH_CADENCE_FLOOR_FPS
+                    EMERGENCY_INTERACTION_FPS_FLOOR
                 }
             return minOf(floor, profile.motionFps)
         }
 
-        // Keep at least 24 fps while a recent bandwidth-limited moving source
-        // still has a cheaper pixel rung available. This is the Java-side
-        // counterpart of MAINTAIN_FRAMERATE: do not hard-cap the source to 15
-        // fps while 360/240-wide frames are still clogging the pacer.
+        /*
+         * Recent bandwidth pressure must not pin a readable 360 stream at
+         * 20/24 fps after the backlog drains. Hold 30 while a spatial rung
+         * remains above the emergency floor; severe cadence relief remains
+         * independently authoritative in VideoCadenceGovernor.
+         */
         val bandwidthReliefActive =
             nowMs - lastBandwidthPressureAtMs in 0L..BANDWIDTH_PRESSURE_HOLD_MS
-        if (bandwidthReliefActive && shortEdge > MIN_BANDWIDTH_SHORT_EDGE) {
-            return minOf(BANDWIDTH_CADENCE_FLOOR_FPS, profile.motionFps)
+        if (
+            bandwidthReliefActive &&
+            shortEdge > EMERGENCY_SHORT_EDGE
+        ) {
+            return minOf(
+                INTERACTION_CADENCE_FLOOR_FPS,
+                profile.motionFps
+            )
         }
 
-        // After every actual pixel step, give the new frame size a short window
-        // to drain the old queue before cadence is allowed to fall. Once the
-        // 180-wide emergency rung has settled, cadence may still step down if
-        // the path genuinely cannot sustain fresh frames.
-        return if (nowMs - changedAtMs < SETTLE_MS) minOf(30, profile.motionFps) else 1
+        // After a real resize, keep a short drain window. 240 is terminal for
+        // pixels, so its settle floor is 24; 360+ retains the 30 fps UX floor.
+        return if (nowMs - changedAtMs < SETTLE_MS) {
+            minOf(
+                if (shortEdge > EMERGENCY_SHORT_EDGE) {
+                    INTERACTION_CADENCE_FLOOR_FPS
+                } else {
+                    BANDWIDTH_CADENCE_FLOOR_FPS
+                },
+                profile.motionFps
+            )
+        } else {
+            1
+        }
     }
 
     fun bitrateCeiling(
@@ -1580,9 +1595,8 @@ internal class MotionVideoBudget {
     ): Double {
         val baseline =
             when {
-                edge <= 180 -> 350_000.0
-                edge <= 240 -> 500_000.0
-                edge <= 360 -> 900_000.0
+                edge <= EMERGENCY_SHORT_EDGE -> 500_000.0
+                edge <= CLARITY_FLOOR_SHORT_EDGE -> 900_000.0
                 edge <= 540 -> 1_800_000.0
                 else -> 3_200_000.0
             }
@@ -1617,13 +1631,13 @@ internal class MotionVideoBudget {
          * qualityLimitationReason=cpu is local encoder/capture proof, not noisy
          * WAN inference. Let two consecutive CPU-limited windows reach the
          * existing 720 -> 540 -> 360 ladder without waiting the generic 3 s
-         * settle. CPU alone still cannot unlock 240/180: those visibly blurry
-         * emergency rungs remain reserved for stronger pipeline/bandwidth proof.
+         * settle. CPU alone still cannot unlock the 240 emergency rung; that
+         * visibly blurry fallback remains reserved for severe transport proof
+         * after cadence has already been reduced.
          */
         const val CPU_PRESSURE_FAST_SETTLE_MS = 1_000L
         const val BWE_PREDICTIVE_SETTLE_MS = 1_000L
         const val BWE_PRESSURE_HEADROOM_RATIO = 1.10
-        const val BWE_SEVERE_HEADROOM_RATIO = 0.60
         /*
          * Predictive BWE relief is driven by measured RTP utilization whenever
          * stats are available. Around 85% path use starts early relief; only a
@@ -1631,7 +1645,6 @@ internal class MotionVideoBudget {
          * queue/loss/decode alarms remain independent and can act sooner.
          */
         const val BWE_PREDICTIVE_PRESSURE_UTILIZATION_RATIO = 0.85
-        const val BWE_PREDICTIVE_SEVERE_UTILIZATION_RATIO = 1.00
 
         /*
          * Clarity guard: if high cadence is the only thing that no longer fits,
@@ -1750,9 +1763,11 @@ internal class MotionVideoBudget {
         const val PROVEN_NETWORK_LOSS_RATIO = 0.06
         const val PROVEN_NETWORK_RTT_MS = 650
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
-        const val MIN_BANDWIDTH_SHORT_EDGE = 180
+        const val CLARITY_FLOOR_SHORT_EDGE = 360
+        const val EMERGENCY_SHORT_EDGE = 240
         const val INTERACTION_CADENCE_FLOOR_FPS = 30
         const val BANDWIDTH_CADENCE_FLOOR_FPS = 24
+        const val EMERGENCY_INTERACTION_FPS_FLOOR = 20
         const val IDLE_RESTORE_MS = 8_000L
     }
 }

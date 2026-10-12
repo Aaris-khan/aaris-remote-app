@@ -637,7 +637,7 @@ class HighCadenceProbeTest {
             21_000L,
             allowResolutionRecovery = false
         )
-        assertEquals(240, budget.shortEdge)
+        assertEquals(360, budget.shortEdge)
     }
 
     @Test fun capabilityPacketIsBoundedLeaseBoundReplaySafeAndExpires() {
