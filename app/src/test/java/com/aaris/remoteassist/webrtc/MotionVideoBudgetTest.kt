@@ -1879,4 +1879,76 @@ class MotionVideoBudgetTest {
         assertEquals(540, budget.shortEdge)
     }
 
+    @Test fun highCadenceSpatialPressureWaitsForTemporalReliefAndFreshEvidence() {
+        val budget = nativeWarmBudget()
+        val stressed =
+            sender(
+                fps = 42,
+                encode = 20.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            )
+        val glass = receiver(fps = 42, decode = 5.0, presented = 42)
+
+        // At a 45/60-fps operating point the host keeps this gate closed while
+        // cadence spends temporal excess. Repeated old operating-point pressure
+        // must not accumulate a hidden pixel vote.
+        repeat(2) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = stressed,
+                    receiver = glass,
+                    sourceFps = 60.0,
+                    motionActive = true,
+                    targetFps = 60,
+                    nowMs = 1_000L + index * 1_000L,
+                    interactionActive = true,
+                    allowSpatialRelief = false
+                )
+            )
+        }
+        assertEquals(720, budget.apply(profile, true).captureWidthPx)
+
+        // After cadence reaches the 30-fps class, require two fresh completed
+        // windows at that operating point before paying a geometry/codec reset.
+        assertFalse(
+            budget.observe(
+                outbound = stressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 3_000L,
+                interactionActive = true,
+                allowSpatialRelief = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                outbound = stressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 4_000L,
+                interactionActive = true,
+                allowSpatialRelief = true
+            )
+        )
+        assertEquals(540, budget.apply(profile, true).captureWidthPx)
+    }
+
+    @Test fun motionSpatialEligibilityUsesEffectiveThirtyFpsClass() {
+        val cadence = VideoCadenceGovernor(60, 60)
+
+        assertFalse(cadence.mayReduceMotionResolution(60))
+        assertFalse(cadence.mayReduceMotionResolution(45))
+
+        // LOW/BALANCED profiles are already temporal-first at <=30 fps even if
+        // the session-wide governor has a higher hardware ceiling.
+        assertTrue(cadence.mayReduceMotionResolution(30))
+        assertTrue(cadence.mayReduceMotionResolution(20))
+    }
+
+
 }
