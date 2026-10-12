@@ -49,10 +49,10 @@ object WebRtcRuntime {
                     .builder(appContext)
                     /*
                      * Enable native timestamp-based smoothing with a 10 ms
-                     * floor and a best-effort 500 ms ceiling. The ceiling is
-                     * recovery headroom, not a fixed half-second delay. Keep
-                     * packet repair and timed decode inside libwebrtc rather
-                     * than buffering decoded frames in the Android viewer.
+                     * floor and a 180 ms remote-control freshness ceiling.
+                     * Packet repair and timed decode stay inside libwebrtc, but
+                     * the receiver may not trade half a second of stale glass
+                     * for call-style smoothness before our governors can react.
                      */
                     .setFieldTrials(RealtimeMediaPolicy.FIELD_TRIALS)
                     .setEnableInternalTracer(false)
