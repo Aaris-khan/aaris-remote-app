@@ -1247,10 +1247,12 @@ class HostWebRtcSession(
             /*
              * One health window may move ONE expensive media actuator.
              *
-             * libwebrtc already has its own QP/encode-overuse spatial adapter
-             * under MAINTAIN_FRAMERATE. If our measured pixel budget also moves,
-             * do not simultaneously change the app cadence ceiling from the
-             * same stale evidence. That double-step used to reconfigure source
+             * libwebrtc's generic CPU-overuse signal is handled as temporal
+             * pressure under this session's MAINTAIN_RESOLUTION contract.
+             * MotionVideoBudget owns explicit app-level spatial changes, and
+             * only measured pixel/deadline evidence may move that budget. If a
+             * measured spatial move happens, do not simultaneously change the
+             * app cadence ceiling from the same stale evidence. That double-step used to reconfigure source
              * geometry and sender cadence together, making otherwise recoverable
              * pressure look like visible micro-stutter on the controller.
              *

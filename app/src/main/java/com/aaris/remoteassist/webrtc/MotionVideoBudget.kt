@@ -506,11 +506,18 @@ internal class MotionVideoBudget {
         // accumulated that delay.
         val jitterMs = received?.playoutDelayMs.valid()
         val underDelivery = sender.fps < goal * 0.85
-        val cpuPressure =
-            outbound.qualityLimitationReason.equals(
-                "cpu",
-                ignoreCase = true
-            )
+        /*
+         * qualityLimitationReason="cpu" is deliberately NOT a spatial vote.
+         * WebRTC defines it as the most limiting reason for resolution and/or
+         * frame rate; with this session's MAINTAIN_RESOLUTION contract the
+         * cadence governor owns that generic CPU signal first. Pixels move only
+         * when measured encode/queue/decode/deadline evidence below proves that
+         * the current geometry itself is missing freshness deadlines.
+         *
+         * Treating the label alone as pixel pressure made a healthy 60 fps
+         * hardware path fall 720 -> 540 -> 360 even with ~5 ms encode and an
+         * empty pacer, producing the controller-side "140p" clarity regression.
+         */
         val encodePressure = sender.frames >= 2 && underDelivery && (encodeMs ?: 0.0) > frameMs * 0.85
         val queuePressure = (queueMs ?: 0.0) >= 80.0 || (jitterMs ?: 0.0) >= 100.0
         val decodePressure = received != null && (decodeMs ?: 0.0) > frameMs * 0.85 &&
@@ -845,8 +852,7 @@ internal class MotionVideoBudget {
                 rtpBurstPressure ||
                 predictiveResidencePressure ||
                 pipelineDeadlinePressure ||
-                producerStarvationPressure ||
-                cpuPressure
+                producerStarvationPressure
 
         /*
          * Use exactly the same rung selection for a validated warm-start commit
@@ -992,8 +998,6 @@ internal class MotionVideoBudget {
                     RTP_BURST_FAST_SETTLE_MS
                 predictiveResidencePressure ->
                     RESIDENCE_GROWTH_FAST_SETTLE_MS
-                cpuPressure ->
-                    CPU_PRESSURE_FAST_SETTLE_MS
                 highCadencePipelinePressure ->
                     HIGH_CADENCE_FAST_SETTLE_MS
                 else ->
@@ -1627,15 +1631,6 @@ internal class MotionVideoBudget {
         // Follow the same 6-second validity ceiling as VideoHealthWindowTracker.
         const val MAX_SENDER_SAMPLE_GAP_MS = 6_000L
         const val BANDWIDTH_FAST_SETTLE_MS = 1_000L
-        /*
-         * qualityLimitationReason=cpu is local encoder/capture proof, not noisy
-         * WAN inference. Let two consecutive CPU-limited windows reach the
-         * existing 720 -> 540 -> 360 ladder without waiting the generic 3 s
-         * settle. CPU alone still cannot unlock the 240 emergency rung; that
-         * visibly blurry fallback remains reserved for severe transport proof
-         * after cadence has already been reduced.
-         */
-        const val CPU_PRESSURE_FAST_SETTLE_MS = 1_000L
         const val BWE_PREDICTIVE_SETTLE_MS = 1_000L
         const val BWE_PRESSURE_HEADROOM_RATIO = 1.10
         /*

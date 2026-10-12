@@ -1808,7 +1808,7 @@ class MotionVideoBudgetTest {
     }
 
 
-    @Test fun sustainedCpuPressureUsesFastBoundedReliefWithoutEmergencyBlur() {
+    @Test fun cpuLimitationLabelAlonePreservesReadablePixelsForCadenceRelief() {
         val budget = nativeWarmBudget()
         val cpuLimited =
             sender(
@@ -1820,60 +1820,13 @@ class MotionVideoBudgetTest {
             )
         val healthyReceiver = receiver(fps = 60, presented = 60)
 
-        // First two CPU-limited windows commit only one bounded rung.
-        assertFalse(
-            budget.observe(
-                cpuLimited,
-                healthyReceiver,
-                60.0,
-                true,
-                60,
-                500L,
-                interactionActive = true
-            )
-        )
-        assertTrue(
-            budget.observe(
-                cpuLimited,
-                healthyReceiver,
-                60.0,
-                true,
-                60,
-                1_000L,
-                interactionActive = true
-            )
-        )
-        assertEquals(540, budget.shortEdge)
-
-        // Sustained proof may reach the clarity-safe 360 rung after the
-        // dedicated one-second CPU settle instead of waiting the generic 3 s.
-        assertFalse(
-            budget.observe(
-                cpuLimited,
-                healthyReceiver,
-                60.0,
-                true,
-                60,
-                1_500L,
-                interactionActive = true
-            )
-        )
-        assertTrue(
-            budget.observe(
-                cpuLimited,
-                healthyReceiver,
-                60.0,
-                true,
-                60,
-                2_000L,
-                interactionActive = true
-            )
-        )
-        assertEquals(360, budget.shortEdge)
-
-        // CPU pressure alone must not unlock the visibly blurry 240 emergency
-        // rung; cadence/native temporal relief owns any remaining overload.
-        repeat(4) { index ->
+        /*
+         * WebRTC's CPU reason describes the most limiting reason for
+         * resolution and/or frame rate. With MAINTAIN_RESOLUTION, the temporal
+         * governor owns that generic signal. Healthy measured encode, queue,
+         * decode and presentation therefore must not spend source pixels.
+         */
+        repeat(8) { index ->
             assertFalse(
                 budget.observe(
                     cpuLimited,
@@ -1881,12 +1834,49 @@ class MotionVideoBudgetTest {
                     60.0,
                     true,
                     60,
-                    2_500L + index * 500L,
+                    500L + index * 500L,
                     interactionActive = true
                 )
             )
         }
-        assertEquals(360, budget.shortEdge)
+        assertEquals(720, budget.shortEdge)
+    }
+
+    @Test fun cpuLabelWithMeasuredEncoderCollapseStillGetsSpatialSafetyRelief() {
+        val budget = nativeWarmBudget()
+        val overloaded =
+            sender(
+                fps = 30,
+                encode = 18.0,
+                queue = 5.0
+            ).copy(
+                qualityLimitationReason = "CPU"
+            )
+        val receiver = receiver(fps = 30, presented = 30)
+
+        assertFalse(
+            budget.observe(
+                overloaded,
+                receiver,
+                60.0,
+                true,
+                60,
+                1_000L,
+                interactionActive = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                overloaded,
+                receiver,
+                60.0,
+                true,
+                60,
+                2_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(540, budget.shortEdge)
     }
 
 }
