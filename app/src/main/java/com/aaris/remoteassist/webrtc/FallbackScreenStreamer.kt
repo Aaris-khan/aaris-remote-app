@@ -108,11 +108,14 @@ class FallbackScreenStreamer(
          */
         val copyStartedNs = System.nanoTime()
         val copySideLimit = readbackBudget.maxSidePx(
-            if (interactionActive.get()) {
-                INTERACTIVE_COPY_MAX_DIMENSION
-            } else {
-                MAX_DIMENSION
-            }
+            baseSidePx =
+                if (interactionActive.get()) {
+                    INTERACTIVE_COPY_MAX_DIMENSION
+                } else {
+                    MAX_DIMENSION
+                },
+            sourceWidthPx = frame.buffer.width,
+            sourceHeightPx = frame.buffer.height
         )
         val cpu = try {
             CpuFrameCopy.capture(frame, copySideLimit)
@@ -263,17 +266,26 @@ class FallbackScreenStreamer(
         if (!deltaCapable.get()) return LEGACY_FRAME_INTERVAL_MS
 
         val adaptive = adaptiveIntervalMs.get()
-        return if (interactionActive.get()) {
-            adaptive.coerceIn(
-                ADAPTIVE_MIN_INTERVAL_MS,
-                ADAPTIVE_MAX_INTERVAL_MS
-            )
-        } else {
-            maxOf(
-                ADAPTIVE_IDLE_MIN_INTERVAL_MS,
-                adaptive
-            ).coerceAtMost(ADAPTIVE_MAX_INTERVAL_MS)
-        }
+        val normalInterval =
+            if (interactionActive.get()) {
+                adaptive.coerceIn(
+                    ADAPTIVE_MIN_INTERVAL_MS,
+                    ADAPTIVE_MAX_INTERVAL_MS
+                )
+            } else {
+                maxOf(
+                    ADAPTIVE_IDLE_MIN_INTERVAL_MS,
+                    adaptive
+                ).coerceAtMost(ADAPTIVE_MAX_INTERVAL_MS)
+            }
+
+        /*
+         * Compatibility pixels are a recovery aid, not a second realtime video
+         * producer. If GPU->CPU ownership transfer is expensive, lower fallback
+         * cadence before spending more readable pixels. This bounds synchronous
+         * capture-callback work while primary RTP/MediaCodec is trying to recover.
+         */
+        return readbackBudget.minimumIntervalMs(normalInterval)
     }
 
     private fun adjustCadence(sent: Boolean) {
@@ -767,13 +779,22 @@ class FallbackScreenStreamer(
          * capture callback thread by design (retaining the SurfaceTexture for
          * background conversion would be worse). During interaction, bound that
          * synchronous readback to the 540-short-edge class on a typical phone.
-         * JPEG/delta work still runs on the independent fallback worker.
+         * FallbackReadbackBudget may trim this further but never below the
+         * primary stream's 360px readable short-edge contract. JPEG/delta work
+         * still runs on the independent fallback worker.
          */
         private const val INTERACTIVE_COPY_MAX_DIMENSION = 1_200
 
         private const val LEGACY_FRAME_INTERVAL_MS = 450L
         private const val ADAPTIVE_INITIAL_INTERVAL_MS = 90L
-        private const val ADAPTIVE_MIN_INTERVAL_MS = 45L
+
+        /*
+         * Recovery must not run a synchronous texture readback at 20+ fps while
+         * the primary decoder/encoder path is already unhealthy. ~11 fps is
+         * responsive enough for a temporary compatibility view and leaves
+         * materially more capture/GPU headroom for primary RTP to become healthy.
+         */
+        private const val ADAPTIVE_MIN_INTERVAL_MS = 90L
         private const val ADAPTIVE_IDLE_MIN_INTERVAL_MS = 120L
         private const val ADAPTIVE_MAX_INTERVAL_MS = 450L
         private const val ADAPTIVE_SUCCESS_STEP_MS = 6L
