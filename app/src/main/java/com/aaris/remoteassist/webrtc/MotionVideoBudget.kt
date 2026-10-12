@@ -751,15 +751,6 @@ internal class MotionVideoBudget {
                         it < BWE_PRESSURE_HEADROOM_RATIO
                     } == true
                     )
-        val severePredictiveBandwidthPressure =
-            bandwidthDemandProven &&
-                (
-                    observedBandwidthUtilization?.let {
-                        it >= BWE_PREDICTIVE_SEVERE_UTILIZATION_RATIO
-                    } ?: bandwidthHeadroomRatio?.let {
-                        it < BWE_SEVERE_HEADROOM_RATIO
-                    } == true
-                    )
 
         /*
          * libwebrtc often labels a stream "bandwidth" while its rate estimator
@@ -1642,7 +1633,6 @@ internal class MotionVideoBudget {
         const val CPU_PRESSURE_FAST_SETTLE_MS = 1_000L
         const val BWE_PREDICTIVE_SETTLE_MS = 1_000L
         const val BWE_PRESSURE_HEADROOM_RATIO = 1.10
-        const val BWE_SEVERE_HEADROOM_RATIO = 0.60
         /*
          * Predictive BWE relief is driven by measured RTP utilization whenever
          * stats are available. Around 85% path use starts early relief; only a
@@ -1650,7 +1640,6 @@ internal class MotionVideoBudget {
          * queue/loss/decode alarms remain independent and can act sooner.
          */
         const val BWE_PREDICTIVE_PRESSURE_UTILIZATION_RATIO = 0.85
-        const val BWE_PREDICTIVE_SEVERE_UTILIZATION_RATIO = 1.00
 
         /*
          * Clarity guard: if high cadence is the only thing that no longer fits,
