@@ -598,6 +598,9 @@ class MotionVideoBudgetTest {
         }
         assertEquals(360, budget.shortEdge)
 
+        // After the gesture settles, the existing fast-recovery contract is
+        // allowed again: three clean end-to-end windows restore 540px, then
+        // five more clean windows plus the native settle restore 720px.
         repeat(12) { index ->
             budget.observe(
                 outbound = healthy,
@@ -610,7 +613,7 @@ class MotionVideoBudgetTest {
                 allowResolutionRecovery = true
             )
         }
-        assertEquals(540, budget.shortEdge)
+        assertEquals(720, budget.shortEdge)
     }
     @Test fun recordedSoftwareCollapseGetsPixelAndUrgentCadenceRelief() {
         val budget = MotionVideoBudget()
