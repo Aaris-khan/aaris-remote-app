@@ -492,43 +492,102 @@ class GamingSmoothnessLabTest {
                     nowMs = nowMs
                 )
 
-            val resolutionChanged =
-                budget.observe(
+            /*
+             * Mirror HostWebRtcSession's production actuator order.
+             *
+             * The clarity-only BWE lane gets first refusal, then the temporal
+             * governor, then the expensive source-pixel actuator. The previous
+             * lab called MotionVideoBudget.observe() first with its default
+             * allowSpatialRelief=true, which could incorrectly resize 720 ->
+             * 540 -> 360 while production was still spending 36/45/60 fps
+             * temporal excess. That made synthetic clarity materially worse
+             * than the real policy and hid cross-governor ordering regressions.
+             */
+            val clarityCadenceCeiling =
+                budget.clarityPreservingCadenceCeiling(
+                    profile = profile,
                     outbound = outbound,
                     receiver = receiver,
                     sourceFps = scenario.sourceFps,
                     motionActive = true,
                     targetFps = target,
-                    nowMs = nowMs,
-                    interactionActive = true,
-                    allowResolutionRecovery = false
+                    interactionActive = true
+                )
+            val clarityCadenceChanged =
+                cadence.observeClarityBandwidthCeiling(
+                    ceilingFps = clarityCadenceCeiling,
+                    requestedFps = target,
+                    nowMs = nowMs
                 )
 
-            cadence.observe(
-                outbound = outbound,
-                receiver = receiver,
-                requestedFps = cadence.cap,
-                nowMs = nowMs,
-                minimumFps =
-                    budget.cadenceFloor(
-                        profile = profile,
-                        motionActive = true,
+            val cadencePressureChanged =
+                if (
+                    clarityCadenceChanged ||
+                    clarityCadenceCeiling != null
+                ) {
+                    false
+                } else {
+                    cadence.observe(
+                        outbound = outbound,
+                        receiver = receiver,
+                        requestedFps = target,
                         nowMs = nowMs,
-                        interactionActive = true
-                    ),
-                producerFps = scenario.sourceFps,
-                maximumFps = 60,
-                allowHighCadenceProbe =
-                    !resolutionChanged &&
-                        photonPolicy.allowCadencePromotion
-            )
-            cadence.tryProbeDuringInteraction(
-                outbound = outbound,
-                receiver = receiver,
-                producerFps = scenario.sourceFps,
-                interactionActive = true,
-                nowMs = nowMs
-            )
+                        minimumFps =
+                            budget.cadenceFloor(
+                                profile = profile,
+                                motionActive = true,
+                                nowMs = nowMs,
+                                interactionActive = true
+                            ),
+                        producerFps = scenario.sourceFps,
+                        maximumFps = 60,
+                        allowHighCadenceProbe =
+                            photonPolicy.allowCadencePromotion
+                    )
+                }
+
+            val resolutionChanged =
+                if (
+                    clarityCadenceCeiling != null ||
+                    cadencePressureChanged
+                ) {
+                    false
+                } else {
+                    budget.observe(
+                        outbound = outbound,
+                        receiver = receiver,
+                        sourceFps = scenario.sourceFps,
+                        motionActive = true,
+                        targetFps = target,
+                        nowMs = nowMs,
+                        interactionActive = true,
+                        allowResolutionRecovery = false,
+                        profile = profile,
+                        allowSpatialRelief =
+                            cadence.mayReduceMotionResolution(
+                                requestedFps = target
+                            )
+                    )
+                }
+
+            if (resolutionChanged) {
+                cadence.onSpatialBudgetTransition(nowMs)
+            }
+
+            if (
+                !resolutionChanged &&
+                !clarityCadenceChanged &&
+                !cadencePressureChanged &&
+                clarityCadenceCeiling == null
+            ) {
+                cadence.tryProbeDuringInteraction(
+                    outbound = outbound,
+                    receiver = receiver,
+                    producerFps = scenario.sourceFps,
+                    interactionActive = true,
+                    nowMs = nowMs
+                )
+            }
 
             val lag =
                 glassRatio < 0.80 ||
