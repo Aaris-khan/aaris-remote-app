@@ -1,13 +1,17 @@
 package com.aaris.remoteassist.webrtc
 
+import com.aaris.remoteassist.capture.CaptureProfile
+
 /**
  * Keeps compatibility-video GPU readback from monopolizing the primary RTP
  * capture callback when a device's texture-to-I420 conversion is expensive.
  *
  * This is deliberately a tiny controller for the fallback path only. It never
  * changes MediaProjection, native WebRTC adaptation, the wire format or FPS.
- * Sustained slow copies reduce the readback pixel envelope; recovery is slow
- * and requires fresh, consecutive healthy samples to avoid quality oscillation.
+ * Sustained slow copies first reduce recovery cadence and may trim pixels only
+ * down to the same 360px-class readable short-edge contract as primary video.
+ * Recovery is slow and requires fresh, consecutive healthy samples to avoid
+ * quality/cadence oscillation.
  */
 internal class FallbackReadbackBudget {
     @Volatile private var pressureLevel = 0
@@ -16,16 +20,70 @@ internal class FallbackReadbackBudget {
     private var lastSampleAtMs = -1L
     private var lastTransitionAtMs = Long.MIN_VALUE / 2
 
-    /** Returns an even, bounded long-side limit for CpuFrameCopy.capture(). */
-    fun maxSidePx(baseSidePx: Int): Int {
+    /**
+     * Returns an even long-side limit for CpuFrameCopy.capture().
+     *
+     * Recovery is intentionally lower priority than primary RTP, but it must not
+     * become unreadably soft under pressure. Preserve the same minimum readable
+     * short edge used by CaptureProfile. If the source itself is narrower than
+     * that floor, never upscale it.
+     */
+    fun maxSidePx(
+        baseSidePx: Int,
+        sourceWidthPx: Int,
+        sourceHeightPx: Int
+    ): Int {
         val base = baseSidePx.coerceAtLeast(2)
         val percent = when (pressureLevel) {
             1 -> 75L
             2 -> 50L
             else -> 100L
         }
-        return ((base.toLong() * percent / 100L).toInt() / 2 * 2)
-            .coerceAtLeast(2)
+        val pressureCandidate =
+            ((base.toLong() * percent / 100L).toInt() / 2 * 2)
+                .coerceAtLeast(2)
+
+        val sourceLong =
+            maxOf(sourceWidthPx, sourceHeightPx)
+                .coerceAtLeast(2)
+        val sourceShort =
+            minOf(sourceWidthPx, sourceHeightPx)
+                .coerceAtLeast(2)
+        val readableShort =
+            minOf(
+                CaptureProfile.MIN_READABLE_CAPTURE_SHORT_SIDE,
+                sourceShort
+            )
+        val requiredLong =
+            (
+                (
+                    readableShort.toLong() * sourceLong.toLong() +
+                        sourceShort.toLong() - 1L
+                ) / sourceShort.toLong()
+            )
+                .toInt()
+                .let { if (it % 2 == 0) it else it + 1 }
+                .coerceAtLeast(2)
+
+        return maxOf(
+            pressureCandidate,
+            requiredLong
+        )
+    }
+
+    /**
+     * Expensive GPU readback must spend temporal quality before more pixels.
+     * The caller may already be slower because of network backpressure; never
+     * accelerate it merely because the local copy path is healthy.
+     */
+    fun minimumIntervalMs(baseIntervalMs: Long): Long {
+        val base = baseIntervalMs.coerceAtLeast(1L)
+        val readbackFloorMs = when (pressureLevel) {
+            1 -> PRESSURE_LEVEL_1_MIN_INTERVAL_MS
+            2 -> PRESSURE_LEVEL_2_MIN_INTERVAL_MS
+            else -> 0L
+        }
+        return maxOf(base, readbackFloorMs)
     }
 
     /**
@@ -97,5 +155,7 @@ internal class FallbackReadbackBudget {
         const val MAX_EVIDENCE_GAP_MS = 2_000L
         const val DOWNSHIFT_HOLD_MS = 2_000L
         const val RECOVERY_HOLD_MS = 15_000L
+        const val PRESSURE_LEVEL_1_MIN_INTERVAL_MS = 120L
+        const val PRESSURE_LEVEL_2_MIN_INTERVAL_MS = 180L
     }
 }
