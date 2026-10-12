@@ -1369,7 +1369,7 @@ class MotionVideoBudgetTest {
         assertEquals(360, budget.shortEdge)
     }
 
-    @Test fun recordedBandwidthQueueSpendsCadenceBeforeEmergencyPixels() {
+    @Test fun recordedBandwidthQueueSpendsCadenceBeforeCrossingReadablePixels() {
         val budget = MotionVideoBudget()
         val cadence = VideoCadenceGovernor(30, 30)
         val recorded = sender(
@@ -1405,11 +1405,11 @@ class MotionVideoBudgetTest {
         val worse = recorded.copy(
             recent = recorded.recent!!.copy(frames = 2, sendQueueMs = 1_669.0)
         )
-        // Only after cadence is already at 24 fps may corroborated severe
-        // transport pressure unlock the final 240 emergency pixel rung.
-        assertTrue(budget.observe(worse, null, 31.0, true, 24, 2_000L))
-        assertEquals(240, budget.shortEdge)
-        assertEquals(500_000, budget.bitrateCeiling(profile, true))
+        // Once cadence is already at 24 fps, even corroborated severe
+        // transport pressure must keep the readable 360px spatial floor.
+        assertFalse(budget.observe(worse, null, 31.0, true, 24, 2_000L))
+        assertEquals(360, budget.shortEdge)
+        assertEquals(900_000, budget.bitrateCeiling(profile, true))
         assertTrue(
             cadence.observe(
                 worse,
@@ -1422,12 +1422,12 @@ class MotionVideoBudgetTest {
         )
         assertEquals(20, cadence.cap)
 
-        // There is no 180 state. Continued severe pressure spends cadence.
+        // Continued severe pressure spends cadence, never readability pixels.
         assertFalse(budget.observe(worse, null, 31.0, true, 20, 3_000L))
-        assertEquals(240, budget.shortEdge)
+        assertEquals(360, budget.shortEdge)
     }
 
-    @Test fun activeInteractionUsesCadenceAfterFinalEmergencyPixelRung() {
+    @Test fun activeInteractionUsesCadenceAfterReadablePixelFloor() {
         val budget = MotionVideoBudget()
         val cadence = VideoCadenceGovernor(30, 24)
         val recorded = sender(
@@ -1452,8 +1452,8 @@ class MotionVideoBudgetTest {
                 interactionActive = true
             )
         )
-        assertEquals(240, budget.shortEdge)
-        assertEquals(500_000, budget.bitrateCeiling(profile, true))
+        assertEquals(360, budget.shortEdge)
+        assertEquals(900_000, budget.bitrateCeiling(profile, true))
 
         val floor = budget.cadenceFloor(
             profile = profile,
@@ -1461,9 +1461,9 @@ class MotionVideoBudgetTest {
             nowMs = 1_000L,
             interactionActive = true
         )
-        assertEquals(20, floor)
+        assertEquals(30, floor)
 
-        // 240 is terminal: a second bad window cannot spend another pixel rung.
+        // 360 is terminal: a second bad window cannot spend another pixel rung.
         assertFalse(
             budget.observe(
                 outbound = recorded,
@@ -1475,7 +1475,7 @@ class MotionVideoBudgetTest {
                 interactionActive = true
             )
         )
-        assertEquals(240, budget.shortEdge)
+        assertEquals(360, budget.shortEdge)
 
         // Once the pixel escape hatch is exhausted, temporal relief remains.
         assertTrue(
@@ -1525,7 +1525,7 @@ class MotionVideoBudgetTest {
         assertEquals(360, budget.shortEdge)
     }
 
-    @Test fun activeSparseSourceWithRealRtpBacklogStillGetsPixelRelief() {
+    @Test fun activeSparseSourceWithRealRtpBacklogStopsAtReadablePixelFloor() {
         val budget = MotionVideoBudget()
         assertTrue(budget.primeForMotion(profile, 0L))
         val congestion = sender(fps = 6, encode = 10.0, queue = 120.0).copy(
@@ -1546,7 +1546,7 @@ class MotionVideoBudgetTest {
                 interactionActive = true
             )
         )
-        assertEquals(240, budget.shortEdge)
+        assertEquals(360, budget.shortEdge)
     }
 
     @Test fun activeHighSupplyBandwidthUnderdeliveryStillGetsPixelRelief() {
