@@ -5,96 +5,149 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class FallbackReadbackBudgetTest {
-    private companion object {
-        const val SOURCE_WIDTH = 1080
-        const val SOURCE_HEIGHT = 2400
+    @Test fun readbackDurationRoundsUpAtThe60HzFrameBoundary() {
+        assertEquals(0L, ceilReadbackCostMs(0L))
+        assertEquals(16L, ceilReadbackCostMs(16_000_000L))
+        assertEquals(17L, ceilReadbackCostMs(16_000_001L))
+        assertEquals(17L, ceilReadbackCostMs(16_666_667L))
+        assertEquals(18L, ceilReadbackCostMs(17_000_001L))
     }
 
     @Test fun defaultEnvelopePreservesLegacyAndInteractiveQuality() {
         val budget = FallbackReadbackBudget()
         assertEquals(
             2560,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(
+                baseSidePx = 2560,
+                sourceWidthPx = 1440,
+                sourceHeightPx = 3200
+            )
         )
         assertEquals(
-            1200,
-            budget.maxSidePx(1200, SOURCE_WIDTH, SOURCE_HEIGHT)
+            1600,
+            budget.maxSidePx(
+                baseSidePx = 1600,
+                sourceWidthPx = 720,
+                sourceHeightPx = 1600
+            )
         )
-        assertEquals(90L, budget.minimumIntervalMs(90L))
-        assertEquals(300L, budget.minimumIntervalMs(300L))
     }
 
-    @Test fun isolatedSlowCopyDoesNotReduceResolutionOrCadence() {
+    @Test fun isolatedSlowCopyDoesNotReduceResolution() {
         val budget = FallbackReadbackBudget()
         assertNull(budget.observe(70, 1_000))
-        assertNull(budget.observe(18, 1_100))
+        // A genuinely cheap sample breaks the overload streak.
+        assertNull(budget.observe(8, 1_100))
         assertNull(budget.observe(70, 1_200))
         assertEquals(
-            1200,
-            budget.maxSidePx(1200, SOURCE_WIDTH, SOURCE_HEIGHT)
+            2560,
+            budget.maxSidePx(2560, 1440, 3200)
         )
-        assertEquals(90L, budget.minimumIntervalMs(90L))
     }
 
-    @Test fun sustainedSlowCopiesSpendCadenceBeforeReadablePixels() {
+    @Test fun oneFrameBudgetReadbackImmediatelyThrottlesFallbackCadence() {
+        val budget = FallbackReadbackBudget()
+
+        assertNull(budget.observe(17, 1_000))
+        assertEquals(68L, budget.minimumIntervalMs())
+
+        // Cheap readback removes only the fast cadence brake; spatial recovery
+        // remains governed by its own slower hysteresis.
+        assertNull(budget.observe(8, 1_100))
+        assertEquals(0L, budget.minimumIntervalMs())
+    }
+
+    @Test fun expensiveReadbackDutyCycleIsBounded() {
+        val budget = FallbackReadbackBudget()
+
+        assertNull(budget.observe(40, 1_000))
+        assertEquals(160L, budget.minimumIntervalMs())
+
+        assertNull(budget.observe(200, 1_100))
+        assertEquals(300L, budget.minimumIntervalMs())
+    }
+
+    @Test fun sustainedSlowCopiesReduceOnlyBoundedFallbackPixels() {
         val budget = FallbackReadbackBudget()
         assertNull(budget.observe(40, 1_000))
         assertEquals(1, budget.observe(42, 1_100))
-
-        // Level 1 trims the 1200px recovery long edge to 900px. On a 20:9
-        // phone that still leaves a 405px short edge, above the 360px floor.
         assertEquals(
-            900,
-            budget.maxSidePx(1200, SOURCE_WIDTH, SOURCE_HEIGHT)
+            1920,
+            budget.maxSidePx(2560, 1440, 3200)
         )
-        assertEquals(120L, budget.minimumIntervalMs(90L))
+        assertEquals(
+            1200,
+            budget.maxSidePx(1600, 720, 1600)
+        )
 
         // Sustained pressure may step down again, but never twice at once.
         assertNull(budget.observe(55, 1_150))
         assertNull(budget.observe(55, 1_200))
         assertEquals(
-            900,
-            budget.maxSidePx(1200, SOURCE_WIDTH, SOURCE_HEIGHT)
+            1920,
+            budget.maxSidePx(2560, 1440, 3200)
         )
         assertEquals(2, budget.observe(55, 3_100))
-
-        // 50% of 1200 would be 600px long (~270px short). Clamp to 800x360
-        // instead and relieve the expensive synchronous path temporally.
         assertEquals(
-            800,
-            budget.maxSidePx(1200, SOURCE_WIDTH, SOURCE_HEIGHT)
+            1280,
+            budget.maxSidePx(2560, 1440, 3200)
         )
         assertEquals(
             800,
-            budget.maxSidePx(1200, SOURCE_HEIGHT, SOURCE_WIDTH)
-        )
-        assertEquals(180L, budget.minimumIntervalMs(90L))
-        assertEquals(
-            "Existing slower network/backpressure cadence must remain authoritative",
-            300L,
-            budget.minimumIntervalMs(300L)
+            budget.maxSidePx(1600, 720, 1600)
         )
         assertNull(budget.observe(99, 3_150))
         assertEquals(
-            800,
-            budget.maxSidePx(1200, SOURCE_WIDTH, SOURCE_HEIGHT)
+            1280,
+            budget.maxSidePx(2560, 1440, 3200)
         )
     }
 
-    @Test fun readableFloorNeverUpscalesAWeakSource() {
+    @Test fun pressureNeverCrossesThe360ShortEdgeReadabilityFloor() {
         val budget = FallbackReadbackBudget()
         budget.observe(40, 1_000)
-        budget.observe(40, 1_100)
-        budget.observe(40, 1_150)
+        budget.observe(40, 1_050)
         budget.observe(40, 3_100)
+        budget.observe(40, 3_150)
 
-        // A 320x720 source cannot be made 360p by policy. The long-side limit
-        // may remain above the source, but CpuFrameCopy's ratio is capped at 1
-        // so no synthetic upscaling occurs.
+        // A 1080x2400 source needs an 800px long side to preserve a 360px
+        // short edge. The old 50% pressure rung returned 600px here.
         assertEquals(
-            720,
-            budget.maxSidePx(1200, 320, 720)
+            800,
+            budget.maxSidePx(
+                baseSidePx = 1200,
+                sourceWidthPx = 1080,
+                sourceHeightPx = 2400
+            )
         )
+
+        // 800 / 2400 * 1080 == 360 exactly.
+        val deliveredShortEdge =
+            1080.0 * 800.0 / 2400.0
+        assertEquals(360.0, deliveredShortEdge, 0.001)
+    }
+
+    @Test fun oddSourceGeometryCannotRoundThe360FloorDownTo358() {
+        val budget = FallbackReadbackBudget()
+        budget.observe(40, 1_000)
+        budget.observe(40, 1_050)
+        budget.observe(40, 3_100)
+        budget.observe(40, 3_150)
+
+        /*
+         * Verify the returned long-side budget using the exact scale/truncate/
+         * even-down sequence performed by CpuFrameCopy. The budget may add at
+         * most the tiny amount of long-side headroom required by that geometry.
+         */
+        val side =
+            budget.maxSidePx(
+                baseSidePx = 1200,
+                sourceWidthPx = 1385,
+                sourceHeightPx = 2770
+            )
+        val ratio = side.toDouble() / 2770.0
+        val copiedShort = (1385 * ratio).toInt().let { it / 2 * 2 }
+        assertEquals(360, copiedShort)
     }
 
     @Test fun recoveryRequiresEnoughFreshHealthySamplesAndHoldTime() {
@@ -103,16 +156,15 @@ class FallbackReadbackBudgetTest {
         budget.observe(40, 1_050)
         assertEquals(
             1920,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(2560, 1440, 3200)
         )
-        assertEquals(120L, budget.minimumIntervalMs(90L))
 
         repeat(10) {
             assertNull(budget.observe(8, 5_000L + it * 100L))
         }
         assertEquals(
             1920,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(2560, 1440, 3200)
         )
 
         // A pause invalidates the old votes; the first healthy callback cannot
@@ -120,7 +172,7 @@ class FallbackReadbackBudgetTest {
         assertNull(budget.observe(8, 20_000))
         assertEquals(
             1920,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(2560, 1440, 3200)
         )
         repeat(8) {
             assertNull(budget.observe(8, 20_100L + it * 100L))
@@ -128,9 +180,8 @@ class FallbackReadbackBudgetTest {
         assertEquals(0, budget.observe(8, 20_900))
         assertEquals(
             2560,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(2560, 1440, 3200)
         )
-        assertEquals(90L, budget.minimumIntervalMs(90L))
     }
 
     @Test fun disconnectedEvidenceAndResetDoNotLeakAcrossRecoverySessions() {
@@ -139,19 +190,19 @@ class FallbackReadbackBudgetTest {
         assertNull(budget.observe(45, 3_000))
         assertEquals(
             2560,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(2560, 1440, 3200)
         )
         assertEquals(1, budget.observe(45, 3_100))
         budget.reset()
         assertEquals(
             2560,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(2560, 1440, 3200)
         )
-        assertEquals(90L, budget.minimumIntervalMs(90L))
+        assertEquals(0L, budget.minimumIntervalMs())
         assertNull(budget.observe(45, 50))
         assertEquals(
             2560,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(2560, 1440, 3200)
         )
     }
 
@@ -161,8 +212,8 @@ class FallbackReadbackBudgetTest {
         assertNull(budget.observe(40, -1))
         assertEquals(
             2560,
-            budget.maxSidePx(2560, SOURCE_WIDTH, SOURCE_HEIGHT)
+            budget.maxSidePx(2560, 1440, 3200)
         )
-        assertEquals(90L, budget.minimumIntervalMs(90L))
+        assertEquals(0L, budget.minimumIntervalMs())
     }
 }

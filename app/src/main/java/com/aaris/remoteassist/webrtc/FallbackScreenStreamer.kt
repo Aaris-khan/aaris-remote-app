@@ -131,7 +131,10 @@ class FallbackScreenStreamer(
         // This synchronous GPU readback is on the capture callback.
         // Reduce only recovery pixels when repeated measured copies are slow.
         val copyCostMs =
-            (System.nanoTime() - copyStartedNs).coerceAtLeast(0L) / 1_000_000L
+            ceilReadbackCostMs(
+                (System.nanoTime() - copyStartedNs)
+                    .coerceAtLeast(0L)
+            )
         val changedReadbackTier = readbackBudget.observe(
             copyCostMs,
             monotonicNowMs()
@@ -263,29 +266,34 @@ class FallbackScreenStreamer(
     }
 
     private fun currentFrameIntervalMs(): Long {
-        if (!deltaCapable.get()) return LEGACY_FRAME_INTERVAL_MS
-
-        val adaptive = adaptiveIntervalMs.get()
-        val normalInterval =
-            if (interactionActive.get()) {
-                adaptive.coerceIn(
-                    ADAPTIVE_MIN_INTERVAL_MS,
-                    ADAPTIVE_MAX_INTERVAL_MS
-                )
+        val transportInterval =
+            if (!deltaCapable.get()) {
+                LEGACY_FRAME_INTERVAL_MS
             } else {
-                maxOf(
-                    ADAPTIVE_IDLE_MIN_INTERVAL_MS,
-                    adaptive
-                ).coerceAtMost(ADAPTIVE_MAX_INTERVAL_MS)
+                val adaptive = adaptiveIntervalMs.get()
+                if (interactionActive.get()) {
+                    adaptive.coerceIn(
+                        ADAPTIVE_MIN_INTERVAL_MS,
+                        ADAPTIVE_MAX_INTERVAL_MS
+                    )
+                } else {
+                    maxOf(
+                        ADAPTIVE_IDLE_MIN_INTERVAL_MS,
+                        adaptive
+                    ).coerceAtMost(ADAPTIVE_MAX_INTERVAL_MS)
+                }
             }
 
         /*
-         * Compatibility pixels are a recovery aid, not a second realtime video
-         * producer. If GPU->CPU ownership transfer is expensive, lower fallback
-         * cadence before spending more readable pixels. This bounds synchronous
-         * capture-callback work while primary RTP/MediaCodec is trying to recover.
+         * Network backpressure and capture-thread readback pressure are
+         * independent constraints. Honor the slower one. This does not add a
+         * timer or queue: FallbackFrameAdmission already owns admission and
+         * simply observes the larger interval on the next callback.
          */
-        return readbackBudget.minimumIntervalMs(normalInterval)
+        return maxOf(
+            transportInterval,
+            readbackBudget.minimumIntervalMs()
+        )
     }
 
     private fun adjustCadence(sent: Boolean) {
@@ -779,22 +787,13 @@ class FallbackScreenStreamer(
          * capture callback thread by design (retaining the SurfaceTexture for
          * background conversion would be worse). During interaction, bound that
          * synchronous readback to the 540-short-edge class on a typical phone.
-         * FallbackReadbackBudget may trim this further but never below the
-         * primary stream's 360px readable short-edge contract. JPEG/delta work
-         * still runs on the independent fallback worker.
+         * JPEG/delta work still runs on the independent fallback worker.
          */
         private const val INTERACTIVE_COPY_MAX_DIMENSION = 1_200
 
         private const val LEGACY_FRAME_INTERVAL_MS = 450L
         private const val ADAPTIVE_INITIAL_INTERVAL_MS = 90L
-
-        /*
-         * Recovery must not run a synchronous texture readback at 20+ fps while
-         * the primary decoder/encoder path is already unhealthy. ~11 fps is
-         * responsive enough for a temporary compatibility view and leaves
-         * materially more capture/GPU headroom for primary RTP to become healthy.
-         */
-        private const val ADAPTIVE_MIN_INTERVAL_MS = 90L
+        private const val ADAPTIVE_MIN_INTERVAL_MS = 45L
         private const val ADAPTIVE_IDLE_MIN_INTERVAL_MS = 120L
         private const val ADAPTIVE_MAX_INTERVAL_MS = 450L
         private const val ADAPTIVE_SUCCESS_STEP_MS = 6L
