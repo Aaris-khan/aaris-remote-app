@@ -598,6 +598,9 @@ class MotionVideoBudgetTest {
         }
         assertEquals(360, budget.shortEdge)
 
+        // After the gesture settles, the existing fast-recovery contract is
+        // allowed again: three clean end-to-end windows restore 540px, then
+        // five more clean windows plus the native settle restore 720px.
         repeat(12) { index ->
             budget.observe(
                 outbound = healthy,
@@ -610,7 +613,7 @@ class MotionVideoBudgetTest {
                 allowResolutionRecovery = true
             )
         }
-        assertEquals(540, budget.shortEdge)
+        assertEquals(720, budget.shortEdge)
     }
     @Test fun recordedSoftwareCollapseGetsPixelAndUrgentCadenceRelief() {
         val budget = MotionVideoBudget()
@@ -1838,6 +1841,88 @@ class MotionVideoBudgetTest {
             11_000
         ))
         assertEquals(24, cadence.cap)
+    }
+
+
+    @Test fun sustainedCpuPressureUsesFastBoundedReliefWithoutEmergencyBlur() {
+        val budget = nativeWarmBudget()
+        val cpuLimited =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 5.0
+            ).copy(
+                qualityLimitationReason = "CPU"
+            )
+        val healthyReceiver = receiver(fps = 60, presented = 60)
+
+        // First two CPU-limited windows commit only one bounded rung.
+        assertFalse(
+            budget.observe(
+                cpuLimited,
+                healthyReceiver,
+                60.0,
+                true,
+                60,
+                500L,
+                interactionActive = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                cpuLimited,
+                healthyReceiver,
+                60.0,
+                true,
+                60,
+                1_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(540, budget.shortEdge)
+
+        // Sustained proof may reach the clarity-safe 360 rung after the
+        // dedicated one-second CPU settle instead of waiting the generic 3 s.
+        assertFalse(
+            budget.observe(
+                cpuLimited,
+                healthyReceiver,
+                60.0,
+                true,
+                60,
+                1_500L,
+                interactionActive = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                cpuLimited,
+                healthyReceiver,
+                60.0,
+                true,
+                60,
+                2_000L,
+                interactionActive = true
+            )
+        )
+        assertEquals(360, budget.shortEdge)
+
+        // CPU pressure alone must not unlock visibly blurry 240/180 emergency
+        // rungs; cadence/native temporal relief owns any remaining overload.
+        repeat(4) { index ->
+            assertFalse(
+                budget.observe(
+                    cpuLimited,
+                    healthyReceiver,
+                    60.0,
+                    true,
+                    60,
+                    2_500L + index * 500L,
+                    interactionActive = true
+                )
+            )
+        }
+        assertEquals(360, budget.shortEdge)
     }
 
 }

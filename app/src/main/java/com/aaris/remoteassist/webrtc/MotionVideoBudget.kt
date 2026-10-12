@@ -503,6 +503,11 @@ internal class MotionVideoBudget {
         // accumulated that delay.
         val jitterMs = received?.playoutDelayMs.valid()
         val underDelivery = sender.fps < goal * 0.85
+        val cpuPressure =
+            outbound.qualityLimitationReason.equals(
+                "cpu",
+                ignoreCase = true
+            )
         val encodePressure = sender.frames >= 2 && underDelivery && (encodeMs ?: 0.0) > frameMs * 0.85
         val queuePressure = (queueMs ?: 0.0) >= 80.0 || (jitterMs ?: 0.0) >= 100.0
         val decodePressure = received != null && (decodeMs ?: 0.0) > frameMs * 0.85 &&
@@ -847,7 +852,7 @@ internal class MotionVideoBudget {
                 predictiveResidencePressure ||
                 pipelineDeadlinePressure ||
                 producerStarvationPressure ||
-                outbound.qualityLimitationReason == "cpu"
+                cpuPressure
 
         /*
          * Use exactly the same rung selection for a validated warm-start commit
@@ -990,6 +995,8 @@ internal class MotionVideoBudget {
                     RTP_BURST_FAST_SETTLE_MS
                 predictiveResidencePressure ->
                     RESIDENCE_GROWTH_FAST_SETTLE_MS
+                cpuPressure ->
+                    CPU_PRESSURE_FAST_SETTLE_MS
                 highCadencePipelinePressure ->
                     HIGH_CADENCE_FAST_SETTLE_MS
                 else ->
@@ -1606,6 +1613,14 @@ internal class MotionVideoBudget {
         // Follow the same 6-second validity ceiling as VideoHealthWindowTracker.
         const val MAX_SENDER_SAMPLE_GAP_MS = 6_000L
         const val BANDWIDTH_FAST_SETTLE_MS = 1_000L
+        /*
+         * qualityLimitationReason=cpu is local encoder/capture proof, not noisy
+         * WAN inference. Let two consecutive CPU-limited windows reach the
+         * existing 720 -> 540 -> 360 ladder without waiting the generic 3 s
+         * settle. CPU alone still cannot unlock 240/180: those visibly blurry
+         * emergency rungs remain reserved for stronger pipeline/bandwidth proof.
+         */
+        const val CPU_PRESSURE_FAST_SETTLE_MS = 1_000L
         const val BWE_PREDICTIVE_SETTLE_MS = 1_000L
         const val BWE_PRESSURE_HEADROOM_RATIO = 1.10
         const val BWE_SEVERE_HEADROOM_RATIO = 0.60
