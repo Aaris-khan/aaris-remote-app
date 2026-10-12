@@ -7,12 +7,9 @@ import kotlin.math.roundToInt
  * Remote control is a detail-sensitive workload: text, forms and icons must
  * remain readable while motion stays fresh. One-second telemetry may reduce
  * the normal spatial envelope through 720 -> 540 -> 360, but 360 is the
- * readability floor for ordinary encoder/decode/presentation/BWE pressure.
- *
- * A 240-short-edge rung exists only as a last-resort transport escape after
- * cadence has already reached the 24 fps bandwidth floor AND independently
- * corroborated severe network pressure proves that 360 cannot stay fresh.
- * There is deliberately no 180-short-edge primary-video rung.
+ * readability floor for all primary-video adaptation. Once 360 is reached,
+ * further overload is paid in temporal cadence/bitrate instead of making
+ * text, forms and icons unreadable.
  *
  * WebRTC's BWE clarity guard spends high-cadence excess first when the same
  * admitted pixels still fit at a lower interactive cadence. This avoids
@@ -860,22 +857,12 @@ internal class MotionVideoBudget {
          * trees from drifting apart.
          */
         /*
-         * 360 is the normal readability floor. A bandwidth estimator, codec
-         * overuse signal or render hitch by itself must never make forms/text
-         * unreadable. The 240 rung is reserved for a genuinely failing path:
-         * cadence has already been reduced to the bandwidth floor, the moving
-         * stream is severely under-delivering, and transport independently
-         * corroborates congestion (queue/loss/RTT).
-         *
-         * This is intentionally asymmetric. A remote-control session may look
-         * slightly less fluid at 20-24 fps on a bad link, but a 180/240-style
-         * image that cannot be read is not useful control feedback.
+         * 360 is a hard readability floor for primary remote-control video.
+         * Once the stream reaches it, severe congestion is handled by
+         * VideoCadenceGovernor/GCC rather than another spatial collapse.
+         * Stale motion at 15-24 fps is still operable; unreadable form text is
+         * not.
          */
-        val emergencyBandwidthPressure =
-            goal <= BANDWIDTH_CADENCE_FLOOR_FPS &&
-                severeBandwidthFreshnessPressure &&
-                transportProvesCongestion
-
         fun nextPressureRung(): Int =
             when {
                 severeProducerStarvation && shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
@@ -883,9 +870,6 @@ internal class MotionVideoBudget {
                 shortEdge > 540 -> 540
                 shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
                     CLARITY_FLOOR_SHORT_EDGE
-                shortEdge > EMERGENCY_SHORT_EDGE &&
-                    emergencyBandwidthPressure ->
-                    EMERGENCY_SHORT_EDGE
                 else -> shortEdge
             }
 
@@ -946,18 +930,16 @@ internal class MotionVideoBudget {
              * confirmation rule: two pressure windows, or an already-strong
              * signal such as severe queue debt / predictive residence growth.
              *
-             * Once confirmed, commit the best rung directly. If the evidence
-             * already justifies 240px, avoid a 360px reconfiguration followed by
-             * another resize one control interval later.
+             * Once confirmed, commit the best readable rung directly. No
+             * pressure path is allowed to cross the 360px short-edge floor.
              */
             if (
                 warmStartResizePending &&
                 (severe || predictiveResidencePressure || pressureSamples >= 2)
             ) {
                 // Select while the speculative-warm-start guard is still
-                // armed. Clearing it first would make producer-only starvation
-                // look like a later pressure episode and skip 360 -> 240 in
-                // the same observation.
+                // armed so producer starvation and ordinary pressure share the
+                // same single-step readable spatial ladder.
                 val confirmed = nextPressureRung()
                 warmStartResizePending = false
                 if (confirmed != shortEdge) {
@@ -1013,9 +995,8 @@ internal class MotionVideoBudget {
                 (severe || predictiveResidencePressure || pressureSamples >= 2) &&
                 nowMs - changedAtMs >= settleMs
             ) {
-                // Ordinary pressure may spend pixels only down to the 360
-                // readability floor. A 240 emergency transition is legal only
-                // after cadence relief and corroborated severe transport proof.
+                // Every pressure class stops at the 360 readability floor.
+                // Severe transport failure continues through temporal relief.
                 val next = nextPressureRung()
                 if (next != shortEdge) {
                     shortEdge = next
@@ -1243,55 +1224,37 @@ internal class MotionVideoBudget {
         if (!motionActive) return 1
 
         /*
-         * 360 is both the normal spatial floor and still a useful interactive
-         * operating point. Do NOT interpret merely reaching 360 as permission
-         * to cap every healthy gesture at 24 fps; that creates visible judder
-         * even after the path has recovered.
-         *
-         * Keep the ordinary active-control floor at 30 fps while the stream is
-         * at 360 or above. VideoCadenceGovernor's severe pressure path is
-         * allowed to bypass that floor and prove a 24/20 fps operating point
-         * when queue/codec/transport evidence really demands it. Once the
-         * last-resort 240 rung has actually been committed, stop spending
-         * pixels and let ordinary interaction use the 20 fps emergency floor.
+         * 360 is the terminal spatial rung. Keep ordinary active control at a
+         * 30 fps UX floor, but let VideoCadenceGovernor bypass that floor under
+         * measured severe CPU/network/presentation pressure. That preserves
+         * readable pixels while still giving a failing link a temporal escape.
          */
         if (interactionActive) {
-            val floor =
-                if (shortEdge > EMERGENCY_SHORT_EDGE) {
-                    INTERACTION_CADENCE_FLOOR_FPS
-                } else {
-                    EMERGENCY_INTERACTION_FPS_FLOOR
-                }
-            return minOf(floor, profile.motionFps)
-        }
-
-        /*
-         * Recent bandwidth pressure must not pin a readable 360 stream at
-         * 20/24 fps after the backlog drains. Hold 30 while a spatial rung
-         * remains above the emergency floor; severe cadence relief remains
-         * independently authoritative in VideoCadenceGovernor.
-         */
-        val bandwidthReliefActive =
-            nowMs - lastBandwidthPressureAtMs in 0L..BANDWIDTH_PRESSURE_HOLD_MS
-        if (
-            bandwidthReliefActive &&
-            shortEdge > EMERGENCY_SHORT_EDGE
-        ) {
             return minOf(
                 INTERACTION_CADENCE_FLOOR_FPS,
                 profile.motionFps
             )
         }
 
-        // After a real resize, keep a short drain window. 240 is terminal for
-        // pixels, so its settle floor is 24; 360+ retains the 30 fps UX floor.
+        /*
+         * Recent bandwidth pressure must not pin a readable 360 stream at a
+         * low cadence after backlog drains. Passive motion holds 30 briefly;
+         * severe cadence relief remains independently authoritative.
+         */
+        val bandwidthReliefActive =
+            nowMs - lastBandwidthPressureAtMs in 0L..BANDWIDTH_PRESSURE_HOLD_MS
+        if (bandwidthReliefActive) {
+            return minOf(
+                INTERACTION_CADENCE_FLOOR_FPS,
+                profile.motionFps
+            )
+        }
+
+        // After a real resize, keep one short drain window at the readable
+        // interaction cadence. Once settled, the cadence owner is unconstrained.
         return if (nowMs - changedAtMs < SETTLE_MS) {
             minOf(
-                if (shortEdge > EMERGENCY_SHORT_EDGE) {
-                    INTERACTION_CADENCE_FLOOR_FPS
-                } else {
-                    BANDWIDTH_CADENCE_FLOOR_FPS
-                },
+                INTERACTION_CADENCE_FLOOR_FPS,
                 profile.motionFps
             )
         } else {
@@ -1311,7 +1274,7 @@ internal class MotionVideoBudget {
          * send rate. The important invariant is that this ceiling describes the
          * geometry we have ACTUALLY admitted to VideoSource/MediaCodec.
          *
-         * shortEdge may be a speculative 360/240 control-plane prediction while
+         * shortEdge may be a speculative 360 control-plane prediction while
          * committedSourceShortEdge is still native 720/1080. Applying the
          * speculative bitrate ceiling at that moment creates a contradictory
          * operating point: more motion FPS at full pixels, but a sharply lower
@@ -1529,8 +1492,8 @@ internal class MotionVideoBudget {
      * by pixel area, and add a codec/content-change safety margin. The existing
      * multi-window end-to-end recovery gates and GCC/TWCC remain authoritative.
      *
-     * This deliberately replaces no emergency ceiling: low rungs still use the
-     * conservative nominal table for maxBitrateBps. It only prevents a cheap
+     * Low readable rungs still use the conservative nominal table for
+     * maxBitrateBps. This only prevents a cheap
      * form/text screen from staying blurry because a fixed "720p needs X Mbps"
      * assumption is larger than its real encoded demand.
      */
@@ -1599,7 +1562,6 @@ internal class MotionVideoBudget {
     ): Double {
         val baseline =
             when {
-                edge <= EMERGENCY_SHORT_EDGE -> 500_000.0
                 edge <= CLARITY_FLOOR_SHORT_EDGE -> 900_000.0
                 edge <= 540 -> 1_800_000.0
                 else -> 3_200_000.0
@@ -1759,10 +1721,7 @@ internal class MotionVideoBudget {
         const val PROVEN_NETWORK_RTT_MS = 650
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val CLARITY_FLOOR_SHORT_EDGE = 360
-        const val EMERGENCY_SHORT_EDGE = 240
         const val INTERACTION_CADENCE_FLOOR_FPS = 30
-        const val BANDWIDTH_CADENCE_FLOOR_FPS = 24
-        const val EMERGENCY_INTERACTION_FPS_FLOOR = 20
         const val IDLE_RESTORE_MS = 8_000L
     }
 }
