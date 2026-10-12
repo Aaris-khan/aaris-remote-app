@@ -101,10 +101,12 @@ class AarisLowLatencyVideoDecoderFactoryTest {
         AarisLowLatencyVideoDecoderFactory.applyRealtimeHints(
             format,
             0,
-            true
+            true,
+            45
         )
 
         assertEquals(0, format.getInteger(MediaFormat.KEY_PRIORITY))
+        assertEquals(45, format.getInteger(MediaFormat.KEY_OPERATING_RATE))
         assertFalse(format.containsKey(MediaFormat.KEY_LOW_LATENCY))
     }
 
@@ -121,10 +123,12 @@ class AarisLowLatencyVideoDecoderFactoryTest {
         AarisLowLatencyVideoDecoderFactory.applyRealtimeHints(
             format,
             0,
-            true
+            true,
+            45
         )
 
         assertEquals(0, format.getInteger(MediaFormat.KEY_PRIORITY))
+        assertEquals(45, format.getInteger(MediaFormat.KEY_OPERATING_RATE))
         assertEquals(1, format.getInteger(MediaFormat.KEY_LOW_LATENCY))
     }
 
@@ -141,11 +145,59 @@ class AarisLowLatencyVideoDecoderFactoryTest {
         AarisLowLatencyVideoDecoderFactory.applyRealtimeHints(
             format,
             0,
-            false
+            false,
+            30
         )
 
         assertEquals(0, format.getInteger(MediaFormat.KEY_PRIORITY))
+        assertEquals(30, format.getInteger(MediaFormat.KEY_OPERATING_RATE))
         assertFalse(format.containsKey(MediaFormat.KEY_LOW_LATENCY))
+    }
+
+    @Test
+    @Config(sdk = [30])
+    fun unknownDecoderThroughputDoesNotInventOperatingRate() {
+        val format =
+            MediaFormat.createVideoFormat(
+                MediaFormat.MIMETYPE_VIDEO_AVC,
+                720,
+                1280
+            )
+
+        AarisLowLatencyVideoDecoderFactory.applyRealtimeHints(
+            format,
+            0,
+            false,
+            0
+        )
+
+        assertEquals(0, format.getInteger(MediaFormat.KEY_PRIORITY))
+        assertFalse(format.containsKey(MediaFormat.KEY_OPERATING_RATE))
+        assertFalse(format.containsKey(MediaFormat.KEY_LOW_LATENCY))
+    }
+
+    @Test
+    fun operatingRateIsBoundedByRemoteScreenProductCeiling() {
+        assertEquals(
+            60,
+            AarisLowLatencyVideoDecoderFactory.boundedOperatingRate(120.0)
+        )
+        assertEquals(
+            58,
+            AarisLowLatencyVideoDecoderFactory.boundedOperatingRate(58.9)
+        )
+        assertEquals(
+            15,
+            AarisLowLatencyVideoDecoderFactory.boundedOperatingRate(15.0)
+        )
+        assertEquals(
+            0,
+            AarisLowLatencyVideoDecoderFactory.boundedOperatingRate(14.9)
+        )
+        assertEquals(
+            0,
+            AarisLowLatencyVideoDecoderFactory.boundedOperatingRate(Double.NaN)
+        )
     }
 
     @Test
@@ -161,10 +213,12 @@ class AarisLowLatencyVideoDecoderFactoryTest {
         AarisLowLatencyVideoDecoderFactory.applyRealtimeHints(
             format,
             MediaCodec.CONFIGURE_FLAG_ENCODE,
-            true
+            true,
+            60
         )
 
         assertFalse(format.containsKey(MediaFormat.KEY_PRIORITY))
+        assertFalse(format.containsKey(MediaFormat.KEY_OPERATING_RATE))
         assertFalse(format.containsKey(MediaFormat.KEY_LOW_LATENCY))
     }
 }
