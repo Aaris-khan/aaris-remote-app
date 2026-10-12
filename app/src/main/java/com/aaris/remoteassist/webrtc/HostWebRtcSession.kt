@@ -1585,10 +1585,16 @@ class HostWebRtcSession(
                         requestedFps = effectiveRequestedFps
                     )
                 } ?: false
+            /*
+             * A generic WebRTC CPU label is owned by VideoCadenceGovernor under
+             * MAINTAIN_RESOLUTION. Only measured local pipeline debt or proven
+             * network pressure may unlock the slower capture-tier spatial
+             * safety valve. This prevents CPU-only feedback from pinning the
+             * controller at a blurry tier after cadence has already adapted.
+             */
             val remotePressure =
-                snapshot.qualityLimitationReason == "cpu" ||
-                    (snapshot.packetLossRatio ?: 0.0) >=
-                        CaptureQualityGovernor.PRESSURE_PACKET_LOSS_RATIO ||
+                (snapshot.packetLossRatio ?: 0.0) >=
+                    CaptureQualityGovernor.PRESSURE_PACKET_LOSS_RATIO ||
                     (snapshot.roundTripTimeMs ?: 0) >=
                         CaptureQualityGovernor.PRESSURE_RTT_MS
             val pressured =
