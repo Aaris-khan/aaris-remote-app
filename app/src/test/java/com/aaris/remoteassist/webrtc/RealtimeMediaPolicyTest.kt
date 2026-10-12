@@ -10,16 +10,18 @@ import org.webrtc.RtpParameters
 
 class RealtimeMediaPolicyTest {
     @Test
-    fun remoteControlKeepsNativeAdaptivePlayoutTiming() {
+    fun remoteControlKeepsAdaptivePlayoutInsideFreshnessBudget() {
         // A positive minimum keeps M150 out of its render-ASAP path, allowing
-        // native timestamp/jitter timing to smooth WAN arrival variance.
+        // native timestamp/jitter timing to smooth ordinary WAN arrival variance.
         assertEquals(10, RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS)
+        // Remote control must shed load rather than buffer call-style stale video.
+        assertEquals(180, RealtimeMediaPolicy.PLAYOUT_DELAY_MAX_MS)
         assertTrue(
             RealtimeMediaPolicy.PLAYOUT_DELAY_MAX_MS in
-                RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS..500
+                RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS..200
         )
         assertEquals(
-            "WebRTC-ForceSendPlayoutDelay/min_ms:10,max_ms:500/",
+            "WebRTC-ForceSendPlayoutDelay/min_ms:10,max_ms:180/",
             RealtimeMediaPolicy.FIELD_TRIALS
         )
         assertFalse(
