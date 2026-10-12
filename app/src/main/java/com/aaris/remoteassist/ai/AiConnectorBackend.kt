@@ -58,7 +58,7 @@ class AiConnectorBackend internal constructor(private val client: OkHttpClient) 
         }
     }
     companion object {
-        const val BASE_URL = "https://aaris-phone-mcp.aaris-remote-wk3548.workers.dev"
+        const val BASE_URL = "https://aaris-phone-mcp.hhakmuddin8.workers.dev"
         private val JSON = "application/json".toMediaType()
         private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
