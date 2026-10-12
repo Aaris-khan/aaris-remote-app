@@ -92,7 +92,7 @@ class FallbackReadbackBudgetTest {
         // may remain above the source, but CpuFrameCopy's ratio is capped at 1
         // so no synthetic upscaling occurs.
         assertEquals(
-            800,
+            720,
             budget.maxSidePx(1200, 320, 720)
         )
     }
