@@ -4,6 +4,7 @@ import android.annotation.TargetApi;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecInfo.CodecCapabilities;
+import android.media.MediaCodecInfo.VideoCapabilities;
 import android.media.MediaCodecList;
 import android.media.MediaCrypto;
 import android.media.MediaFormat;
@@ -117,7 +118,8 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
       return new AndroidVideoDecoder(
           new LowLatencyMediaCodecWrapperFactory(
               type.mimeType(),
-              lowLatencySupported),
+              lowLatencySupported,
+              capabilities.getVideoCapabilities()),
           mediaCodecInfo.getName(),
           type,
           colorFormat,
@@ -207,28 +209,138 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
    * Apply only public Android resource-planning hints at WebRTC's existing
    * decoder configure seam.
    *
-   * <p>Priority 0 is available from API 23 and tells MediaCodec that best-effort
-   * throughput is not sufficient for this realtime communication workload. The
-   * low-latency flag remains capability-gated because Android exposes it only
-   * for decoders that explicitly advertise FEATURE_LowLatency on API 30+.</p>
+   * <p>Stock AndroidVideoDecoder configures only MIME + dimensions, so priority
+   * 0 has no frame-rate performance target to plan around. When the selected
+   * hardware decoder publishes a measured/guaranteed throughput for the exact
+   * decoded geometry, add KEY_OPERATING_RATE as that target. Unknown or broken
+   * OEM capability metadata leaves the current priority-only path unchanged.
+   *
+   * <p>The low-latency flag remains separately capability-gated because Android
+   * exposes it only for decoders that advertise FEATURE_LowLatency on API 30+.</p>
    */
   static void applyRealtimeHints(
       MediaFormat format,
       int flags,
-      boolean lowLatencySupported) {
+      boolean lowLatencySupported,
+      int operatingRateFps) {
     if ((flags & MediaCodec.CONFIGURE_FLAG_ENCODE) != 0) {
       return;
     }
 
-    // minSdk is 26. Unlike KEY_LOW_LATENCY, KEY_PRIORITY applies to codec
-    // resource planning even on older controller phones.
+    // minSdk is 26. Priority 0 marks this as realtime codec work.
     format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+
+    if (operatingRateFps > 0) {
+      format.setInteger(MediaFormat.KEY_OPERATING_RATE, operatingRateFps);
+    }
 
     if (
         lowLatencySupported &&
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
     ) {
       LowLatencyCapability.Api30.enable(format);
+    }
+  }
+
+  /**
+   * Highest decoder rate Android itself says this component can sustain for the
+   * exact geometry. Performance points are guarantees on API 29+; older devices
+   * use the measured achievable-rate range. Never invent capability when OEM
+   * metadata is absent.
+   */
+  static int realtimeOperatingRate(
+      @Nullable VideoCapabilities videoCapabilities,
+      MediaFormat format) {
+    if (videoCapabilities == null) {
+      return 0;
+    }
+
+    final int width;
+    final int height;
+    try {
+      width = format.getInteger(MediaFormat.KEY_WIDTH);
+      height = format.getInteger(MediaFormat.KEY_HEIGHT);
+    } catch (RuntimeException missingGeometry) {
+      return 0;
+    }
+    if (width <= 0 || height <= 0) {
+      return 0;
+    }
+
+    try {
+      if (!videoCapabilities.isSizeSupported(width, height)) {
+        return 0;
+      }
+    } catch (RuntimeException incompleteMetadata) {
+      return 0;
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      Integer guaranteed =
+          Api29.guaranteedOperatingRate(
+              videoCapabilities,
+              width,
+              height);
+      if (guaranteed != null) {
+        return guaranteed;
+      }
+    }
+
+    try {
+      android.util.Range<Double> achievable =
+          videoCapabilities.getAchievableFrameRatesFor(width, height);
+      if (achievable == null) {
+        return 0;
+      }
+      Double upper = achievable.getUpper();
+      return boundedOperatingRate(
+          upper == null ? Double.NaN : upper.doubleValue());
+    } catch (RuntimeException incompleteMetadata) {
+      return 0;
+    }
+  }
+
+  static int boundedOperatingRate(double upperFps) {
+    if (!Double.isFinite(upperFps) || upperFps < MIN_REALTIME_DECODER_FPS) {
+      return 0;
+    }
+    return Math.min(
+        MAX_REALTIME_DECODER_FPS,
+        (int) Math.floor(upperFps + 1e-6));
+  }
+
+  @TargetApi(Build.VERSION_CODES.Q)
+  private static final class Api29 {
+    private Api29() {}
+
+    static @Nullable Integer guaranteedOperatingRate(
+        VideoCapabilities videoCapabilities,
+        int width,
+        int height) {
+      final java.util.List<VideoCapabilities.PerformancePoint> points;
+      try {
+        points = videoCapabilities.getSupportedPerformancePoints();
+      } catch (RuntimeException vendorFailure) {
+        return null;
+      }
+      if (points == null || points.isEmpty()) {
+        return null;
+      }
+
+      for (int fps = MAX_REALTIME_DECODER_FPS;
+          fps >= MIN_REALTIME_DECODER_FPS;
+          fps--) {
+        VideoCapabilities.PerformancePoint requested =
+            new VideoCapabilities.PerformancePoint(width, height, fps);
+        for (VideoCapabilities.PerformancePoint point : points) {
+          if (point != null && point.covers(requested)) {
+            return fps;
+          }
+        }
+      }
+      // A non-empty performance-point table is explicit capability evidence:
+      // do not override it with a less-authoritative achievable-rate estimate.
+      return 0;
     }
   }
 
@@ -242,12 +354,15 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
       implements MediaCodecWrapperFactory {
     private final String mimeType;
     private final boolean lowLatencySupported;
+    private final @Nullable VideoCapabilities videoCapabilities;
 
     LowLatencyMediaCodecWrapperFactory(
         String mimeType,
-        boolean lowLatencySupported) {
+        boolean lowLatencySupported,
+        @Nullable VideoCapabilities videoCapabilities) {
       this.mimeType = mimeType;
       this.lowLatencySupported = lowLatencySupported;
+      this.videoCapabilities = videoCapabilities;
     }
 
     @Override
@@ -256,7 +371,8 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
       return new LowLatencyMediaCodecWrapper(
           MediaCodec.createByCodecName(name),
           mimeType,
-          lowLatencySupported);
+          lowLatencySupported,
+          videoCapabilities);
     }
   }
 
@@ -265,14 +381,17 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
     private final MediaCodec codec;
     private final String mimeType;
     private final boolean lowLatencySupported;
+    private final @Nullable VideoCapabilities videoCapabilities;
 
     LowLatencyMediaCodecWrapper(
         MediaCodec codec,
         String mimeType,
-        boolean lowLatencySupported) {
+        boolean lowLatencySupported,
+        @Nullable VideoCapabilities videoCapabilities) {
       this.codec = codec;
       this.mimeType = mimeType;
       this.lowLatencySupported = lowLatencySupported;
+      this.videoCapabilities = videoCapabilities;
     }
 
     @Override
@@ -281,10 +400,15 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
         Surface surface,
         MediaCrypto crypto,
         int flags) {
+      int operatingRateFps =
+          (flags & MediaCodec.CONFIGURE_FLAG_ENCODE) == 0
+              ? realtimeOperatingRate(videoCapabilities, format)
+              : 0;
       applyRealtimeHints(
           format,
           flags,
-          lowLatencySupported);
+          lowLatencySupported,
+          operatingRateFps);
 
       if ((flags & MediaCodec.CONFIGURE_FLAG_ENCODE) == 0) {
         Logging.d(
@@ -293,6 +417,9 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
                 + codec.getName()
                 + " "
                 + mimeType
+                + (operatingRateFps > 0
+                    ? " operating-rate=" + operatingRateFps + "fps"
+                    : "")
                 + (lowLatencySupported
                     && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
                     ? " + low-latency"
@@ -395,5 +522,7 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
     }
   }
 
+  private static final int MIN_REALTIME_DECODER_FPS = 15;
+  private static final int MAX_REALTIME_DECODER_FPS = 60;
   private static final String TAG = "AarisLowLatencyDecoder";
 }
