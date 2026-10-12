@@ -69,6 +69,41 @@ internal class HighCadenceProbe {
             )
     }
 
+    /**
+     * A fine-cadence trial is only allowed to own ordinary trial failure.
+     *
+     * Severe end-to-end pressure belongs to VideoCadenceGovernor's emergency
+     * freshness path, which can jump directly into the <=30 fps drain ladder.
+     * If a 40 -> 45/60 trial remains active here, its normal rollback would
+     * return only to the previous fine rung and short-circuit that stronger
+     * decision for a full telemetry interval.
+     *
+     * Record the failed target/backoff, retire the experiment, but deliberately
+     * keep the current cap unchanged so the caller can apply severe relief from
+     * the same evidence window. No second adaptation loop is introduced.
+     */
+    fun abortTrialForSeverePressure(
+        currentFps: Int,
+        nowMs: Long
+    ): Boolean {
+        if (trialFrom == null || nowMs < 0L) return false
+
+        recordFailedTrial(currentFps, nowMs)
+        trialFrom = null
+        trialAtMs = 0L
+        trialGood = 0
+        trialBad = 0
+        healthyWindows = 0
+        candidateSinceMs = 0L
+        blockedUntilMs =
+            maxOf(
+                blockedUntilMs,
+                nowMs + RETRY_COOLDOWN_MS
+            )
+        previousCap = currentFps.coerceAtLeast(1)
+        return true
+    }
+
     fun debugSummary(nowMs: Long): String {
         fun remainingSeconds(deadlineMs: Long): String {
             val remaining = (deadlineMs - nowMs).coerceAtLeast(0L)
