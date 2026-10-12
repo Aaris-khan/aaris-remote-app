@@ -595,6 +595,62 @@ class HighCadenceProbeTest {
         assertEquals(30, g.cap)
     }
 
+    @Test
+    fun severePressureDuringFineTrialUsesEmergencyLadderInsteadOfTrialBase() {
+        val g = VideoCadenceGovernor(60, 40)
+
+        assertFalse(
+            sample(
+                g = g,
+                time = 1_000L,
+                fps = 40,
+                recv = receiver(40),
+                source = 60.0
+            )
+        )
+        assertTrue(
+            sample(
+                g = g,
+                time = 2_000L,
+                fps = 40,
+                recv = receiver(40),
+                source = 60.0
+            )
+        )
+        assertEquals(45, g.cap)
+
+        /*
+         * This is the exact failure shape seen in the gaming lab: a 40 -> 45
+         * fine trial is active when transport/glass collapses. Before the fix,
+         * HighCadenceProbe consumed this sample with a gentle 45 -> 40 rollback,
+         * delaying the real severe drain by another telemetry interval.
+         */
+        assertTrue(
+            sample(
+                g = g,
+                time = 3_000L,
+                fps = 8,
+                recv =
+                    receiver(
+                        fps = 8,
+                        presented = 5,
+                        gap = 300
+                    ),
+                source = 60.0,
+                queue = 180.0,
+                loss = 0.16,
+                rtt = 220
+            )
+        )
+        assertTrue(
+            "Severe pressure must escape the >30fps experiment immediately",
+            g.cap <= 30
+        )
+        assertTrue(
+            g.debugSummary(3_000L).contains("severe-relief")
+        )
+    }
+
     @Test fun highCadenceTrialStillRollsBackImmediatelyForUrgentPressure() {
         val g = VideoCadenceGovernor(60, 30)
         assertFalse(sample(g, 1_000L))
