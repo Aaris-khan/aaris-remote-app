@@ -369,7 +369,8 @@ internal class MotionVideoBudget {
         sourceMotionActive: Boolean = false,
         interactionCaptureStarved: Boolean = false,
         canResizeProducerSurface: Boolean = false,
-        profile: CaptureProfile? = null
+        profile: CaptureProfile? = null,
+        allowSpatialRelief: Boolean = true
     ): Boolean {
         val before = Triple(
             shortEdge,
@@ -489,8 +490,10 @@ internal class MotionVideoBudget {
          * during a 45/60 fps trial, so the cheaper pixel lever could fail to
          * react while temporal freshness was still under-delivering.
          *
-         * Resolution adapts before cadence: at high cadence we use the real
-         * frame budget so pixels are shed early enough to avoid stale queues.
+         * The host spends high-cadence temporal excess before authorizing a
+         * source resize. Once spatial relief is eligible, keep using the real
+         * frame deadline here so a genuinely overloaded 30-fps operating point
+         * can still shed pixels before stale residence grows.
          */
         val goal = targetFps.coerceIn(1, MAX_MOTION_TARGET_FPS)
         val frameMs = 1000.0 / goal
@@ -913,6 +916,30 @@ internal class MotionVideoBudget {
             fastRecoverySamples = 0
             resetResidenceGrowth()
             return true
+        }
+
+        /*
+         * A source-geometry change is an expensive MediaProjection/VideoSource/
+         * MediaCodec operating-point transition. While a 45/60-fps stream still
+         * has temporal excess available, let VideoCadenceGovernor spend that
+         * cheaper budget first. Do not accumulate hidden spatial votes while
+         * the gate is closed: after cadence changes, require fresh telemetry at
+         * the new operating point before pixels may move.
+         *
+         * Severe producer starvation is the exception. On Android 12+ resizing
+         * the VirtualDisplay can repair a capture producer that is itself
+         * missing frames, so that path remains an immediate spatial escape.
+         */
+        if (
+            pressured &&
+            !allowSpatialRelief &&
+            !severeProducerStarvation
+        ) {
+            pressureSamples = 0
+            healthySamples = 0
+            fastRecoverySamples = 0
+            resetResidenceGrowth()
+            return false
         }
 
         if (pressured) {
