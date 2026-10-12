@@ -368,7 +368,8 @@ internal class MotionVideoBudget {
         sourceMaxGapMs: Double? = null,
         sourceMotionActive: Boolean = false,
         interactionCaptureStarved: Boolean = false,
-        canResizeProducerSurface: Boolean = false
+        canResizeProducerSurface: Boolean = false,
+        profile: CaptureProfile? = null
     ): Boolean {
         val before = Triple(
             shortEdge,
@@ -1037,10 +1038,14 @@ internal class MotionVideoBudget {
                     else -> 720
                 }
             val profileShortEdge =
-                minOf(
-                    profile.captureWidthPx,
-                    profile.captureHeightPx
-                )
+                profile?.let {
+                    minOf(
+                        it.captureWidthPx,
+                        it.captureHeightPx
+                    )
+                } ?: committedSourceShortEdge
+                    .takeIf { it != Int.MAX_VALUE }
+                    ?: shortEdge
             val currentRecoveryShortEdge =
                 minOf(
                     profileShortEdge,
@@ -1052,7 +1057,9 @@ internal class MotionVideoBudget {
                     currentShortEdge = currentRecoveryShortEdge,
                     nextShortEdge = nextRecoveryRung,
                     targetFps = goal,
-                    maxBitrateBps = profile.maxVideoBitrateBps
+                    maxBitrateBps =
+                        profile?.maxVideoBitrateBps
+                            ?: Int.MAX_VALUE
                 ) ?: nominalMotionBitrateBps(
                     nextRecoveryRung,
                     goal
