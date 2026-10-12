@@ -939,6 +939,21 @@ class VideoCadenceGovernor(
                         pressure >= PRESSURE_SAMPLES_TO_REDUCE - 1
                     )
 
+        /*
+         * A live 40 -> 45/60 experiment must not mask emergency freshness
+         * relief. HighCadenceProbe's normal failed-trial rollback is deliberately
+         * gentle; under severe loss/queue/jitter/glass pressure that would
+         * return only to the previous fine rung and consume the current sample.
+         * Retire the experiment first so the existing severe branch below can
+         * use this same window to jump directly into the <=30 fps drain ladder.
+         */
+        if (severePressure && highCadenceProbe.probing) {
+            highCadenceProbe.abortTrialForSeverePressure(
+                currentFps = cap,
+                nowMs = nowMs
+            )
+        }
+
         highCadenceProbe.observe(
             outbound, receiver, producerFps, cap, minOf(maxFps, maximumFps),
             allowHighCadenceProbe, probeOverloadConfirmed, nowMs,
