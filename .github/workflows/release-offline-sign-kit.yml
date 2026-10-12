@@ -1,5 +1,7 @@
 name: Unsigned Release for Secure Offline Signing
 
+# Manual owner build trigger: 2026-10-12
+
 # This job never receives any keystore, password, or signing secret.
 # Uploading an unsigned release and public Android SDK signing utility
 # permits the owner to sign privately on their own machine.
