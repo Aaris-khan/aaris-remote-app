@@ -14,11 +14,16 @@ class RealtimeMediaPolicyTest {
         // A positive minimum keeps M150 out of its render-ASAP path, allowing
         // native timestamp/jitter timing to smooth ordinary WAN arrival variance.
         assertEquals(10, RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS)
-        // Remote control must shed load rather than buffer call-style stale video.
+        // The native ceiling and app-level hard-pressure alarm are one invariant.
+        assertEquals(160, RealtimeMediaPolicy.PLAYOUT_FRESHNESS_PRESSURE_MS)
         assertEquals(180, RealtimeMediaPolicy.PLAYOUT_DELAY_MAX_MS)
         assertTrue(
-            RealtimeMediaPolicy.PLAYOUT_DELAY_MAX_MS in
-                RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS..200
+            RealtimeMediaPolicy.PLAYOUT_DELAY_MAX_MS >
+                RealtimeMediaPolicy.PLAYOUT_FRESHNESS_PRESSURE_MS
+        )
+        assertTrue(
+            RealtimeMediaPolicy.PLAYOUT_DELAY_MAX_MS -
+                RealtimeMediaPolicy.PLAYOUT_FRESHNESS_PRESSURE_MS <= 20
         )
         assertEquals(
             "WebRTC-ForceSendPlayoutDelay/min_ms:10,max_ms:180/",
