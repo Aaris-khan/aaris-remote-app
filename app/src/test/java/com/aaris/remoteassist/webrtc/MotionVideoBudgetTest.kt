@@ -1110,8 +1110,8 @@ class MotionVideoBudgetTest {
                 interactionActive = true
             )
         )
-        assertEquals(540, budget.shortEdge)
-        assertEquals(1_800_000, budget.bitrateCeiling(profile, true))
+        assertEquals(360, budget.shortEdge)
+        assertEquals(900_000, budget.bitrateCeiling(profile, true))
     }
 
     @Test fun sixtyFpsBandwidthPredictionUsesPixelRateNotThirtyFpsRung() {
@@ -1155,9 +1155,9 @@ class MotionVideoBudgetTest {
                 interactionActive = true
             )
         )
-        assertEquals(540, sixty.shortEdge)
+        assertEquals(360, sixty.shortEdge)
         assertEquals(
-            3_000_000,
+            1_800_000,
             sixty.bitrateCeiling(profile, true, targetFps = 60)
         )
 

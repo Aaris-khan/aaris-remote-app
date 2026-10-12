@@ -1239,50 +1239,55 @@ internal class MotionVideoBudget {
         if (!motionActive) return 1
 
         /*
-         * Preserve readable pixels before chasing peak motion cadence.
+         * 360 is both the normal spatial floor and still a useful interactive
+         * operating point. Do NOT interpret merely reaching 360 as permission
+         * to cap every healthy gesture at 24 fps; that creates visible judder
+         * even after the path has recovered.
          *
-         * Above 360, active control may still use the 30 fps floor while the
-         * app-owned spatial governor sheds only the clearly affordable pixels.
-         * At 360, allow 24 fps temporal relief before the last-resort 240
-         * emergency rung is even eligible. At 240, stop spending pixels and let
-         * cadence fall as low as 20 fps under ordinary active-control pressure.
-         * Severe transport/CPU pressure can still bypass these floors in
-         * VideoCadenceGovernor, so stale queues never have to grow indefinitely.
+         * Keep the ordinary active-control floor at 30 fps while the stream is
+         * at 360 or above. VideoCadenceGovernor's severe pressure path is
+         * allowed to bypass that floor and prove a 24/20 fps operating point
+         * when queue/codec/transport evidence really demands it. Once the
+         * last-resort 240 rung has actually been committed, stop spending
+         * pixels and let ordinary interaction use the 20 fps emergency floor.
          */
         if (interactionActive) {
             val floor =
-                when {
-                    shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
-                        INTERACTION_CADENCE_FLOOR_FPS
-                    shortEdge > EMERGENCY_SHORT_EDGE ->
-                        BANDWIDTH_CADENCE_FLOOR_FPS
-                    else ->
-                        EMERGENCY_INTERACTION_FPS_FLOOR
+                if (shortEdge > EMERGENCY_SHORT_EDGE) {
+                    INTERACTION_CADENCE_FLOOR_FPS
+                } else {
+                    EMERGENCY_INTERACTION_FPS_FLOOR
                 }
             return minOf(floor, profile.motionFps)
         }
 
+        /*
+         * Recent bandwidth pressure must not pin a readable 360 stream at
+         * 20/24 fps after the backlog drains. Hold 30 while a spatial rung
+         * remains above the emergency floor; severe cadence relief remains
+         * independently authoritative in VideoCadenceGovernor.
+         */
         val bandwidthReliefActive =
             nowMs - lastBandwidthPressureAtMs in 0L..BANDWIDTH_PRESSURE_HOLD_MS
-        if (bandwidthReliefActive) {
-            val floor =
-                when {
-                    shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
-                        BANDWIDTH_CADENCE_FLOOR_FPS
-                    shortEdge > EMERGENCY_SHORT_EDGE ->
-                        EMERGENCY_INTERACTION_FPS_FLOOR
-                    else ->
-                        1
-                }
-            return minOf(floor, profile.motionFps)
+        if (
+            bandwidthReliefActive &&
+            shortEdge > EMERGENCY_SHORT_EDGE
+        ) {
+            return minOf(
+                INTERACTION_CADENCE_FLOOR_FPS,
+                profile.motionFps
+            )
         }
 
-        // After every actual pixel step, give the new operating point a short
-        // drain window before ordinary cadence adaptation continues.
+        // After a real resize, keep a short drain window. 240 is terminal for
+        // pixels, so its settle floor is 24; 360+ retains the 30 fps UX floor.
         return if (nowMs - changedAtMs < SETTLE_MS) {
             minOf(
-                if (shortEdge > CLARITY_FLOOR_SHORT_EDGE) 30
-                else BANDWIDTH_CADENCE_FLOOR_FPS,
+                if (shortEdge > EMERGENCY_SHORT_EDGE) {
+                    INTERACTION_CADENCE_FLOOR_FPS
+                } else {
+                    BANDWIDTH_CADENCE_FLOOR_FPS
+                },
                 profile.motionFps
             )
         } else {
