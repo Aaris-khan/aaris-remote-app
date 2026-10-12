@@ -3,7 +3,7 @@ Creates/revokes its own session. Capability values and frame content are not log
 """
 import asyncio, base64, json, uuid, urllib.request, urllib.error
 import websockets
-BASE = 'https://aaris-remote-ice.aaris-remote-wk3548.workers.dev'
+BASE = 'https://aaris-remote-ice.hhakmuddin8.workers.dev'
 USER_AGENT = 'AarisRemote-Browser-Smoke/1.0'
 # Synthetic JPEG marker; rendering/valid JPEG coverage lives in the Chromium test.
 FRAME = base64.b64encode(b'\xff\xd8synthetic-frame\xff\xd9').decode()

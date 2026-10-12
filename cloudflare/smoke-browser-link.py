@@ -3,7 +3,7 @@ Requires websockets. No phone content or capability tokens are logged.
 """
 import asyncio, json, uuid, urllib.request, urllib.error
 import websockets
-BASE='https://aaris-remote-ice.aaris-remote-wk3548.workers.dev'
+BASE='https://aaris-remote-ice.hhakmuddin8.workers.dev'
 def request(path,token=None,data=None,instance=None,expected=200):
     headers={'Content-Type':'application/json','User-Agent':'AarisRemote-Browser-Smoke/1.0'}
     if token: headers['Authorization']='Bearer '+token

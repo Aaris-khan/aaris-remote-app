@@ -188,7 +188,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE="https://aaris-remote-ice.aaris-remote-wk3548.workers.dev"
+          BASE="https://aaris-remote-ice.hhakmuddin8.workers.dev"
           export BASE
 
           HEALTH="$(curl --retry 3 --retry-all-errors -fsS "$BASE/healthz")"

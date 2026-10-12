@@ -27,7 +27,7 @@ async def main():
     parser.add_argument('--stop-after-actions', type=int, default=0,
         help='Revoke the synthetic session after this many applied actions (0: timer only).')
     args = parser.parse_args()
-    base = 'https://aaris-remote-ice.aaris-remote-wk3548.workers.dev'
+    base = 'https://aaris-remote-ice.hhakmuddin8.workers.dev'
 
     def call(path, token=None, data=None):
         headers = {'Content-Type': 'application/json', 'User-Agent': 'Aaris-AI-Link-UI-Test/1.0'}
