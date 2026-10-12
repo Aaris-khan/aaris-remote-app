@@ -14,7 +14,10 @@ import org.webrtc.RtpParameters
  */
 internal object RealtimeMediaPolicy {
     const val PLAYOUT_DELAY_MIN_MS = 10
-    const val PLAYOUT_DELAY_MAX_MS = 180
+    const val PLAYOUT_FRESHNESS_PRESSURE_MS = 160
+    private const val PLAYOUT_RECOVERY_MARGIN_MS = 20
+    const val PLAYOUT_DELAY_MAX_MS =
+        PLAYOUT_FRESHNESS_PRESSURE_MS + PLAYOUT_RECOVERY_MARGIN_MS
 
     /*
      * Interactive remoting is a single latency-sensitive video stream. DSCP is
