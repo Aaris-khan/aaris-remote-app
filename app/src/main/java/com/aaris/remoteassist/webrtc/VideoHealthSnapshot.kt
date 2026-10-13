@@ -36,10 +36,10 @@ data class VideoHealthSnapshot(
     val pliCount: Long? = null,
     val firCount: Long? = null,
     val keyFrameCount: Long? = null,
-    /** Cumulative codec quantizer sum from WebRTC stats; diagnostic only. */
-    val qpSum: Long? = null,
     val recent: VideoHealthWindow? = null,
-    val availableOutgoingBitrateBps: Double? = null
+    val availableOutgoingBitrateBps: Double? = null,
+    /** Cumulative codec quantizer sum from WebRTC stats; diagnostic only. */
+    val qpSum: Long? = null
 ) {
     fun compact(): String {
         val primary =
