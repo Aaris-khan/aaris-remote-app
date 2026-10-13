@@ -1424,7 +1424,13 @@ class HostWebRtcSession(
                             preferSpatialReliefBeforeCadence ||
                                 cadenceGovernor.mayReduceMotionResolution(
                                     requestedFps = requestedFps
-                                )
+                                ),
+                        minimumSpatialShortEdge =
+                            if (preferSpatialReliefBeforeCadence) {
+                                MotionVideoBudget.DETAIL_CLARITY_FLOOR_SHORT_EDGE
+                            } else {
+                                MotionVideoBudget.CLARITY_FLOOR_SHORT_EDGE
+                            }
                     )
                 }
 
