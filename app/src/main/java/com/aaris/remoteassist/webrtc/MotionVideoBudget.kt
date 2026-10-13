@@ -1042,15 +1042,16 @@ internal class MotionVideoBudget {
          */
         val currentSourceShortEdge =
             admittedSourceShortEdge(profile)
-        val activeClarityFloor =
-            if (severe || severeProducerStarvation) {
-                CLARITY_FLOOR_SHORT_EDGE
-            } else {
-                ordinaryClarityFloor(profile)
-            }
 
-        fun nextPressureRung(): Int =
-            when {
+        fun nextPressureRung(severePressure: Boolean): Int {
+            val activeClarityFloor =
+                if (severePressure || severeProducerStarvation) {
+                    CLARITY_FLOOR_SHORT_EDGE
+                } else {
+                    ordinaryClarityFloor(profile)
+                }
+
+            return when {
                 severeProducerStarvation &&
                     currentSourceShortEdge >
                     CLARITY_FLOOR_SHORT_EDGE ->
@@ -1079,6 +1080,7 @@ internal class MotionVideoBudget {
                 else ->
                     currentSourceShortEdge
             }
+        }
 
         /*
          * A speculative motion warm-start is only a control-plane prediction:
@@ -1171,7 +1173,7 @@ internal class MotionVideoBudget {
                 // Select while the speculative-warm-start guard is still
                 // armed so producer starvation and ordinary pressure share the
                 // same single-step readable spatial ladder.
-                val confirmed = nextPressureRung()
+                val confirmed = nextPressureRung(severe)
                 warmStartResizePending = false
                 if (confirmed != shortEdge) {
                     shortEdge = confirmed
@@ -1228,7 +1230,7 @@ internal class MotionVideoBudget {
             ) {
                 // Every pressure class stops at the 360 readability floor.
                 // Severe transport failure continues through temporal relief.
-                val next = nextPressureRung()
+                val next = nextPressureRung(severe)
                 val sourceCommitNeeded =
                     currentSourceShortEdge > next
                 if (next != shortEdge || sourceCommitNeeded) {
@@ -1680,15 +1682,6 @@ internal class MotionVideoBudget {
         SOFTWARE_ENCODER_MARKERS.any(implementation::contains)
 
     /**
-     * Source geometry that the app has actually admitted to VideoSource /
-     * MediaCodec. shortEdge is intentionally excluded while a warm-start
-     * prediction is still uncommitted.
-     *
-     * With a CaptureProfile, Int.MAX_VALUE means there is no app clamp and the
-     * profile geometry is physically active. Without a profile, retain the
-     * historical fallback to the committed rung or, if none exists, shortEdge.
-     */
-    /**
      * Ordinary interactive clarity floor. Stronger device tiers reserve enough
      * source detail for small text/forms; 360 remains available to every tier
      * only through severe/emergency pressure.
@@ -1704,6 +1697,15 @@ internal class MotionVideoBudget {
                 CLARITY_FLOOR_SHORT_EDGE
         }
 
+    /**
+     * Source geometry that the app has actually admitted to VideoSource /
+     * MediaCodec. shortEdge is intentionally excluded while a warm-start
+     * prediction is still uncommitted.
+     *
+     * With a CaptureProfile, Int.MAX_VALUE means there is no app clamp and the
+     * profile geometry is physically active. Without a profile, retain the
+     * historical fallback to the committed rung or, if none exists, shortEdge.
+     */
     private fun admittedSourceShortEdge(
         profile: CaptureProfile? = null
     ): Int {
