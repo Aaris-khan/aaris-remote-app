@@ -1,7 +1,6 @@
 package com.aaris.remoteassist.ui
 
 import com.aaris.remoteassist.webrtc.PresentationCadenceWindow
-import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
@@ -42,14 +41,29 @@ internal class SurfaceFrameRateHintGovernor(
         if (nowMs < 0) return null
 
         val fps = window.fps
+        /*
+         * A display-mode vote needs stronger evidence than ordinary playback
+         * health. A single missed 60 fps presentation produces roughly a 33 ms
+         * gap and can make a 500 ms window look like a stable ~58 fps stream.
+         * Treating that hitch as a new steady cadence feeds transient jank back
+         * into Surface.setFrameRate(), which may itself move the display clock.
+         *
+         * Accept only cadence whose worst gap stays within a bounded multiple
+         * of its own measured frame period. This still admits legitimate
+         * high-cadence pulldown such as 45/50/55 fps on a 60 Hz glass clock,
+         * while rejecting one-frame-loss windows masquerading as a new rate.
+         */
+        val stableGapBudgetMs =
+            if (fps.isFinite() && fps > 0.0) {
+                1_000.0 / fps * MAX_STABLE_GAP_FRAME_MULTIPLIER
+            } else {
+                0.0
+            }
         val clean =
             window.renderedFrames >= MIN_PRESENTED_FRAMES &&
                 fps.isFinite() &&
                 fps in MIN_MEASURED_FPS..MAX_MEASURED_FPS &&
-                window.maxGapMs <= max(
-                    MAX_STABLE_GAP_MS,
-                    1_000.0 / fps * MAX_STABLE_GAP_FRAME_MULTIPLIER
-                )
+                window.maxGapMs <= stableGapBudgetMs
 
         if (!clean) {
             resetCandidate()
@@ -134,7 +148,10 @@ internal class SurfaceFrameRateHintGovernor(
         const val MIN_PRESENTED_FRAMES = 5
         const val MIN_MEASURED_FPS = 10.0
         const val MAX_MEASURED_FPS = 72.0
-        const val MAX_STABLE_GAP_MS = 72.0
-        const val MAX_STABLE_GAP_FRAME_MULTIPLIER = 2.75
+        /*
+         * 1.9x is intentionally below the ~2.0x signature of one dropped frame
+         * while remaining above ordinary 45/50/55-on-60 presentation pulldown.
+         */
+        const val MAX_STABLE_GAP_FRAME_MULTIPLIER = 1.9
     }
 }
