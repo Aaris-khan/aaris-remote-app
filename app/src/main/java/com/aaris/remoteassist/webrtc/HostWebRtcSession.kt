@@ -1427,9 +1427,9 @@ class HostWebRtcSession(
                                 ),
                         minimumSpatialShortEdge =
                             if (preferSpatialReliefBeforeCadence) {
-                                MotionVideoBudget.DETAIL_CLARITY_FLOOR_SHORT_EDGE
+                                LOCAL_COMPUTE_SPATIAL_FLOOR_SHORT_EDGE
                             } else {
-                                MotionVideoBudget.CLARITY_FLOOR_SHORT_EDGE
+                                DEFAULT_SPATIAL_FLOOR_SHORT_EDGE
                             }
                     )
                 }
@@ -2410,6 +2410,13 @@ class HostWebRtcSession(
         private const val INTERACTION_PRIORITY_TIMEOUT_MS = 3_000L
         private const val MAX_WARM_START_EVIDENCE_AGE_MS = 2_500L
         private const val MAX_SESSION_VIDEO_FPS = 60
+        /*
+         * Keep these local to the orchestration policy: MotionVideoBudget's
+         * default contract remains 360, while only the classified clean
+         * local-compute lane temporarily protects a 540px detail floor.
+         */
+        private const val DEFAULT_SPATIAL_FLOOR_SHORT_EDGE = 360
+        private const val LOCAL_COMPUTE_SPATIAL_FLOOR_SHORT_EDGE = 540
         private const val PRESENTATION_HEARTBEAT_FRESH_MS = 1_500
     }
 }
