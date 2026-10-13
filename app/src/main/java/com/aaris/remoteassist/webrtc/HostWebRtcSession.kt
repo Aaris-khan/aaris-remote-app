@@ -144,18 +144,19 @@ class HostWebRtcSession(
     private val receiverFeedback = ReceiverVideoFeedback()
 
     /*
-     * Fresh controller presentation clock, published independently of EGL
+     * Stable controller presentation capacity, published independently of EGL
      * cadence. Keep a volatile copy at the session boundary because capture
      * policy can be read from the display/recovery lane as well as the policy
      * lane; ReceiverVideoFeedback itself remains policy-thread-owned.
      *
-     * This is not a new timing authority. It is the missing second physical
-     * clock for DisplayCadencePolicy, allowing the source adapter to avoid
-     * deterministic host/controller pulldown beats immediately instead of
-     * waiting for a later getStats() window.
+     * This value is deliberately NOT the controller's actuator-owned active
+     * refresh clock. Surface.setFrameRate() may change that clock. Feeding it
+     * back here as a hard source ceiling would close a positive control loop.
+     * Actual presentation health comes separately from EGL cadence/max-gap
+     * feedback; this value only bounds useful unique-frame supply.
      */
     @Volatile
-    private var controllerDisplayRefreshRateHz: Double? = null
+    private var controllerDisplayCapacityHz: Double? = null
 
     private val photonGovernor = PhotonFreshnessGovernor()
     private var lastSlowVideoCheckMs = 0L
@@ -746,7 +747,7 @@ class HostWebRtcSession(
         controlOpen = false
         transportReady = false
         policyHandler.post {
-            controllerDisplayRefreshRateHz = null
+            controllerDisplayCapacityHz = null
             passiveMotionPriority.reset()
             photonGovernor.reset()
             updateInteractionPriority(false)
@@ -1042,33 +1043,30 @@ class HostWebRtcSession(
                         now
                     )
                 ) {
-                    val observedRefreshRateHz =
+                    val observedCapacityHz =
                         packet.refreshRateHz.toDouble()
-                    val previousClock =
-                        controllerDisplayRefreshRateHz
+                    val previousCapacity =
+                        controllerDisplayCapacityHz
                             ?.let { kotlin.math.round(it).toInt() }
-                    val nextClock =
-                        kotlin.math.round(observedRefreshRateHz).toInt()
+                    val nextCapacity =
+                        kotlin.math.round(observedCapacityHz).toInt()
 
-                    controllerDisplayRefreshRateHz =
-                        observedRefreshRateHz
+                    controllerDisplayCapacityHz =
+                        observedCapacityHz
 
                     /*
-                     * DisplayCadencePolicy already understands both physical
-                     * clocks, but previously learned the controller clock only
-                     * through a later outbound stats window. Re-apply the
-                     * existing source policy as soon as the active controller
-                     * clock materially changes so 60->90, 90->60, adaptive
-                     * refresh, and Surface.setFrameRate() transitions cannot
-                     * spend another telemetry interval in an uneven pulldown
-                     * cadence. Same-clock heartbeats remain a no-op.
+                     * DisplayCapabilities now carries a stable presentation
+                     * envelope rather than the controller's current Surface-
+                     * selected clock. Re-apply only when that envelope genuinely
+                     * changes (for example display migration), never when Aaris'
+                     * own frame-rate hint causes a seamless mode switch.
                      */
-                    if (previousClock != nextClock) {
+                    if (previousCapacity != nextCapacity) {
                         applyVideoPolicy(profile)
                         listener.onDiagnostic(
-                            "Controller display clock → " +
-                                nextClock +
-                                "Hz • capture cadence realigned"
+                            "Controller display capacity → " +
+                                nextCapacity +
+                                "Hz • capture ceiling realigned"
                         )
                     }
                 }
@@ -2035,14 +2033,14 @@ class HostWebRtcSession(
                 spatial.captureWidthPx,
                 spatial.captureHeightPx
             )
-        val controllerRefreshRateHz =
-            controllerDisplayRefreshRateHz
+        val controllerCapacityHz =
+            controllerDisplayCapacityHz
                 ?.takeIf {
                     it.isFinite() &&
                         it in 30.0..240.0
                 }
         val controllerFpsLimit =
-            controllerRefreshRateHz
+            controllerCapacityHz
                 ?.let {
                     kotlin.math.round(it)
                         .toInt()
@@ -2078,7 +2076,7 @@ class HostWebRtcSession(
             if (unalignedTargetFps > 30) {
                 DisplayCadencePolicy.nearestAtOrBelow(
                     limitFps = unalignedTargetFps,
-                    refreshRateHz = controllerRefreshRateHz,
+                    refreshRateHz = controllerCapacityHz,
                     ceilingFps = unalignedTargetFps,
                     floorFps = 1,
                     sourceRefreshRateHz = sourceDisplayRefreshRateHz()
@@ -2287,7 +2285,7 @@ class HostWebRtcSession(
         controlOpen = false
         transportReady = false
         interactionActive = false
-        controllerDisplayRefreshRateHz = null
+        controllerDisplayCapacityHz = null
         lease = null
     }
 
