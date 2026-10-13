@@ -332,9 +332,9 @@ class DisplayCadencePolicyTest {
     }
 
     @Test
-    fun pressureReliefAvoidsSixtyToThirtyCliffOnSixtyHzPair() {
+    fun pressureReliefKeepsKnownSixtyHzSourcePhaseStable() {
         assertEquals(
-            listOf(60, 50, 48, 45, 40, 36, 30, 24, 20, 15),
+            listOf(60, 30, 24, 20, 15),
             DisplayCadencePolicy.pressureReliefDescending(
                 refreshRateHz = 60.0,
                 ceilingFps = 60,
@@ -342,7 +342,7 @@ class DisplayCadencePolicyTest {
             )
         )
         assertEquals(
-            50,
+            30,
             DisplayCadencePolicy.nextLower(
                 currentFps = 60,
                 refreshRateHz = 60.0,
@@ -351,7 +351,7 @@ class DisplayCadencePolicyTest {
             )
         )
         assertEquals(
-            45,
+            30,
             DisplayCadencePolicy.nearestPressureReliefAtOrBelow(
                 limitFps = 47,
                 refreshRateHz = 60.0,
@@ -361,8 +361,16 @@ class DisplayCadencePolicyTest {
             )
         )
 
-        // Steady-state admission stays strict: pressure relief must not leak into
-        // startup/promotion and create avoidable producer cadence jitter.
+        // A 50/60 source selection necessarily inserts one 33 ms interval
+        // every six source ticks. Pressure relief must not manufacture that
+        // periodic judder; steady-state and relief share the same invariant.
+        assertFalse(
+            50 in DisplayCadencePolicy.pressureReliefDescending(
+                refreshRateHz = 60.0,
+                ceilingFps = 60,
+                sourceRefreshRateHz = 60.0
+            )
+        )
         assertEquals(
             listOf(60, 30, 24, 20, 15),
             DisplayCadencePolicy.descending(
@@ -374,9 +382,9 @@ class DisplayCadencePolicyTest {
     }
 
     @Test
-    fun mixedRefreshControllerDoesNotOverConstrainPressureRelief() {
+    fun mixedRefreshControllerStillKeepsKnownSourcePhaseStable() {
         assertEquals(
-            listOf(60, 50, 48, 45, 40, 36, 30, 24, 20, 15),
+            listOf(60, 30, 24, 20, 15),
             DisplayCadencePolicy.pressureReliefDescending(
                 refreshRateHz = 90.0,
                 ceilingFps = 60,
@@ -384,7 +392,7 @@ class DisplayCadencePolicyTest {
             )
         )
         assertEquals(
-            50,
+            30,
             DisplayCadencePolicy.nextLower(
                 currentFps = 60,
                 refreshRateHz = 90.0,
@@ -395,9 +403,9 @@ class DisplayCadencePolicyTest {
     }
 
     @Test
-    fun oneSixtyFiveHzControllerCannotCollapseKnownSixtyHzSource() {
+    fun highRefreshControllerCannotIntroduceNonHarmonicSourceRelief() {
         assertEquals(
-            50,
+            30,
             DisplayCadencePolicy.nextLower(
                 currentFps = 60,
                 refreshRateHz = 165.0,
@@ -406,7 +414,7 @@ class DisplayCadencePolicyTest {
             )
         )
         assertEquals(
-            listOf(60, 50, 48, 45, 40, 36, 30, 24, 20, 15),
+            listOf(60, 30, 24, 20, 15),
             DisplayCadencePolicy.pressureReliefDescending(
                 refreshRateHz = 165.0,
                 ceilingFps = 60,
@@ -416,8 +424,8 @@ class DisplayCadencePolicyTest {
     }
 
     @Test
-    fun shortRepeatSourceRungCanFillLegacyLadderGap() {
-        assertTrue(
+    fun nonHarmonicSourceRungIsRejectedUnderPressure() {
+        assertFalse(
             48 in DisplayCadencePolicy.pressureReliefDescending(
                 refreshRateHz = 60.0,
                 ceilingFps = 60,
@@ -425,7 +433,7 @@ class DisplayCadencePolicyTest {
             )
         )
         assertEquals(
-            48,
+            30,
             DisplayCadencePolicy.nextLower(
                 currentFps = 50,
                 refreshRateHz = 60.0,
@@ -436,9 +444,9 @@ class DisplayCadencePolicyTest {
     }
 
     @Test
-    fun oneTwentyHzSourceGetsFortyEightBeforeFortyUnderPressure() {
+    fun oneTwentyHzSourceUsesExactFortyUnderPressure() {
         assertEquals(
-            listOf(60, 48, 40, 30, 24, 20, 15),
+            listOf(60, 40, 30, 24, 20, 15),
             DisplayCadencePolicy.pressureReliefDescending(
                 refreshRateHz = 90.0,
                 ceilingFps = 60,
