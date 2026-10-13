@@ -306,13 +306,18 @@ class BweDemandAwareClarityTest {
     }
 
     @Test
-    fun missingRtpBitrateUsesActualNativeGeometryBeforeWarmStartCommit() {
+    fun missingRtpBitrateUsesActualNativeGeometryAndProtectsStandardDetailFloor() {
         val budget = MotionVideoBudget()
         assertTrue(budget.primeForMotion(profile, 0L))
         assertEquals(360, budget.shortEdge)
 
-        // The 360 rung is only a prediction. The encoder is still receiving
-        // native 720-short-edge pixels until measured pressure commits a resize.
+        /*
+         * The 360 rung is only a warm-start prediction. The encoder is still
+         * receiving native 720-short-edge pixels until measured pressure
+         * commits a resize. STANDARD protects 540 as the ordinary text-detail
+         * floor while cadence remains 30 fps, so validated BWE pressure may
+         * commit 720 -> 540 but not 720 -> 360 in this operating point.
+         */
         assertEquals(profile, budget.apply(profile, true))
 
         val bweOnly =
@@ -349,7 +354,7 @@ class BweDemandAwareClarityTest {
 
         val committed = budget.apply(profile, true)
         assertEquals(
-            360,
+            540,
             minOf(
                 committed.captureWidthPx,
                 committed.captureHeightPx
