@@ -46,6 +46,132 @@ class PresentationSupplyTest {
         nowMs = nowMs
     )
 
+    @Test
+    fun provenSixtyOnNinetyPulldownCorrectsOnlyAfterTwoGlassWindows() {
+        val governor = VideoCadenceGovernor(60, 60)
+        val ninetyOnly =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 90f,
+                seamlessAlternativeRefreshRatesHz = floatArrayOf()
+            )
+        governor.updateControllerHighCadenceMask(ninetyOnly)
+
+        assertFalse(
+            governor.observe(
+                sender(60),
+                null,
+                60,
+                1_000L,
+                producerFps = 60.0,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+
+        assertFalse(
+            governor.observeDisplayJudder(
+                intervalMs = 500,
+                renderedFrames = 30,
+                gapStdDevMs = 6,
+                requestedFps = 60,
+                freshnessActive = true,
+                nowMs = 1_500L,
+                displayRefreshRateHz = 90.0,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(60, governor.cap)
+
+        assertTrue(
+            governor.observeDisplayJudder(
+                intervalMs = 500,
+                renderedFrames = 30,
+                gapStdDevMs = 6,
+                requestedFps = 60,
+                freshnessActive = true,
+                nowMs = 2_000L,
+                displayRefreshRateHz = 90.0,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(30, governor.cap)
+    }
+
+    @Test
+    fun smoothVrrLikePresentationDoesNotActivateNominalDisplayConstraint() {
+        val governor = VideoCadenceGovernor(60, 60)
+        val ninetyOnly =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 90f,
+                seamlessAlternativeRefreshRatesHz = floatArrayOf()
+            )
+        governor.updateControllerHighCadenceMask(ninetyOnly)
+
+        assertFalse(
+            governor.observe(
+                sender(60),
+                null,
+                60,
+                1_000L,
+                producerFps = 60.0,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+
+        repeat(4) { index ->
+            assertFalse(
+                governor.observeDisplayJudder(
+                    intervalMs = 500,
+                    renderedFrames = 30,
+                    gapStdDevMs = 1,
+                    requestedFps = 60,
+                    freshnessActive = true,
+                    nowMs = 1_500L + index * 500L,
+                    displayRefreshRateHz = 90.0,
+                    sourceRefreshRateHz = 60.0
+                )
+            )
+        }
+        assertEquals(60, governor.cap)
+    }
+
+    @Test
+    fun seamlessSixtyAlternativePreventsFalsePulldownCorrection() {
+        val governor = VideoCadenceGovernor(60, 60)
+        val mask =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 90f,
+                seamlessAlternativeRefreshRatesHz =
+                    floatArrayOf(60f)
+            )
+        governor.updateControllerHighCadenceMask(mask)
+
+        assertFalse(
+            governor.observe(
+                sender(60),
+                null,
+                60,
+                1_000L,
+                producerFps = 60.0,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        repeat(3) { index ->
+            assertFalse(
+                governor.observeDisplayJudder(
+                    intervalMs = 500,
+                    renderedFrames = 30,
+                    gapStdDevMs = 8,
+                    requestedFps = 60,
+                    freshnessActive = true,
+                    nowMs = 1_500L + index * 500L,
+                    displayRefreshRateHz = 90.0,
+                    sourceRefreshRateHz = 60.0
+                )
+            )
+        }
+        assertEquals(60, governor.cap)
+    }
+
     @Test fun evenlyDeliveredThirtyFpsMustNotBeJudgedAgainstSixtyFpsCeiling() {
         val governor = VideoCadenceGovernor(60)
         assertFalse(governor.observe(sender(30), null, 60, 1_000L, producerFps = 30.0))
