@@ -1,5 +1,7 @@
 package com.aaris.remoteassist.capture
 
+import java.util.concurrent.atomic.AtomicLong
+
 /**
  * Prevent a causal interaction probe from turning an unchanged SurfaceTexture
  * into a fake fresh RTP frame.
@@ -16,12 +18,27 @@ package com.aaris.remoteassist.capture
  * frames always pass. The window is far shorter than the 1 s idle heartbeat.
  */
 internal class InteractionRepeatGuard {
+    // Only shouldForwardToLiveVideo() touches the producer timestamp and it
+    // runs on SurfaceTextureHelper's capture thread. The suppression deadline
+    // is armed from policy/control code and consumed on that capture thread, so
+    // it must carry JVM cross-thread visibility and protect a newer re-arm from
+    // an older callback clearing it.
     private var lastProducerTimestampNs = Long.MIN_VALUE
-    private var suppressRepeatUntilNs = Long.MIN_VALUE
+    private val suppressRepeatUntilNs =
+        AtomicLong(Long.MIN_VALUE)
 
     fun armInteractionProbe(nowNs: Long) {
-        suppressRepeatUntilNs =
-            nowNs + INTERACTION_REPEAT_WINDOW_NS
+        if (nowNs < 0L) return
+        suppressRepeatUntilNs.set(
+            if (
+                nowNs >
+                Long.MAX_VALUE - INTERACTION_REPEAT_WINDOW_NS
+            ) {
+                Long.MAX_VALUE
+            } else {
+                nowNs + INTERACTION_REPEAT_WINDOW_NS
+            }
+        )
     }
 
     fun shouldForwardToLiveVideo(
@@ -32,22 +49,30 @@ internal class InteractionRepeatGuard {
         val repeated =
             validTimestamp &&
                 producerTimestampNs == lastProducerTimestampNs
+        val suppressUntilNs =
+            suppressRepeatUntilNs.get()
         val interactionRepeat =
             repeated &&
                 nowNs >= 0L &&
-                nowNs <= suppressRepeatUntilNs
+                nowNs <= suppressUntilNs
 
         if (validTimestamp && !repeated) {
             lastProducerTimestampNs = producerTimestampNs
         }
 
         if (interactionRepeat) {
-            suppressRepeatUntilNs = Long.MIN_VALUE
+            suppressRepeatUntilNs.compareAndSet(
+                suppressUntilNs,
+                Long.MIN_VALUE
+            )
             return false
         }
 
-        if (nowNs > suppressRepeatUntilNs) {
-            suppressRepeatUntilNs = Long.MIN_VALUE
+        if (nowNs > suppressUntilNs) {
+            suppressRepeatUntilNs.compareAndSet(
+                suppressUntilNs,
+                Long.MIN_VALUE
+            )
         }
         return true
     }
