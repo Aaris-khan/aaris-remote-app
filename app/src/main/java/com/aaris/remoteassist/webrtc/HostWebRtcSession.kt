@@ -1761,9 +1761,83 @@ class HostWebRtcSession(
                 }
             listener.onDiagnostic("QD|MEDIA|$qd")
 
-            // One resolution owner during motion: do not simultaneously lower
-            // the legacy quality tier and the motion pixel budget.
-            if (motionActive) return@post
+            /*
+             * MotionVideoBudget remains the only component allowed to spend
+             * source pixels while motion is active. The previous unconditional
+             * return also blocked *upward* tier recovery, however, so a codec-
+             * proven LOW path could remain 360/20 for an entire game even after
+             * sender, decoder and glass had demonstrated clean headroom.
+             *
+             * Allow only a recovery-only tier vote after the Photon governor has
+             * independently proved end-to-end cadence headroom, and only when
+             * evaluating the candidate tier through the current motion budget
+             * produces exactly the same source geometry. The transition can then
+             * widen cadence/bitrate policy without a MediaCodec resolution reset.
+             * Pixel recovery remains deferred to MotionVideoBudget's existing
+             * quiet/non-interaction gate.
+             */
+            if (motionActive) {
+                val nextTier =
+                    captureTier.higher()
+                        ?.takeIf { it.ordinal <= maxCaptureTier.ordinal }
+                        ?: return@post
+                if (!photonPolicy.allowCadencePromotion) {
+                    return@post
+                }
+
+                val currentEffective =
+                    effectiveCaptureProfile(profile)
+                val candidateProfile =
+                    CaptureProfile.current(
+                        appContext,
+                        nextTier
+                    )
+                val candidateEffective =
+                    effectiveCaptureProfile(candidateProfile)
+                if (
+                    !RealtimeMediaPolicy.motionTierPromotionKeepsGeometry(
+                        currentWidthPx =
+                            currentEffective.captureWidthPx,
+                        currentHeightPx =
+                            currentEffective.captureHeightPx,
+                        candidateWidthPx =
+                            candidateEffective.captureWidthPx,
+                        candidateHeightPx =
+                            candidateEffective.captureHeightPx
+                    )
+                ) {
+                    return@post
+                }
+
+                val sender =
+                    snapshot.recent
+                        ?: return@post
+                captureQualityGovernor
+                    .observeQualityLimitation(
+                        reason = snapshot.qualityLimitationReason,
+                        roundTripTimeMs = snapshot.roundTripTimeMs,
+                        packetLossRatio = snapshot.packetLossRatio,
+                        encodeTimeMs = sender.processingMs,
+                        sendQueueMs = sender.sendQueueMs,
+                        deliveredFps = sender.fps,
+                        requestedFps = currentEffective.fps,
+                        outboundFrameCount = sender.frames,
+                        recoveryOnly = true
+                    )
+                    ?.takeIf { it.ordinal > captureTier.ordinal }
+                    ?.let { recovered ->
+                        applyCaptureTier(recovered)
+                        listener.onDiagnostic(
+                            "Motion-safe quality recovery → " +
+                                recovered.name +
+                                " • geometry=" +
+                                currentEffective.captureWidthPx +
+                                "x" +
+                                currentEffective.captureHeightPx
+                        )
+                    }
+                return@post
+            }
 
             val sender = snapshot.recent
             // Remote loss/RTT may repeat while the screen emits almost nothing.
