@@ -101,13 +101,16 @@ data class CaptureProfile(
          * ceiling was enough for basic mirroring but could become the limiting
          * factor for 1080x2400-class UI at 60 fps even on a clean LAN, forcing
          * small text through avoidable quantization. Keep enough headroom for a
-         * game-streaming-class operating point; constrained links remain
-         * protected by GCC/TWCC, CaptureQualityGovernor and MotionVideoBudget.
+         * game-streaming-class operating point. STANDARD's native 1080x2400
+         * class now has a 25 Mbps clean-path ceiling, while HIGH gets 32 Mbps
+         * for the larger 2560-long-edge envelope. These are maxima, never
+         * forced send rates: constrained links remain protected by GCC/TWCC,
+         * CaptureQualityGovernor and MotionVideoBudget.
          */
         private const val LOW_BITRATE_BPS = 1_200_000
         private const val BALANCED_BITRATE_BPS = 3_000_000
-        private const val STANDARD_BITRATE_BPS = 20_000_000
-        private const val HIGH_BITRATE_BPS = 28_000_000
+        private const val STANDARD_BITRATE_BPS = 25_000_000
+        private const val HIGH_BITRATE_BPS = 32_000_000
 
         private const val LOW_MEMORY_BYTES = 3L * 1024L * 1024L * 1024L
         private const val HIGH_MEMORY_BYTES = 6L * 1024L * 1024L * 1024L
