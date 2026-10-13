@@ -1,15 +1,17 @@
 package com.aaris.remoteassist.webrtc
 
 import com.aaris.remoteassist.capture.CaptureProfile
+import com.aaris.remoteassist.capture.CaptureTier
 import kotlin.math.roundToInt
 
 /**
  * Remote control is a detail-sensitive workload: text, forms and icons must
  * remain readable while motion stays fresh. One-second telemetry may reduce
- * the normal spatial envelope through 720 -> 540 -> 360, but 360 is the
- * readability floor for all primary-video adaptation. Once 360 is reached,
- * further overload is paid in temporal cadence/bitrate instead of making
- * text, forms and icons unreadable.
+ * the normal spatial envelope through 720 -> 540 -> 360, but capable
+ * STANDARD/HIGH sessions protect 540 as the ordinary text-detail floor.
+ * 360 remains an emergency escape only after temporal relief reaches a very
+ * low cadence, or when reducing producer geometry can directly repair proven
+ * MediaProjection starvation.
  *
  * WebRTC's BWE clarity guard spends high-cadence excess first when the same
  * admitted pixels still fit at a lower interactive cadence. This avoids
@@ -1033,10 +1035,21 @@ internal class MotionVideoBudget {
          * trees from drifting apart.
          */
         /*
-         * 360 remains the established global readability floor. The caller may
-         * raise the floor for ONE already-classified spatial decision (the
-         * clean local-compute/high-cadence lane uses 540) without changing the
-         * long-standing network, emergency and recovery contracts.
+         * Spatial relief has two floors:
+         *
+         * - 360 is the universal survival floor.
+         * - 540 is the ordinary text-detail floor on STANDARD/HIGH devices.
+         *
+         * This mirrors screen-content adaptation semantics: spend cadence before
+         * throwing away glyph pixels. The 360 rung is still available when it is
+         * actually needed, but only after a capable session has already fallen to
+         * <=20 fps under severe pressure. Proven MediaProjection starvation is
+         * the exception because reducing producer geometry can directly restore
+         * fresh frames and is therefore allowed to use 360 immediately.
+         *
+         * The caller may independently raise the floor for a classified local
+         * compute decision. A lower-tier profile keeps the established 360
+         * contract because 540 may exceed its sustainable device budget.
          */
         val currentSourceShortEdge =
             admittedSourceShortEdge(profile)
@@ -1045,47 +1058,75 @@ internal class MotionVideoBudget {
                 CLARITY_FLOOR_SHORT_EDGE,
                 DETAIL_CLARITY_FLOOR_SHORT_EDGE
             )
+        val profileDetailFloor =
+            when (profile?.tier) {
+                CaptureTier.STANDARD,
+                CaptureTier.HIGH ->
+                    DETAIL_CLARITY_FLOOR_SHORT_EDGE
+                else ->
+                    CLARITY_FLOOR_SHORT_EDGE
+            }
 
-        fun nextPressureRung(severePressure: Boolean): Int =
-            when {
+        fun nextPressureRung(severePressure: Boolean): Int {
+            val emergencyMaySpendDetail =
+                severeProducerStarvation ||
+                    (
+                        severePressure &&
+                            goal <= DETAIL_FLOOR_EMERGENCY_MAX_FPS
+                    )
+            val effectiveSpatialFloor =
+                if (emergencyMaySpendDetail) {
+                    scopedSpatialFloor
+                } else {
+                    maxOf(
+                        scopedSpatialFloor,
+                        profileDetailFloor
+                    )
+                }
+
+            return when {
                 /*
                  * Severe producer starvation is an emergency capture-repair
-                 * path and is allowed to spend the universal 360 floor.
+                 * path and is allowed to spend the universal 360 floor at any
+                 * cadence because the producer itself is missing deadlines.
                  */
                 severeProducerStarvation &&
                     shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
                     CLARITY_FLOOR_SHORT_EDGE
 
                 /*
-                 * Preserve the existing warm-start contract: if the control
-                 * plane already selected a readable budget, commit that exact
-                 * budget when pressure proves a real resize is needed. The
-                 * scoped floor only prevents the new local-compute lane from
-                 * turning that single decision into a <540p clarity collapse.
+                 * A speculative warm-start may already have selected 360 while
+                 * the real producer is still native. On capable tiers, ordinary
+                 * or high-cadence severe pressure may commit at most 540. This
+                 * prevents a single validation window from turning a prediction
+                 * into a blurry 360 source before temporal relief is exhausted.
                  */
                 currentSourceShortEdge > shortEdge ->
-                    if (severePressure) {
-                        shortEdge
-                    } else {
-                        maxOf(
-                            shortEdge,
-                            scopedSpatialFloor
-                        )
-                    }
+                    maxOf(
+                        shortEdge,
+                        effectiveSpatialFloor
+                    ).coerceAtMost(currentSourceShortEdge)
+
                 shortEdge > DETAIL_CLARITY_FLOOR_SHORT_EDGE ->
                     maxOf(
                         DETAIL_CLARITY_FLOOR_SHORT_EDGE,
-                        scopedSpatialFloor
+                        effectiveSpatialFloor
                     )
+
                 shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
-                    if (severePressure) {
+                    if (emergencyMaySpendDetail) {
                         CLARITY_FLOOR_SHORT_EDGE
                     } else {
-                        scopedSpatialFloor
+                        minOf(
+                            shortEdge,
+                            effectiveSpatialFloor
+                        )
                     }
+
                 else ->
                     shortEdge
             }
+        }
 
         /*
          * A speculative motion warm-start is only a control-plane prediction:
@@ -1973,6 +2014,14 @@ internal class MotionVideoBudget {
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val CLARITY_FLOOR_SHORT_EDGE = 360
         const val DETAIL_CLARITY_FLOOR_SHORT_EDGE = 540
+
+        /*
+         * Do not trade the protected 540px text floor for pixels while cadence
+         * still has a usable temporal rung left. At <=20 fps, persistent severe
+         * pressure has exhausted that cheaper budget and may use the universal
+         * 360 survival rung. Producer starvation remains separately exempt.
+         */
+        const val DETAIL_FLOOR_EMERGENCY_MAX_FPS = 20
         const val INTERACTION_CADENCE_FLOOR_FPS = 30
         const val IDLE_RESTORE_MS = 8_000L
     }
