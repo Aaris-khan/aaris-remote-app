@@ -866,6 +866,14 @@ internal class MotionVideoBudget {
          * Stale motion at 15-24 fps is still operable; unreadable form text is
          * not.
          */
+        val currentSourceShortEdge =
+            profile?.let {
+                minOf(
+                    minOf(it.captureWidthPx, it.captureHeightPx),
+                    committedSourceShortEdge
+                )
+            } ?: committedSourceShortEdge
+
         fun nextPressureRung(): Int =
             when {
                 severeProducerStarvation && shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
@@ -877,7 +885,7 @@ internal class MotionVideoBudget {
                  * next rung. Otherwise a native 1080 source with a 720 control
                  * budget jumps straight to 540 on its first pressure decision.
                  */
-                committedSourceShortEdge > shortEdge ->
+                currentSourceShortEdge > shortEdge ->
                     shortEdge
                 shortEdge > 540 -> 540
                 shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
@@ -1035,7 +1043,7 @@ internal class MotionVideoBudget {
                 // Severe transport failure continues through temporal relief.
                 val next = nextPressureRung()
                 val sourceCommitNeeded =
-                    committedSourceShortEdge > next
+                    currentSourceShortEdge > next
                 if (next != shortEdge || sourceCommitNeeded) {
                     shortEdge = next
                     committedSourceShortEdge = shortEdge
