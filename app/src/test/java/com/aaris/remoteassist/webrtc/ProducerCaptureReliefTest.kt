@@ -85,7 +85,8 @@ class ProducerCaptureReliefTest {
                 interactionActive = true,
                 sourceMaxGapMs = 280.0,
                 sourceMotionActive = true,
-                canResizeProducerSurface = true
+                canResizeProducerSurface = true,
+                profile = profile
             )
         )
 

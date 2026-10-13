@@ -2115,7 +2115,7 @@ class MotionVideoBudgetTest {
         )
     }
 
-    @Test fun scopedSpatialDecisionCanProtectFiveFortyDetailFloor() {
+    @Test fun standardTierProtectsFiveFortyDetailUntilEmergencyCadence() {
         val budget = nativeWarmBudget()
         val stressed =
             sender(
@@ -2140,8 +2140,7 @@ class MotionVideoBudgetTest {
                 nowMs = 4_000L,
                 interactionActive = true,
                 profile = profile,
-                allowSpatialRelief = true,
-                minimumSpatialShortEdge = 540
+                allowSpatialRelief = true
             )
         )
         assertTrue(
@@ -2154,31 +2153,58 @@ class MotionVideoBudgetTest {
                 nowMs = 5_000L,
                 interactionActive = true,
                 profile = profile,
-                allowSpatialRelief = true,
-                minimumSpatialShortEdge = 540
+                allowSpatialRelief = true
             )
         )
         assertEquals(540, budget.apply(profile, true).captureWidthPx)
 
-        // A caller-scoped clarity floor prevents this decision lane from
-        // spending 540 -> 360; the default budget contract remains unchanged.
-        repeat(4) { index ->
-            assertFalse(
-                budget.observe(
-                    outbound = stressed,
-                    receiver = glass,
-                    sourceFps = 30.0,
-                    motionActive = true,
-                    targetFps = 30,
-                    nowMs = 8_000L + index * 1_000L,
-                    interactionActive = true,
-                    profile = profile,
-                    allowSpatialRelief = true,
-                minimumSpatialShortEdge = 540
-                )
+        /*
+         * STANDARD/HIGH screen content spends temporal budget before text
+         * detail. Even a severe queue at 30 fps must not force 540 -> 360.
+         */
+        val severeQueue =
+            sender(
+                fps = 8,
+                encode = 45.0,
+                queue = 200.0,
+                implementation = "c2.qti.avc.encoder"
+            ).copy(
+                roundTripTimeMs = 120,
+                packetLossRatio = 0.01
             )
-        }
+        assertFalse(
+            budget.observe(
+                outbound = severeQueue,
+                receiver = receiver(fps = 8, decode = 12.0, presented = 8),
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 8_000L,
+                interactionActive = true,
+                profile = profile,
+                allowSpatialRelief = true
+            )
+        )
         assertEquals(540, budget.apply(profile, true).captureWidthPx)
+
+        /*
+         * Once cadence has already fallen to the 20 fps emergency class and
+         * severe pressure remains, keep the universal 360 survival escape.
+         */
+        assertTrue(
+            budget.observe(
+                outbound = severeQueue,
+                receiver = receiver(fps = 8, decode = 12.0, presented = 8),
+                sourceFps = 20.0,
+                motionActive = true,
+                targetFps = 20,
+                nowMs = 9_000L,
+                interactionActive = true,
+                profile = profile,
+                allowSpatialRelief = true
+            )
+        )
+        assertEquals(360, budget.apply(profile, true).captureWidthPx)
     }
 
     @Test fun highCadenceSpatialPressureWaitsForTemporalReliefAndFreshEvidence() {
