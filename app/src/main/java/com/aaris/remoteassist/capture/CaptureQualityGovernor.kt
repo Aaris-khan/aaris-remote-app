@@ -19,6 +19,11 @@ package com.aaris.remoteassist.capture
  * omit qualityLimitationReason, healthy transport telemetry is still enough to
  * recover quality instead of leaving the session permanently stuck on a lower
  * tier.
+ *
+ * recoveryOnly is reserved for an independently proven active-motion recovery
+ * path. It may collect healthy evidence and promote quality, but it can never
+ * spend pixels downward; MotionVideoBudget remains the only spatial relief
+ * owner while motion is active.
  */
 class CaptureQualityGovernor(
     initialTier: CaptureTier,
@@ -41,7 +46,8 @@ class CaptureQualityGovernor(
         sendQueueMs: Double? = null,
         deliveredFps: Double? = null,
         requestedFps: Int = 30,
-        outboundFrameCount: Int? = null
+        outboundFrameCount: Int? = null,
+        recoveryOnly: Boolean = false
     ): CaptureTier? {
         // RTCP loss/RTT and quality-limitation labels can outlive the last
         // moving frame. A quiet source cannot prove that lowering its pixels
@@ -178,7 +184,7 @@ class CaptureQualityGovernor(
                 localPipelinePressureSamples = 0
                 resetPressureCounters()
                 resetRecoveryCounters()
-                downgrade()
+                if (recoveryOnly) null else downgrade()
             }
 
             localPipelinePressure -> {
@@ -193,7 +199,7 @@ class CaptureQualityGovernor(
                     null
                 } else {
                     localPipelinePressureSamples = 0
-                    downgrade()
+                    if (recoveryOnly) null else downgrade()
                 }
             }
 
@@ -213,7 +219,7 @@ class CaptureQualityGovernor(
                     null
                 } else {
                     constrainedSamples = 0
-                    downgrade()
+                    if (recoveryOnly) null else downgrade()
                 }
             }
 
@@ -264,7 +270,7 @@ class CaptureQualityGovernor(
                     null
                 } else {
                     bandwidthOnlySamples = 0
-                    downgrade()
+                    if (recoveryOnly) null else downgrade()
                 }
             }
 
