@@ -165,6 +165,26 @@ class RealtimeMediaPolicyTest {
     }
 
     @Test
+    fun motionTierPromotionRequiresIdenticalAdmittedGeometry() {
+        assertTrue(
+            RealtimeMediaPolicy.motionTierPromotionKeepsGeometry(
+                currentWidthPx = 360,
+                currentHeightPx = 800,
+                candidateWidthPx = 360,
+                candidateHeightPx = 800
+            )
+        )
+        assertFalse(
+            RealtimeMediaPolicy.motionTierPromotionKeepsGeometry(
+                currentWidthPx = 360,
+                currentHeightPx = 800,
+                candidateWidthPx = 540,
+                candidateHeightPx = 1_200
+            )
+        )
+    }
+
+    @Test
     fun nativeOveruseNeverCreatesASecondSpatialScaler() {
         assertEquals(
             RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION,

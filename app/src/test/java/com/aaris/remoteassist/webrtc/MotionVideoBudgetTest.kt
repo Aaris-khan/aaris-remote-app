@@ -21,6 +21,48 @@ class MotionVideoBudgetTest {
         assertEquals(720, shortEdge)
     }
 
+    @Test fun lowToBalancedTierRecoveryKeepsCommittedMotionGeometryStable() {
+        val low =
+            CaptureProfile(
+                displayWidthPx = 720,
+                displayHeightPx = 1600,
+                captureWidthPx = 360,
+                captureHeightPx = 800,
+                fps = 15,
+                maxVideoBitrateBps = 1_200_000,
+                tier = CaptureTier.LOW,
+                motionFps = 20
+            )
+        val balanced =
+            low.copy(
+                captureWidthPx = 540,
+                captureHeightPx = 1_200,
+                fps = 24,
+                maxVideoBitrateBps = 3_000_000,
+                tier = CaptureTier.BALANCED,
+                motionFps = 30
+            )
+        val budget = MotionVideoBudget()
+
+        budget.primeForMotion(
+            profile = low,
+            nowMs = 0L,
+            targetFps = 20
+        )
+
+        val current = budget.apply(low, motionActive = true)
+        val candidate =
+            budget.apply(
+                balanced,
+                motionActive = true
+            )
+
+        assertEquals(360, current.captureWidthPx)
+        assertEquals(800, current.captureHeightPx)
+        assertEquals(current.captureWidthPx, candidate.captureWidthPx)
+        assertEquals(current.captureHeightPx, candidate.captureHeightPx)
+    }
+
     @Test fun lowCadenceThreeSixtyKeepsReadableBitrateCeilingHeadroom() {
         val lowProfile =
             CaptureProfile(
