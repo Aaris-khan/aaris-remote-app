@@ -1479,6 +1479,13 @@ class InlineRemoteControllerView(
                                     )
                                 }
 
+                                /*
+                                 * Presentation feedback remains health evidence
+                                 * for host adaptation. The Surface hint itself is
+                                 * stream-stable: observe() may bootstrap one vote
+                                 * for passive viewing, but can never chase the
+                                 * variable delivered cadence afterward.
+                                 */
                                 surfaceFrameRateHints
                                     .observe(window, presentedAtMs)
                                     ?.let(::applySurfaceFrameRateHint)
@@ -2622,15 +2629,14 @@ class InlineRemoteControllerView(
         setRenderInteractionPriority(true)
 
         /*
-         * Bootstrap presentation capacity immediately. Clean EGL windows may
-         * later phase-correct the Surface hint to a proven high cadence (for
-         * example 45 fps on a 90 Hz controller) without following congestion
-         * rungs down to 15/24/30 Hz.
+         * Bootstrap one stable display-capacity vote immediately. Do not retune
+         * SurfaceFlinger to later 45/48/50/55-fps delivery windows: this
+         * controller uses render-ASAP/latest-frame-wins semantics, so the
+         * variable media cadence stays health evidence rather than becoming a
+         * second display-pacing actuator.
          */
         surfaceFrameRateHints
-            .beginInteraction(
-                nowMs = android.os.SystemClock.elapsedRealtime()
-            )
+            .beginInteraction()
             ?.let(::applySurfaceFrameRateHint)
 
         session()?.setInteractionActive(true)
