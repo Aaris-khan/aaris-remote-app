@@ -97,6 +97,28 @@ class VideoCadenceGovernor(
             return false
         }
 
+        /*
+         * A BWE estimate is predictive capacity evidence, not proof that glass
+         * freshness is already failing. When the known source clock has no
+         * phase-stable high-cadence rung below this soft ceiling, do not turn a
+         * tiny estimate miss (for example 59 fps worth of bits at a 60 Hz
+         * source) into a 60 -> 30 cliff. Let GCC lower actual rate first and let
+         * the full encode/queue/decode/presentation governor make that larger
+         * temporal decision only if measured staleness appears.
+         *
+         * An explicit <=30 fps ceiling remains actionable because the clarity
+         * guard has then proved that the same pixels no longer fit anywhere in
+         * the high-cadence class.
+         */
+        if (
+            current > CLARITY_BANDWIDTH_MIN_FPS &&
+            rawCeiling > CLARITY_BANDWIDTH_MIN_FPS &&
+            target <= CLARITY_BANDWIDTH_MIN_FPS
+        ) {
+            resetClarityBandwidthVotes()
+            return false
+        }
+
         if (
             clarityBandwidthVoteCap != current ||
             clarityBandwidthVoteTarget != target
@@ -564,12 +586,29 @@ class VideoCadenceGovernor(
                 frameBudgetMs *
                     FAST_PRESENTATION_FULL_CADENCE_GAP_MULTIPLIER
             )
+        /*
+         * A long individual swap interval with otherwise complete delivery is
+         * pacing evidence, not throughput evidence. The previous fast path could
+         * see 30 frames in a 500 ms 60-fps window (100% delivery), notice one
+         * ~34 ms gap, then downshift the source. On a 60 Hz producer that
+         * manufactured recurring frame-selection judder even though no frames
+         * were actually missing.
+         *
+         * Keep severe gaps actionable, but ordinary max-gap pressure must be
+         * accompanied by a meaningful delivery deficit. Full telemetry still
+         * observes the raw presentation gap and can act when queue/decode/glass
+         * evidence corroborates a real overload.
+         */
+        val gapBackedByDeliveryDeficit =
+            maxGapMs >= fullCadenceGapMs &&
+                deliveryRatio <
+                    FAST_PRESENTATION_GAP_DELIVERY_RATIO
         val fullCadencePressure =
             effectiveFps >= HIGH_CADENCE_FAST_RELIEF_FPS &&
                 (
                     deliveryRatio <
                         FAST_PRESENTATION_FULL_CADENCE_DELIVERY_RATIO ||
-                        maxGapMs >= fullCadenceGapMs
+                        gapBackedByDeliveryDeficit
                     )
 
         /*
@@ -1289,11 +1328,11 @@ class VideoCadenceGovernor(
          * fast path bounded to recent half-second-ish windows and high cadence.
          *
          * At 60 fps one missed display opportunity is roughly a 33 ms frame
-         * gap. Waiting for a 70 ms gap allowed recurring two-vsync misses to
-         * look healthy even though they are visible as gaming-style micro-
-         * stutter. The presentation pressure gate still requires two distinct
-         * soft windows, so this tighter deadline reacts to sustained pacing
-         * variance without punishing a single scheduler outlier.
+         * gap. Keep that gap visible to the fast detector, but do not treat it
+         * as source-throughput pressure by itself: a window can still contain
+         * every expected frame and merely have one late/early swap pair.
+         * Ordinary gap-driven relief therefore also requires a delivery deficit;
+         * severe gaps remain immediately actionable.
          */
         const val FAST_PRESENTATION_MIN_WINDOW_MS = 500
         const val FAST_PRESENTATION_MAX_WINDOW_MS = 2_000
@@ -1302,6 +1341,10 @@ class VideoCadenceGovernor(
         const val FAST_PRESENTATION_MIN_CADENCE_FPS = 45
         const val FAST_PRESENTATION_CHANGE_INTERVAL_MS = 450L
         const val FAST_PRESENTATION_FULL_CADENCE_DELIVERY_RATIO = 0.75
+        // Gap-only evidence may reflect a single scheduler/vsync excursion.
+        // Require at least two missing 60-fps-class frames in a ~500 ms window
+        // before using that ordinary gap as a fast source-cadence actuator.
+        const val FAST_PRESENTATION_GAP_DELIVERY_RATIO = 0.94
         const val FAST_PRESENTATION_FULL_CADENCE_GAP_MS = 30.0
         const val FAST_PRESENTATION_FULL_CADENCE_GAP_MULTIPLIER = 1.75
         const val FAST_PRESENTATION_SEVERE_DELIVERY_RATIO = 0.55
