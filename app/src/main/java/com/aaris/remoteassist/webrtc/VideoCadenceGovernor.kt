@@ -112,7 +112,9 @@ class VideoCadenceGovernor(
                 refreshRateHz = lastDisplayRefreshRateHz,
                 ceilingFps = current,
                 floorFps = CLARITY_BANDWIDTH_MIN_FPS,
-                sourceRefreshRateHz = lastSourceRefreshRateHz
+                sourceRefreshRateHz = lastSourceRefreshRateHz,
+                controllerHighCadenceMask =
+                    activeControllerHighCadenceMask()
             )
         if (target >= current) {
             resetClarityBandwidthVotes()
@@ -665,7 +667,9 @@ class VideoCadenceGovernor(
                 refreshRateHz = lastDisplayRefreshRateHz,
                 floorFps = 1,
                 ceilingFps = maxFps,
-                sourceRefreshRateHz = lastSourceRefreshRateHz
+                sourceRefreshRateHz = lastSourceRefreshRateHz,
+                controllerHighCadenceMask =
+                    activeControllerHighCadenceMask()
             )?.takeIf { it < cap } ?: return false
 
         // Moderate presentation-only relief is deliberately one fine step.
@@ -874,7 +878,9 @@ class VideoCadenceGovernor(
                     refreshRateHz = lastDisplayRefreshRateHz,
                     ceilingFps = minOf(maxFps, maximumFps.coerceAtLeast(1)),
                     floorFps = minimumFps.coerceAtLeast(1),
-                    sourceRefreshRateHz = lastSourceRefreshRateHz
+                    sourceRefreshRateHz = lastSourceRefreshRateHz,
+                    controllerHighCadenceMask =
+                        activeControllerHighCadenceMask()
                 )
 
             if (clockAlignedCap < cap) {
@@ -1227,7 +1233,9 @@ class VideoCadenceGovernor(
                     refreshRateHz = lastDisplayRefreshRateHz,
                     ceilingFps = maxFps,
                     floorFps = 1,
-                    sourceRefreshRateHz = lastSourceRefreshRateHz
+                    sourceRefreshRateHz = lastSourceRefreshRateHz,
+                    controllerHighCadenceMask =
+                        activeControllerHighCadenceMask()
                 )
             val ordinaryNext = cadenceSteps.firstOrNull { candidate ->
                 candidate < ceiling &&
