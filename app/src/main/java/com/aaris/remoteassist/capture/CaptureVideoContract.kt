@@ -13,6 +13,14 @@ internal object CaptureVideoContract {
     const val MAX_FALLBACK_SAFE_LONG_SIDE_PX = 2560
 
     /*
+     * One ceiling must describe the HIGH capture profile and the RTP sender.
+     * A lower transport-local clamp silently discards clean-path clarity
+     * headroom after MotionVideoBudget has already admitted the pixels. This is
+     * still only a maximum: libwebrtc GCC/TWCC owns the actual send rate.
+     */
+    const val MAX_PRIMARY_VIDEO_BITRATE_BPS = 32_000_000
+
+    /*
      * Compatibility recovery must remain legible when primary RTP is unhealthy.
      * Keep the same product readability contract as the primary video ladder:
      * pressure may spend fallback cadence, but must not shrink the visible

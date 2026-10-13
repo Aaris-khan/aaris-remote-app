@@ -1,6 +1,7 @@
 package com.aaris.remoteassist.webrtc
 
 import com.aaris.remoteassist.capture.CaptureTier
+import com.aaris.remoteassist.capture.CaptureVideoContract
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -54,6 +55,14 @@ class RealtimeMediaPolicyTest {
             4.0,
             RealtimeMediaPolicy.VIDEO_BITRATE_PRIORITY,
             0.0
+        )
+    }
+
+    @Test
+    fun senderAcceptsTheEntirePrimaryCaptureClarityEnvelope() {
+        assertEquals(
+            CaptureVideoContract.MAX_PRIMARY_VIDEO_BITRATE_BPS,
+            WebRtcPeer.MAX_VIDEO_BITRATE_BPS
         )
     }
 

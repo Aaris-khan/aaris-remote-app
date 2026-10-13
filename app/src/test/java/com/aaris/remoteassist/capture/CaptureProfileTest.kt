@@ -238,6 +238,34 @@ class CaptureProfileTest {
         }
     }
 
+    @Test
+    fun everyTierFitsTheSharedPrimarySenderBitrateEnvelope() {
+        val profiles =
+            CaptureTier.entries.map { tier ->
+                CaptureProfile.forDisplay(
+                    displayWidthPx = 1440,
+                    displayHeightPx = 3200,
+                    tier = tier
+                )
+            }
+
+        assertEquals(
+            32_000_000,
+            CaptureVideoContract.MAX_PRIMARY_VIDEO_BITRATE_BPS
+        )
+        assertTrue(
+            profiles.all {
+                it.maxVideoBitrateBps <=
+                    CaptureVideoContract.MAX_PRIMARY_VIDEO_BITRATE_BPS
+            }
+        )
+        assertEquals(
+            CaptureVideoContract.MAX_PRIMARY_VIDEO_BITRATE_BPS,
+            profiles.single { it.tier == CaptureTier.HIGH }
+                .maxVideoBitrateBps
+        )
+    }
+
     companion object {
         private const val GIB = 1024L * 1024L * 1024L
     }
