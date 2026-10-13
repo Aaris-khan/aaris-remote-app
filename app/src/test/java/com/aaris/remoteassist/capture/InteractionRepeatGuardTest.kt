@@ -9,13 +9,13 @@ class InteractionRepeatGuardTest {
     fun forcedRepeatOfLastProducerTextureDoesNotEnterLiveVideo() {
         val guard = InteractionRepeatGuard()
 
-        assertTrue(guard.shouldForwardToLiveVideo(100L))
+        assertTrue(guard.shouldForwardToLiveVideo(100L, 1_000L))
 
-        guard.beginInteractionProbe()
-        assertFalse(guard.shouldForwardToLiveVideo(100L))
-        guard.endInteractionProbe()
+        guard.armInteractionProbe(2_000L)
+        assertFalse(guard.shouldForwardToLiveVideo(100L, 2_100L))
+        
 
-        assertTrue(guard.shouldForwardToLiveVideo(200L))
+        assertTrue(guard.shouldForwardToLiveVideo(200L, 2_200L))
     }
 
     @Test
