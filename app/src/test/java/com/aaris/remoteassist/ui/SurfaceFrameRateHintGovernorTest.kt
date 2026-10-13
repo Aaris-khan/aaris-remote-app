@@ -56,6 +56,42 @@ class SurfaceFrameRateHintGovernorTest {
     }
 
     @Test
+    fun oneMissedSixtyFpsFrameCannotRetuneSurfaceToTransientFiftyEight() {
+        val governor = SurfaceFrameRateHintGovernor(initialWindows = 2)
+        assertEquals(60, governor.beginInteraction(nowMs = 100))
+
+        /*
+         * 29 presentations / 500 ms reports ~58 fps, but the 34 ms worst gap
+         * exposes the missing 60 fps opportunity. Repeating the hitch must not
+         * turn transient render jank into a persistent 58 fps display vote.
+         */
+        repeat(4) { sample ->
+            assertNull(
+                governor.observe(
+                    window(500, 29, 34),
+                    700L + sample * 600L
+                )
+            )
+        }
+        assertEquals(60, governor.currentHintFps())
+    }
+
+    @Test
+    fun stableFiftyFiveClassPulldownStillQualifiesForMeasuredDisplayVote() {
+        val governor = SurfaceFrameRateHintGovernor(initialWindows = 2)
+        assertEquals(60, governor.beginInteraction(nowMs = 100))
+
+        /*
+         * Alternating 54/56 fps half-second quantization with a normal 33 ms
+         * pulldown gap represents a real ~55 fps cadence, not one lost 60 fps
+         * frame. The stricter evidence gate must keep this valid correction.
+         */
+        assertNull(governor.observe(window(500, 27, 33), 1_400))
+        assertEquals(55, governor.observe(window(500, 28, 33), 2_000))
+        assertEquals(55, governor.currentHintFps())
+    }
+
+    @Test
     fun congestionCadenceNeverVotesDisplayBelowSixty() {
         val governor = SurfaceFrameRateHintGovernor(initialWindows = 2)
         assertEquals(60, governor.beginInteraction(nowMs = 100))
