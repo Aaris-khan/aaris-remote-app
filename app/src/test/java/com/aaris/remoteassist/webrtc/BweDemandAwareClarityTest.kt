@@ -306,6 +306,90 @@ class BweDemandAwareClarityTest {
     }
 
     @Test
+    fun missingRtpBitrateUsesActualNativeGeometryBeforeWarmStartCommit() {
+        val budget = MotionVideoBudget()
+        assertTrue(budget.primeForMotion(profile, 0L))
+        assertEquals(360, budget.shortEdge)
+
+        // The 360 rung is only a prediction. The encoder is still receiving
+        // native 720-short-edge pixels until measured pressure commits a resize.
+        assertEquals(profile, budget.apply(profile, true))
+
+        val bweOnly =
+            sender(
+                fps = 30,
+                bitrateBps = 0,
+                availableOutgoingBitrateBps = 2_000_000.0
+            )
+
+        assertFalse(
+            budget.observe(
+                outbound = bweOnly,
+                receiver = receiver(30),
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 1_000L,
+                interactionActive = true,
+                profile = profile
+            )
+        )
+        assertTrue(
+            budget.observe(
+                outbound = bweOnly,
+                receiver = receiver(30),
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 2_000L,
+                interactionActive = true,
+                profile = profile
+            )
+        )
+
+        val committed = budget.apply(profile, true)
+        assertEquals(
+            360,
+            minOf(
+                committed.captureWidthPx,
+                committed.captureHeightPx
+            )
+        )
+    }
+
+    @Test
+    fun missingRtpBitratePreservesPixelsWhenThirtyFpsStillFits() {
+        val budget = MotionVideoBudget()
+        assertTrue(budget.primeForMotion(profile, 0L))
+        assertEquals(profile, budget.apply(profile, true))
+
+        val bweOnly =
+            sender(
+                fps = 60,
+                bitrateBps = 0,
+                availableOutgoingBitrateBps = 4_000_000.0
+            )
+
+        assertEquals(
+            34,
+            budget.clarityPreservingCadenceCeiling(
+                profile = profile,
+                outbound = bweOnly,
+                receiver = receiver(60),
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+
+        // Temporal relief is cheaper than a visible source resize. The source
+        // remains native while the cadence owner resolves the 34 fps ceiling to
+        // a phase-stable producer rung.
+        assertEquals(profile, budget.apply(profile, true))
+    }
+
+    @Test
     fun materialPathUtilizationStillPreemptsQueueGrowth() {
         val budget = MotionVideoBudget()
         assertTrue(budget.primeForMotion(profile, 0L))
