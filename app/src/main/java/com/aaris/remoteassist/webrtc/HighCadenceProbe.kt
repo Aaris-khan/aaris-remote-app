@@ -36,8 +36,13 @@ internal class HighCadenceProbe {
     private var lastPresentationSequenceSeen = 0L
     private var lastDisplayRefreshRateHz: Double? = null
     private var lastSourceRefreshRateHz: Double? = null
+    private var controllerHighCadenceMask: Int? = null
 
     val probing: Boolean get() = trialFrom != null
+
+    fun setControllerHighCadenceMask(mask: Int?) {
+        controllerHighCadenceMask = mask
+    }
 
     /**
      * A source-size transition changes the encoder operating point underneath a
@@ -380,7 +385,8 @@ internal class HighCadenceProbe {
             refreshRateHz = lastDisplayRefreshRateHz,
             ceilingFps = limit,
             floorFps = MIN_FINE_CADENCE_FPS,
-            sourceRefreshRateHz = lastSourceRefreshRateHz
+            sourceRefreshRateHz = lastSourceRefreshRateHz,
+            controllerHighCadenceMask = controllerHighCadenceMask
         )
 
     private fun previousLower(currentFps: Int): Int? =
@@ -389,7 +395,8 @@ internal class HighCadenceProbe {
             refreshRateHz = lastDisplayRefreshRateHz,
             floorFps = MIN_FINE_CADENCE_FPS,
             ceilingFps = 60,
-            sourceRefreshRateHz = lastSourceRefreshRateHz
+            sourceRefreshRateHz = lastSourceRefreshRateHz,
+            controllerHighCadenceMask = controllerHighCadenceMask
         )
 
     private fun nearestAtOrBelow(limit: Int): Int =
@@ -398,7 +405,8 @@ internal class HighCadenceProbe {
             refreshRateHz = lastDisplayRefreshRateHz,
             ceilingFps = 60,
             floorFps = 1,
-            sourceRefreshRateHz = lastSourceRefreshRateHz
+            sourceRefreshRateHz = lastSourceRefreshRateHz,
+            controllerHighCadenceMask = controllerHighCadenceMask
         )
 
     private fun toleratedDrops(frames: Int): Int =
