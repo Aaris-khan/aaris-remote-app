@@ -75,7 +75,7 @@ class VideoUrgentFreshnessTest {
     }
 
     @Test
-    fun clarityBandwidthReliefUsesCurrentSourceClockBeforeFullObserverRuns() {
+    fun smallBweMissDoesNotHalveKnownSixtyHzSource() {
         val governor = VideoCadenceGovernor(60)
 
         assertFalse(
@@ -86,7 +86,7 @@ class VideoUrgentFreshnessTest {
                 sourceRefreshRateHz = 60.0
             )
         )
-        assertTrue(
+        assertFalse(
             governor.observeClarityBandwidthCeiling(
                 ceilingFps = 59,
                 requestedFps = 60,
@@ -94,7 +94,30 @@ class VideoUrgentFreshnessTest {
                 sourceRefreshRateHz = 60.0
             )
         )
-        assertEquals(50, governor.cap)
+        assertEquals(60, governor.cap)
+    }
+
+    @Test
+    fun provenThirtyFpsBweCeilingCanUsePhaseStableRelief() {
+        val governor = VideoCadenceGovernor(60)
+
+        assertFalse(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 30,
+                requestedFps = 60,
+                nowMs = 500,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertTrue(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 30,
+                requestedFps = 60,
+                nowMs = 1_000,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(30, governor.cap)
     }
 
     @Test
@@ -151,7 +174,7 @@ class VideoUrgentFreshnessTest {
     }
 
     @Test
-    fun recurringMissedVsyncWindowsUseLiveSourceClockForMeaningfulRelief() {
+    fun recurringPacingOnlyMissedVsyncDoesNotManufactureSourceJudder() {
         val governor = measuredHighCadence()
 
         assertFalse(
@@ -165,7 +188,7 @@ class VideoUrgentFreshnessTest {
                 sourceRefreshRateHz = 60.0
             )
         )
-        assertTrue(
+        assertFalse(
             governor.observeFastPresentation(
                 intervalMs = 500,
                 renderedFrames = 30,
@@ -176,10 +199,32 @@ class VideoUrgentFreshnessTest {
                 sourceRefreshRateHz = 60.0
             )
         )
-        // 58/60 creates a 30-vsync beat and frees only ~3% of frame work.
-        // The existing source-aware pressure ladder chooses 50 instead:
-        // a six-vsync repeat with ~17% temporal headroom while pixels stay intact.
-        assertEquals(50, governor.cap)
+        // All 30 expected frames arrived in each half-second window. A source
+        // downshift would convert occasional scheduling jitter into a repeating
+        // cadence defect, so the fast path keeps the healthy 60 fps envelope.
+        assertEquals(60, governor.cap)
+    }
+
+    @Test
+    fun softDeliveryDeficitWaitsForCorroboratedTelemetryWhenNoFineHarmonicExists() {
+        val governor = measuredHighCadence()
+
+        repeat(2) { index ->
+            assertFalse(
+                governor.observeFastPresentation(
+                    intervalMs = 500,
+                    renderedFrames = 28,
+                    maxGapMs = 34,
+                    requestedFps = 60,
+                    interactionActive = true,
+                    nowMs = 500L + index * 500L,
+                    sourceRefreshRateHz = 60.0
+                )
+            )
+        }
+        // 50/48/45 are not exact divisors of a 60 Hz producer. Soft glass
+        // evidence alone cannot justify the only phase-stable step, 60 -> 30.
+        assertEquals(60, governor.cap)
     }
 
     @Test
