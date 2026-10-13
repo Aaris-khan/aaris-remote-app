@@ -113,6 +113,41 @@ class CaptureProfileTest {
     }
 
     @Test
+    fun measuredBalancedEncoderCanRaiseOnlyTheLowTierRecoveryCeiling() {
+        assertEquals(
+            CaptureTier.BALANCED,
+            CaptureProfile.recoveryCeilingForMeasuredEncoder(
+                initialTier = CaptureTier.LOW,
+                balancedRealtimeFpsLimit = 30
+            )
+        )
+        assertEquals(
+            CaptureTier.LOW,
+            CaptureProfile.recoveryCeilingForMeasuredEncoder(
+                initialTier = CaptureTier.LOW,
+                balancedRealtimeFpsLimit = 24
+            )
+        )
+        assertEquals(
+            CaptureTier.LOW,
+            CaptureProfile.recoveryCeilingForMeasuredEncoder(
+                initialTier = CaptureTier.LOW,
+                balancedRealtimeFpsLimit = null
+            )
+        )
+
+        // The measured escape hatch must never promote an already higher
+        // product tier or invent a ceiling beyond its bootstrap recommendation.
+        assertEquals(
+            CaptureTier.STANDARD,
+            CaptureProfile.recoveryCeilingForMeasuredEncoder(
+                initialTier = CaptureTier.STANDARD,
+                balancedRealtimeFpsLimit = 60
+            )
+        )
+    }
+
+    @Test
     fun standardKeepsNative1600pLongSide() {
         val profile =
             CaptureProfile.forDisplay(

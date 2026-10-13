@@ -84,25 +84,10 @@ class HostWebRtcSession(
                 codec.equals("VP8", ignoreCase = true)
         }
 
-    private val maxCaptureTier =
-        CaptureProfile.capForEncoderAcceleration(
-            recommendedTier = recommendedCaptureTier,
-            hardwareRealtimeEncoderAvailable =
-                hardwareRealtimeEncoderAvailable
-        )
-
-    @Volatile
-    private var captureTier = maxCaptureTier
-
-    @Volatile
-    private var profile =
-        CaptureProfile.current(appContext, captureTier)
-
     /*
-     * RAM and "hardware codec exists" are only bootstrap hints. Android codec
-     * performance points/achievable rates provide a device-local upper bound
-     * for the exact screen geometry, preventing periodic 45/60 fps trials that
-     * a vendor MediaCodec cannot sustain in realtime.
+     * Android's codec performance points/achievable rates are stronger evidence
+     * than RAM size. Probe the exact preferred screen codec before fixing the
+     * session's adaptive quality envelope.
      */
     private val preferredScreenCodec =
         WebRtcRuntime.preferredScreenCodec(
@@ -114,6 +99,52 @@ class HostWebRtcSession(
             "H264" to ScreenEncoderPerformance.probe("H264"),
             "VP8" to ScreenEncoderPerformance.probe("VP8")
         )
+
+    /*
+     * Bootstrap remains conservative. In particular, a <=3 GB-class phone still
+     * starts LOW rather than paying a speculative MediaCodec resize at session
+     * start. If Android publishes a >=30 fps guarantee for the exact BALANCED
+     * geometry on the preferred hardware codec, expose BALANCED only as the
+     * live governor's recovery ceiling. The existing healthy-window proof then
+     * decides whether the device actually earns that extra detail/cadence.
+     */
+    private val initialCaptureTier =
+        CaptureProfile.capForEncoderAcceleration(
+            recommendedTier = recommendedCaptureTier,
+            hardwareRealtimeEncoderAvailable =
+                hardwareRealtimeEncoderAvailable
+        )
+    private val balancedRealtimeEncoderFpsLimit =
+        if (
+            initialCaptureTier == CaptureTier.LOW &&
+            hardwareRealtimeEncoderAvailable
+        ) {
+            CaptureProfile.current(
+                appContext,
+                CaptureTier.BALANCED
+            ).let { balanced ->
+                screenEncoderPerformance[preferredScreenCodec]
+                    ?.maxFps(
+                        width = balanced.captureWidthPx,
+                        height = balanced.captureHeightPx
+                    )
+            }
+        } else {
+            null
+        }
+    private val maxCaptureTier =
+        CaptureProfile.recoveryCeilingForMeasuredEncoder(
+            initialTier = initialCaptureTier,
+            balancedRealtimeFpsLimit =
+                balancedRealtimeEncoderFpsLimit
+        )
+
+    @Volatile
+    private var captureTier = initialCaptureTier
+
+    @Volatile
+    private var profile =
+        CaptureProfile.current(appContext, captureTier)
 
     @Volatile
     private var activeScreenCodec = preferredScreenCodec
@@ -524,11 +555,21 @@ class HostWebRtcSession(
                 target = profile,
                 effective = initialEffective
             )
-        if (maxCaptureTier != recommendedCaptureTier) {
+        if (initialCaptureTier != recommendedCaptureTier) {
             listener.onDiagnostic(
                 "Realtime video bootstrap → " +
-                    maxCaptureTier.name +
+                    initialCaptureTier.name +
                     " • no H264/VP8 hardware encoder"
+            )
+        }
+        if (maxCaptureTier != initialCaptureTier) {
+            listener.onDiagnostic(
+                "Adaptive video recovery ceiling → " +
+                    maxCaptureTier.name +
+                    " • encoderGuarantee=" +
+                    (balancedRealtimeEncoderFpsLimit ?: 0) +
+                    "fps • starts=" +
+                    initialCaptureTier.name
             )
         }
         listener.onDiagnostic(

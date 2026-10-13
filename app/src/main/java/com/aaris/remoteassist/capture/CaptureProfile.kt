@@ -160,11 +160,12 @@ data class CaptureProfile(
         /**
          * RAM is only a memory budget; it does not prove realtime video encode
          * throughput. When the screen codecs have no hardware path, cap the
-         * session quality ceiling at BALANCED; the live governors may still step
-         * below it when encoder, network or presentation pressure requires.
+         * bootstrap tier at BALANCED; the live governors may still step below
+         * it when encoder, network or presentation pressure requires.
          *
-         * LOW/BALANCED devices are never promoted by this helper. Hardware
-         * acceleration preserves the device recommendation unchanged.
+         * LOW/BALANCED devices are never promoted by this bootstrap helper.
+         * Hardware acceleration preserves the device recommendation unchanged;
+         * any measured recovery ceiling is resolved separately below.
          */
         internal fun capForEncoderAcceleration(
             recommendedTier: CaptureTier,
@@ -178,6 +179,31 @@ data class CaptureProfile(
             }
             return CaptureTier.BALANCED
         }
+
+        /**
+         * Keep conservative LOW startup on constrained devices, but do not turn
+         * the RAM heuristic into a permanent 360p/20-fps ceiling when Android's
+         * own MediaCodec capability data proves the preferred hardware encoder
+         * can sustain the BALANCED 30-fps geometry.
+         *
+         * This expands only the recovery ceiling. CaptureQualityGovernor still
+         * requires consecutive healthy live windows before moving LOW ->
+         * BALANCED, and can return to LOW if the real path cannot sustain it.
+         * Missing/incomplete codec metadata therefore preserves LOW exactly.
+         */
+        internal fun recoveryCeilingForMeasuredEncoder(
+            initialTier: CaptureTier,
+            balancedRealtimeFpsLimit: Int?
+        ): CaptureTier =
+            if (
+                initialTier == CaptureTier.LOW &&
+                balancedRealtimeFpsLimit != null &&
+                balancedRealtimeFpsLimit >= BALANCED_MOTION_FPS
+            ) {
+                CaptureTier.BALANCED
+            } else {
+                initialTier
+            }
 
         @Suppress("DEPRECATION")
         fun current(

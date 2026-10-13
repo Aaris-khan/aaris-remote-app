@@ -13,7 +13,7 @@ import org.webrtc.RtpParameters
  * a second Java-side decoded-frame queue or a second timestamp-smoothing stage.
  */
 internal object RealtimeMediaPolicy {
-    const val PLAYOUT_DELAY_MIN_MS = 20
+    const val PLAYOUT_DELAY_MIN_MS = 30
     const val PLAYOUT_FRESHNESS_PRESSURE_MS = 160
     private const val PLAYOUT_RECOVERY_MARGIN_MS = 20
     const val PLAYOUT_DELAY_MAX_MS =
@@ -52,18 +52,21 @@ internal object RealtimeMediaPolicy {
      * while sustained variance is repaired by GCC/TWCC plus the existing
      * cadence/spatial governors instead of hiding it behind older video.
      *
-     * A 10 ms floor is shorter than one 60 Hz frame (16.7 ms), so common
-     * 12/18/14/20 ms packet/decode arrival variance can still leak through as
-     * visible micro-judder even though the average path is healthy. Reserve a
-     * bounded 20 ms native timing floor: enough to cover roughly one display
-     * opportunity, but far below scrcpy-style 50 ms smoothing buffers and
-     * without adding a Java decoded-frame queue or a second render clock.
+     * The previous 20 ms floor covers roughly one 60 Hz display opportunity,
+     * but field-visible micro-stutter can still leak through when ordinary
+     * packet/decode variance straddles two adjacent vsync opportunities. Reserve
+     * a bounded 30 ms native timing floor: still below two 60 Hz frame periods
+     * and far below a call-style stale-video reservoir, while giving libwebrtc
+     * enough timestamp/jitter room to absorb short WAN/TURN scheduling variance.
+     *
+     * This adds only 10 ms versus the previous floor and does not add a Java
+     * decoded-frame queue, Choreographer media clock, or another pacing owner.
      *
      * The 180 ms stale-video ceiling is unchanged. Congestion and sustained
      * jitter still escape through the existing freshness/cadence governors.
      */
     const val FIELD_TRIALS =
-        "WebRTC-ForceSendPlayoutDelay/min_ms:20,max_ms:180/"
+        "WebRTC-ForceSendPlayoutDelay/min_ms:30,max_ms:180/"
 
     /*
      * getStats() is diagnostic/adaptation work, not part of the media hot path.

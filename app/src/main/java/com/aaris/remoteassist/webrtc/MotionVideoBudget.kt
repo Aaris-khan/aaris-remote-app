@@ -1561,11 +1561,22 @@ internal class MotionVideoBudget {
         val admittedShortEdge =
             admittedSourceShortEdge(profile)
         val motionCeiling =
-            if (admittedShortEdge <= 540) {
-                nominalMotionBitrateBps(admittedShortEdge, targetFps)
-                    .roundToInt()
-            } else {
-                profile.maxVideoBitrateBps
+            when {
+                admittedShortEdge <= CLARITY_FLOOR_SHORT_EDGE ->
+                    maxOf(
+                        nominalMotionBitrateBps(
+                            admittedShortEdge,
+                            targetFps
+                        ),
+                        READABLE_360_MAX_BITRATE_FLOOR_BPS
+                    ).roundToInt()
+                admittedShortEdge <= DETAIL_CLARITY_FLOOR_SHORT_EDGE ->
+                    nominalMotionBitrateBps(
+                        admittedShortEdge,
+                        targetFps
+                    ).roundToInt()
+                else ->
+                    profile.maxVideoBitrateBps
             }
         return minOf(profile.maxVideoBitrateBps, motionCeiling)
     }
@@ -2014,6 +2025,19 @@ internal class MotionVideoBudget {
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val CLARITY_FLOOR_SHORT_EDGE = 360
         const val DETAIL_CLARITY_FLOOR_SHORT_EDGE = 540
+
+        /*
+         * Once 360px has become the survival/readability geometry, low cadence
+         * must not also collapse the encoder ceiling linearly. At 20 fps the
+         * old 900 kbps @30 model produced only a 600 kbps max ceiling, so small
+         * UI text could quantize badly even when GCC had much more path capacity.
+         *
+         * This is still only a MAX ceiling, never a forced send rate. GCC/TWCC
+         * remains free to transmit below it on constrained links. Keep enough
+         * headroom for per-frame screen detail while temporal relief handles
+         * freshness independently.
+         */
+        const val READABLE_360_MAX_BITRATE_FLOOR_BPS = 1_200_000.0
 
         /*
          * Do not trade the protected 540px text floor for pixels while cadence
