@@ -35,6 +35,8 @@ class ReceiverVideoFeedback {
     private var lastCapabilitiesSequence = 0L
     private var capabilitiesAtMs = 0L
     private var displayRefreshRateHz: Double? = null
+    private var lastCadenceCapabilitiesSequence = 0L
+    private var lastSmoothnessSequence = 0L
 
     private var lastPhotonSequence = 0L
     private var photonReceivedAtMs = 0L
@@ -62,6 +64,8 @@ class ReceiverVideoFeedback {
         lastCapabilitiesSequence = 0L
         capabilitiesAtMs = 0L
         displayRefreshRateHz = null
+        lastCadenceCapabilitiesSequence = 0L
+        lastSmoothnessSequence = 0L
         lastPhotonSequence = 0L
         photonReceivedAtMs = 0L
         pendingPhoton = null
@@ -89,6 +93,46 @@ class ReceiverVideoFeedback {
         return displayRefreshRateHz?.takeIf {
             nowMs - capabilitiesAtMs in 0L..MAX_CAPABILITIES_AGE_MS
         }
+    }
+
+    fun accept(
+        packet: ControlPacket.DisplayCadenceCapabilities,
+        secret: Long,
+        generation: Int
+    ): Boolean {
+        if (
+            !packet.valid() ||
+            packet.leaseSecret != secret ||
+            packet.generation != generation
+        ) {
+            return false
+        }
+        bindIdentity(secret, generation)
+        if (packet.sequence <= lastCadenceCapabilitiesSequence) {
+            return false
+        }
+        lastCadenceCapabilitiesSequence = packet.sequence
+        return true
+    }
+
+    fun accept(
+        packet: ControlPacket.PresentationSmoothnessFeedback,
+        secret: Long,
+        generation: Int
+    ): Boolean {
+        if (
+            !packet.valid() ||
+            packet.leaseSecret != secret ||
+            packet.generation != generation
+        ) {
+            return false
+        }
+        bindIdentity(secret, generation)
+        if (packet.sequence <= lastSmoothnessSequence) {
+            return false
+        }
+        lastSmoothnessSequence = packet.sequence
+        return true
     }
 
     fun accept(
