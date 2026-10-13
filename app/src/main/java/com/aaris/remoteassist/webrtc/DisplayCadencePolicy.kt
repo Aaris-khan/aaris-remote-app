@@ -112,24 +112,24 @@ internal object DisplayCadencePolicy {
     /**
      * Pressure relief has a different job from steady-state admission.
      *
-     * Healthy capture/promotion remains source-harmonic so an unconstrained
-     * stream never creates avoidable producer cadence jitter. Once measured
-     * pressure says the current high cadence is too expensive, however, jumping
-     * straight from 60 -> 30 can be a larger visual discontinuity than using a
-     * bounded intermediate cadence.
+     * Healthy capture/promotion is source-harmonic so an unconstrained stream
+     * never creates avoidable producer cadence jitter. Pressure relief must keep
+     * the same invariant. A nominally "fine" 60 -> 50 trim on a 60 Hz source
+     * necessarily selects five frames, then skips one source opportunity. That
+     * creates a deterministic 33 ms long interval every six source ticks even
+     * when encode, RTP, decode and EGL are otherwise healthy.
      *
-     * Once the source clock is known, it owns temporal quality: admit relief
-     * rungs with a short producer repeat cycle and use the controller clock only
-     * as a presentation-capacity ceiling. Source and controller displays are
-     * independent clocks across a network, so requiring both to share a short
-     * nominal cycle recreates the mixed-refresh collapse fixed by the steady
-     * policy (for example a 60 Hz source on a 165 Hz controller).
+     * Once the source clock is known, admit only exact source harmonics above
+     * 30 fps and use the controller clock only as a presentation-capacity
+     * ceiling. This makes every high-cadence actuator phase-stable at the
+     * producer instead of replacing occasional jitter with periodic judder.
+     * Real sustained overload may therefore take a larger step (for example
+     * 60 -> 30 on a 60 Hz source); that is preferable to manufacturing an
+     * uneven high-cadence stream.
      *
-     * If source-clock evidence is unavailable, fall back to the controller's
-     * historical short-repeat ladder. With a known source, safe short-cycle
-     * rates that were absent from that historical list (for example 48/60 or
-     * 54/90) are allowed to fill the pressure ladder. <=30 fps remains the
-     * existing emergency/recovery ladder.
+     * If source-clock evidence is unavailable, retain the controller's
+     * historical short-repeat ladder as a compatibility fallback. <=30 fps
+     * remains the existing emergency/recovery ladder.
      */
     fun pressureReliefDescending(
         refreshRateHz: Double?,
@@ -152,9 +152,7 @@ internal object DisplayCadencePolicy {
         val firstHigh = maxOf(HIGH_CADENCE_MIN_FPS, floor)
 
         fun sourcePressureCompatible(fps: Int): Boolean =
-            sourceRefresh == null ||
-                fps <= LOW_CADENCE_MAX_FPS ||
-                shortRepeatCycle(sourceRefresh, fps)
+            sourceClockCompatible(sourceRefresh, fps)
 
         fun admitHigh(fps: Int): Boolean =
             fps in firstHigh..ceiling &&
@@ -168,11 +166,12 @@ internal object DisplayCadencePolicy {
         if (ceiling >= firstHigh) {
             if (sourceRefresh != null) {
                 /*
-                 * Pressure is already proven, so use every high cadence whose
-                 * producer repeat cycle is bounded. This fills safe historical
-                 * gaps such as 48/60 and 54/90 without allowing arbitrary 58/60
-                 * or 55/60 long-beat trims. The controller remains a capacity
-                 * ceiling only; it is not phase-locked to the remote producer.
+                 * Pressure is already proven, but a smaller non-harmonic rate
+                 * is not actually smoother: frame adaptation would create a
+                 * repeating long source interval. Keep only exact producer
+                 * divisors above 30 fps. The controller remains a capacity
+                 * ceiling; transport clocks are independent, but source frame
+                 * production itself must stay evenly paced.
                  */
                 (minOf(PRODUCT_MAX_FPS, ceiling, sourceRefresh) downTo firstHigh)
                     .asSequence()
@@ -284,9 +283,10 @@ internal object DisplayCadencePolicy {
     }
 
     /**
-     * Resolve an already-proven downward ceiling without needlessly halving
-     * cadence when a bounded short-cycle rung can satisfy the same pressure.
-     * Unlike nearestAtOrBelow(), this is never used for startup or promotion.
+     * Resolve an already-proven downward ceiling. With a known source clock,
+     * high-cadence results remain exact source harmonics so pressure relief
+     * cannot introduce deterministic frame-selection judder. Unlike
+     * nearestAtOrBelow(), this is never used for startup or promotion.
      */
     fun nearestPressureReliefAtOrBelow(
         limitFps: Int,
