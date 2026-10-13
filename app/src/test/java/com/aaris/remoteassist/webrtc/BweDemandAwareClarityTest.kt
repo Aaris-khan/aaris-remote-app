@@ -172,15 +172,17 @@ class BweDemandAwareClarityTest {
         val complexUi =
             sender(
                 fps = 60,
-                bitrateBps = 4_500_000,
+                bitrateBps = 4_750_000,
                 availableOutgoingBitrateBps = 5_000_000.0
             )
 
-        // 90% utilization needs headroom, but measured demand says a modest
-        // 60 -> ~52 fps trim is enough. The fixed nominal table would cut much
-        // harder even though the same pixels can remain readable.
+        // 95% utilization violates the shared 1.10x reserve, but measured
+        // demand says a modest 60 -> ~57 fps trim is enough. A clean 90%
+        // window already satisfies that reserve and should remain untouched.
+        // The fixed nominal table would cut much harder even though the same
+        // pixels can remain readable.
         assertEquals(
-            52,
+            57,
             budget.clarityPreservingCadenceCeiling(
                 profile = profile,
                 outbound = complexUi,
