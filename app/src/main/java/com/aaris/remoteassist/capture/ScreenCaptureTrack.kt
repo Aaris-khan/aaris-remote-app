@@ -42,13 +42,18 @@ class ScreenCaptureTrack(
         }
     )
 
-    // This flag selects the encoder's content mode, not the capture permission
-    // or producer. Native screencast mode disables quality scaling even when
-    // the sender requests MAINTAIN_FRAMERATE. Remote-control motion needs the
-    // realtime encoder path, with MediaProjection still supplying the pixels.
-    // Keep it fixed for the session: toggling it recreates the encoder.
+    /*
+     * Preserve the capture source's real media semantics all the way into
+     * libwebrtc. ScreenCapturerAndroid reports isScreencast=true; propagating
+     * that bit makes native encoder configuration ContentType::kScreen instead
+     * of misclassifying MediaProjection pixels as camera/realtime video.
+     *
+     * Dynamic cadence and spatial relief remain owned by Aaris' existing
+     * VideoSource + sender policy. This changes content classification only:
+     * no second scaler, queue, encoder or timestamp stage is introduced.
+     */
     private val videoSource: VideoSource =
-        factory.createVideoSource(false)
+        factory.createVideoSource(capturer.isScreencast)
 
     private val surfaceTextureHelper =
         checkNotNull(
