@@ -1239,8 +1239,8 @@ class VideoCadenceGovernor(
         const val QUEUE_BUDGET_MULTIPLIER = 1.5
         const val MIN_JITTER_PRESSURE_MS = 85.0
         const val JITTER_BUDGET_MULTIPLIER = 2.0
-        const val MIN_RENDER_GAP_PRESSURE_MS = 45.0
-        const val RENDER_GAP_BUDGET_MULTIPLIER = 2.25
+        const val MIN_RENDER_GAP_PRESSURE_MS = 36.0
+        const val RENDER_GAP_BUDGET_MULTIPLIER = 2.0
         const val PRESENTATION_DELIVERY_RATIO = 0.82
 
         const val PACKET_LOSS_PRESSURE_RATIO = 0.04
@@ -1265,6 +1265,13 @@ class VideoCadenceGovernor(
         /*
          * Controller EGL feedback arrives independently of getStats(). Keep the
          * fast path bounded to recent half-second-ish windows and high cadence.
+         *
+         * At 60 fps one missed display opportunity is roughly a 33 ms frame
+         * gap. Waiting for a 70 ms gap allowed recurring two-vsync misses to
+         * look healthy even though they are visible as gaming-style micro-
+         * stutter. The presentation pressure gate still requires two distinct
+         * soft windows, so this tighter deadline reacts to sustained pacing
+         * variance without punishing a single scheduler outlier.
          */
         const val FAST_PRESENTATION_MIN_WINDOW_MS = 500
         const val FAST_PRESENTATION_MAX_WINDOW_MS = 2_000
@@ -1273,8 +1280,8 @@ class VideoCadenceGovernor(
         const val FAST_PRESENTATION_MIN_CADENCE_FPS = 45
         const val FAST_PRESENTATION_CHANGE_INTERVAL_MS = 450L
         const val FAST_PRESENTATION_FULL_CADENCE_DELIVERY_RATIO = 0.75
-        const val FAST_PRESENTATION_FULL_CADENCE_GAP_MS = 70.0
-        const val FAST_PRESENTATION_FULL_CADENCE_GAP_MULTIPLIER = 3.0
+        const val FAST_PRESENTATION_FULL_CADENCE_GAP_MS = 30.0
+        const val FAST_PRESENTATION_FULL_CADENCE_GAP_MULTIPLIER = 1.75
         const val FAST_PRESENTATION_SEVERE_DELIVERY_RATIO = 0.55
         const val FAST_PRESENTATION_SEVERE_GAP_MS = 140.0
         const val FAST_PRESENTATION_SEVERE_GAP_MULTIPLIER = 5.0
@@ -1285,8 +1292,8 @@ class VideoCadenceGovernor(
         const val HEALTHY_QUEUE_MS = 20.0
         const val HEALTHY_PACKET_LOSS_RATIO = 0.025
         const val HEALTHY_PRESENTATION_RATIO = 0.90
-        const val HEALTHY_RENDER_GAP_MS = 50.0
-        const val HEALTHY_RENDER_GAP_BUDGET_MULTIPLIER = 3.0
+        const val HEALTHY_RENDER_GAP_MS = 36.0
+        const val HEALTHY_RENDER_GAP_BUDGET_MULTIPLIER = 2.0
 
         const val PRESSURE_SAMPLES_TO_REDUCE = 2
         const val HEALTHY_SAMPLES_TO_RAISE = 8
