@@ -455,6 +455,73 @@ class DisplayCadencePolicyTest {
     }
 
     @Test
+    fun provenNinetyOnlyControllerRejectsSixtySourcePulldown() {
+        val mask =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 90f,
+                seamlessAlternativeRefreshRatesHz = floatArrayOf()
+            )
+
+        assertEquals(
+            listOf(30, 24, 20, 15),
+            DisplayCadencePolicy.descending(
+                refreshRateHz = 90.0,
+                ceilingFps = 60,
+                sourceRefreshRateHz = 60.0,
+                controllerHighCadenceMask = mask
+            )
+        )
+        assertNull(
+            DisplayCadencePolicy.nextHigher(
+                currentFps = 30,
+                refreshRateHz = 90.0,
+                ceilingFps = 60,
+                floorFps = 30,
+                sourceRefreshRateHz = 60.0,
+                controllerHighCadenceMask = mask
+            )
+        )
+    }
+
+    @Test
+    fun matchingNinetyHzSourceAndControllerKeepFortyFive() {
+        val mask =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 90f,
+                seamlessAlternativeRefreshRatesHz = floatArrayOf()
+            )
+
+        assertEquals(
+            listOf(45, 30, 24, 20, 15),
+            DisplayCadencePolicy.descending(
+                refreshRateHz = 90.0,
+                ceilingFps = 60,
+                sourceRefreshRateHz = 90.0,
+                controllerHighCadenceMask = mask
+            )
+        )
+    }
+
+    @Test
+    fun sixtyAlternativePreservesSixtyOnNinetyClassPanel() {
+        val mask =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 90f,
+                seamlessAlternativeRefreshRatesHz = floatArrayOf(60f)
+            )
+
+        assertEquals(
+            listOf(60, 30, 24, 20, 15),
+            DisplayCadencePolicy.descending(
+                refreshRateHz = 90.0,
+                ceilingFps = 60,
+                sourceRefreshRateHz = 60.0,
+                controllerHighCadenceMask = mask
+            )
+        )
+    }
+
+    @Test
     fun sourceClockStillProtectsCadenceBeforeControllerRefreshArrives() {
         assertEquals(
             listOf(60, 30, 24, 20, 15),
