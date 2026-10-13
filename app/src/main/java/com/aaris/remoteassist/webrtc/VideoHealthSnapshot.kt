@@ -37,7 +37,9 @@ data class VideoHealthSnapshot(
     val firCount: Long? = null,
     val keyFrameCount: Long? = null,
     val recent: VideoHealthWindow? = null,
-    val availableOutgoingBitrateBps: Double? = null
+    val availableOutgoingBitrateBps: Double? = null,
+    /** Cumulative codec quantizer sum from WebRTC stats; diagnostic only. */
+    val qpSum: Long? = null
 ) {
     fun compact(): String {
         val primary =
@@ -297,7 +299,8 @@ data class VideoHealthSnapshot(
                     pliCount = members["pliCount"]?.let(::number),
                     firCount = members["firCount"]?.let(::number),
                     keyFrameCount =
-                        members["keyFramesEncoded"]?.let(::number)
+                        members["keyFramesEncoded"]?.let(::number),
+                    qpSum = members["qpSum"]?.let(::number)
                 )
             } else {
                 VideoHealthSnapshot(
@@ -330,7 +333,8 @@ data class VideoHealthSnapshot(
                     jitterTotalSeconds = decimal(members["jitterBufferDelay"]),
                     jitterTargetTotalSeconds =
                         decimal(members["jitterBufferTargetDelay"]),
-                    jitterEmittedCount = members["jitterBufferEmittedCount"]?.let(::number)
+                    jitterEmittedCount = members["jitterBufferEmittedCount"]?.let(::number),
+                    qpSum = members["qpSum"]?.let(::number)
                 )
             }
         }

@@ -52,7 +52,13 @@ data class VideoHealthWindow(
     val postAckPresentMs: Int? = null,
     val photonSampleSequence: Long? = null,
     val photonSampleAgeMs: Int? = null,
-    val photonSampleFresh: Boolean = true
+    val photonSampleFresh: Boolean = true,
+    /**
+     * Mean codec quantizer for frames completed in this exact stats window.
+     * Codec scales differ (for example H.264 vs VP8), so this is telemetry and
+     * A/B evidence only; it must not become a cross-codec adaptation threshold.
+     */
+    val qpAverage: Double? = null
 ) {
     val fps: Double get() = frames * 1000.0 / intervalMs
 
@@ -106,7 +112,12 @@ data class VideoHealthWindow(
                 firs?.let { append(" fir=$it") }
                 keyFrames?.let { append(" key=$it") }
             }
-        return "${fps.roundToInt()}fps ${bitrateBps / 1000}kbps codec=${processingMs?.roundToInt()}ms jitter=${jitterMs?.roundToInt()}ms$target drop=$dropped freeze=$freezes queue=${sendQueueMs?.roundToInt()}ms$recovery$presentation"
+        val quantizer =
+            qpAverage
+                ?.takeIf { it.isFinite() && it >= 0.0 }
+                ?.let { " qp=${it.roundToInt()}" }
+                .orEmpty()
+        return "${fps.roundToInt()}fps ${bitrateBps / 1000}kbps codec=${processingMs?.roundToInt()}ms jitter=${jitterMs?.roundToInt()}ms$target drop=$dropped freeze=$freezes queue=${sendQueueMs?.roundToInt()}ms$quantizer$recovery$presentation"
     }
 }
 
@@ -162,6 +173,20 @@ class VideoHealthWindowTracker {
                     .takeIf { it in 0..1_000_000 }
                     ?.toInt()
             }
+        fun counterAverage(
+            total: Long?,
+            before: Long?,
+            count: Long
+        ): Double? {
+            if (total == null || before == null || count <= 0L) return null
+            val delta = total - before
+            return if (delta >= 0L) {
+                (delta.toDouble() / count.toDouble())
+                    .takeIf { it.isFinite() && it >= 0.0 }
+            } else {
+                null
+            }
+        }
         val retransmitted =
             if (
                 current.retransmittedPackets != null &&
@@ -244,6 +269,12 @@ class VideoHealthWindowTracker {
                         current.jitterTargetTotalSeconds,
                         old.jitterTargetTotalSeconds,
                         emitted
+                    ),
+                qpAverage =
+                    counterAverage(
+                        current.qpSum,
+                        old.qpSum,
+                        frames
                     )
             )
         )

@@ -165,7 +165,8 @@ class VideoHealthMetricsTest {
             pliCount: Long,
             firCount: Long,
             keyFramesEncoded: Long,
-            framesEncoded: Long
+            framesEncoded: Long,
+            qpSum: Long
         ): VideoHealthSnapshot {
             val item =
                 stat(
@@ -183,7 +184,8 @@ class VideoHealthMetricsTest {
                     "nackCount" to nackCount,
                     "pliCount" to pliCount,
                     "firCount" to firCount,
-                    "keyFramesEncoded" to keyFramesEncoded
+                    "keyFramesEncoded" to keyFramesEncoded,
+                    "qpSum" to qpSum
                 )
             return checkNotNull(
                 VideoHealthSnapshot.from(
@@ -207,7 +209,8 @@ class VideoHealthMetricsTest {
                 pliCount = 0,
                 firCount = 0,
                 keyFramesEncoded = 1,
-                framesEncoded = 20
+                framesEncoded = 20,
+                qpSum = 600
             )
         assertEquals(5L, first.retransmittedPackets)
         assertEquals(0L, first.hugeFramesSent)
@@ -229,7 +232,8 @@ class VideoHealthMetricsTest {
                         pliCount = 1,
                         firCount = 1,
                         keyFramesEncoded = 2,
-                        framesEncoded = 50
+                        framesEncoded = 50,
+                        qpSum = 1_620
                     )
                 ).recent
             )
@@ -242,5 +246,9 @@ class VideoHealthMetricsTest {
         assertEquals(1, recent.plis)
         assertEquals(1, recent.firs)
         assertEquals(1, recent.keyFrames)
+        // 1,020 quantizer points across the 30 frames completed in this
+        // interval -> mean QP 34. Keep this as diagnostic evidence only.
+        assertEquals(34.0, checkNotNull(recent.qpAverage), 0.0001)
+        assertTrue(recent.compact().contains("qp=34"))
     }
 }
