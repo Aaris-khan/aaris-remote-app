@@ -75,6 +75,29 @@ class VideoUrgentFreshnessTest {
     }
 
     @Test
+    fun clarityBandwidthReliefUsesCurrentSourceClockBeforeFullObserverRuns() {
+        val governor = VideoCadenceGovernor(60)
+
+        assertFalse(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 59,
+                requestedFps = 60,
+                nowMs = 500,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertTrue(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 59,
+                requestedFps = 60,
+                nowMs = 1_000,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(50, governor.cap)
+    }
+
+    @Test
     fun lowerCadenceOrdinaryQueueStillRequiresSustainedPressure() {
         val governor = VideoCadenceGovernor(30)
 
@@ -128,7 +151,7 @@ class VideoUrgentFreshnessTest {
     }
 
     @Test
-    fun recurringMissedVsyncWindowsTriggerEarlyFineRelief() {
+    fun recurringMissedVsyncWindowsUseLiveSourceClockForMeaningfulRelief() {
         val governor = measuredHighCadence()
 
         assertFalse(
@@ -138,7 +161,8 @@ class VideoUrgentFreshnessTest {
                 maxGapMs = 34,
                 requestedFps = 60,
                 interactionActive = true,
-                nowMs = 500
+                nowMs = 500,
+                sourceRefreshRateHz = 60.0
             )
         )
         assertTrue(
@@ -148,10 +172,14 @@ class VideoUrgentFreshnessTest {
                 maxGapMs = 34,
                 requestedFps = 60,
                 interactionActive = true,
-                nowMs = 1_000
+                nowMs = 1_000,
+                sourceRefreshRateHz = 60.0
             )
         )
-        assertEquals(58, governor.cap)
+        // 58/60 creates a 30-vsync beat and frees only ~3% of frame work.
+        // The existing source-aware pressure ladder chooses 50 instead:
+        // a six-vsync repeat with ~17% temporal headroom while pixels stay intact.
+        assertEquals(50, governor.cap)
     }
 
     @Test

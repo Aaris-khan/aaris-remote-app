@@ -1004,7 +1004,9 @@ class HostWebRtcSession(
                                     current.leaseSecret,
                                     current.displayGeneration,
                                     now
-                                )
+                                ),
+                            sourceRefreshRateHz =
+                                sourceDisplayRefreshRateHz()
                         )
                     ) {
                         applyVideoPolicy(profile)
@@ -1316,7 +1318,9 @@ class HostWebRtcSession(
                 cadenceGovernor.observeClarityBandwidthCeiling(
                     ceilingFps = clarityCadenceCeiling,
                     requestedFps = motionTargetFps,
-                    nowMs = now
+                    nowMs = now,
+                    displayRefreshRateHz = receiver?.displayRefreshRateHz,
+                    sourceRefreshRateHz = sourceRefreshRateHz
                 )
 
             /*

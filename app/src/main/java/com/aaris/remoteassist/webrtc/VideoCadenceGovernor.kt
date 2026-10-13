@@ -47,8 +47,23 @@ class VideoCadenceGovernor(
     fun observeClarityBandwidthCeiling(
         ceilingFps: Int?,
         requestedFps: Int,
-        nowMs: Long
+        nowMs: Long,
+        displayRefreshRateHz: Double? = null,
+        sourceRefreshRateHz: Double? = null
     ): Boolean {
+        displayRefreshRateHz
+            ?.takeIf {
+                it.isFinite() &&
+                    it in MIN_DISPLAY_REFRESH_HZ..MAX_DISPLAY_REFRESH_HZ
+            }
+            ?.let { lastDisplayRefreshRateHz = it }
+        sourceRefreshRateHz
+            ?.takeIf {
+                it.isFinite() &&
+                    it in MIN_DISPLAY_REFRESH_HZ..MAX_DISPLAY_REFRESH_HZ
+            }
+            ?.let { lastSourceRefreshRateHz = it }
+
         if (nowMs < 0L || requestedFps <= CLARITY_BANDWIDTH_MIN_FPS) {
             resetClarityBandwidthVotes()
             return false
@@ -475,7 +490,8 @@ class VideoCadenceGovernor(
         requestedFps: Int,
         interactionActive: Boolean,
         nowMs: Long,
-        displayRefreshRateHz: Double? = null
+        displayRefreshRateHz: Double? = null,
+        sourceRefreshRateHz: Double? = null
     ): Boolean {
         displayRefreshRateHz
             ?.takeIf {
@@ -483,6 +499,12 @@ class VideoCadenceGovernor(
                     it in MIN_DISPLAY_REFRESH_HZ..MAX_DISPLAY_REFRESH_HZ
             }
             ?.let { lastDisplayRefreshRateHz = it }
+        sourceRefreshRateHz
+            ?.takeIf {
+                it.isFinite() &&
+                    it in MIN_DISPLAY_REFRESH_HZ..MAX_DISPLAY_REFRESH_HZ
+            }
+            ?.let { lastSourceRefreshRateHz = it }
         if (
             !interactionActive ||
             nowMs < 0L ||
