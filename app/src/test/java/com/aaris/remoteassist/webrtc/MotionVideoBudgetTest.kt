@@ -1247,7 +1247,7 @@ class MotionVideoBudgetTest {
         assertEquals(900_000, budget.bitrateCeiling(profile, true))
     }
 
-    @Test fun sixtyFpsBandwidthPredictionUsesPixelRateNotThirtyFpsRung() {
+    @Test fun bandwidthPredictionUsesActuallyAdmittedPixelRateAcrossCadence() {
         val sixty = MotionVideoBudget()
         assertTrue(sixty.primeForMotion(profile, 0L))
         // Prediction may use the speculative 360 rung, but the RTP ceiling
@@ -1294,9 +1294,11 @@ class MotionVideoBudgetTest {
             sixty.bitrateCeiling(profile, true, targetFps = 60)
         )
 
-        // The same estimate comfortably fits 360-short-edge at 30 fps. A BWE
-        // stat by itself must not trigger relief when the requested pixel-rate
-        // really has headroom.
+        // The same estimate would fit the speculative 360 control rung at
+        // 30 fps, but that rung has not been committed yet: the encoder is
+        // physically still receiving 720-short-edge pixels. Budget the actual
+        // admitted geometry, so the second stable BWE window commits the pending
+        // readable resize before sender/jitter queue debt becomes visible.
         val thirty = MotionVideoBudget()
         assertTrue(thirty.primeForMotion(profile, 0L))
         assertEquals(
@@ -1311,20 +1313,30 @@ class MotionVideoBudgetTest {
                         processingMs = 5.0
                     )
             )
-        repeat(3) { index ->
-            assertFalse(
-                thirty.observe(
-                    thirtyPath,
-                    receiver(fps = 30, decode = 5.0, presented = 30),
-                    sourceFps = 30.0,
-                    motionActive = true,
-                    targetFps = 30,
-                    nowMs = 1_000L + index * 1_000L,
-                    interactionActive = true
-                )
+        assertFalse(
+            thirty.observe(
+                thirtyPath,
+                receiver(fps = 30, decode = 5.0, presented = 30),
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 1_000L,
+                interactionActive = true
             )
-        }
+        )
+        assertTrue(
+            thirty.observe(
+                thirtyPath,
+                receiver(fps = 30, decode = 5.0, presented = 30),
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 2_000L,
+                interactionActive = true
+            )
+        )
         assertEquals(360, thirty.shortEdge)
+        assertEquals(360, thirty.apply(profile, true).captureWidthPx)
     }
 
     @Test fun lowBandwidthEstimateCannotBlurAStaticScreen() {
