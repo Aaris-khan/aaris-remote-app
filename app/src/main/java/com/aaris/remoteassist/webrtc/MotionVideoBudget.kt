@@ -1,17 +1,15 @@
 package com.aaris.remoteassist.webrtc
 
 import com.aaris.remoteassist.capture.CaptureProfile
-import com.aaris.remoteassist.capture.CaptureTier
 import kotlin.math.roundToInt
 
 /**
  * Remote control is a detail-sensitive workload: text, forms and icons must
- * remain readable while motion stays fresh. Spatial adaptation is explicit and
- * pressure-class aware: premium STANDARD/HIGH sessions keep 540px as the normal
- * interaction floor, while 360px remains the universal emergency floor for
- * severe transport/producer failure. Once the active floor is reached, further
- * overload is paid in temporal cadence/bitrate instead of silently making text,
- * forms and icons unreadable.
+ * remain readable while motion stays fresh. One-second telemetry may reduce
+ * the normal spatial envelope through 720 -> 540 -> 360, but 360 is the
+ * readability floor for all primary-video adaptation. Once 360 is reached,
+ * further overload is paid in temporal cadence/bitrate instead of making
+ * text, forms and icons unreadable.
  *
  * WebRTC's BWE clarity guard spends high-cadence excess first when the same
  * admitted pixels still fit at a lower interactive cadence. This avoids
@@ -534,7 +532,8 @@ internal class MotionVideoBudget {
         interactionCaptureStarved: Boolean = false,
         canResizeProducerSurface: Boolean = false,
         profile: CaptureProfile? = null,
-        allowSpatialRelief: Boolean = true
+        allowSpatialRelief: Boolean = true,
+        minimumSpatialShortEdge: Int = CLARITY_FLOOR_SHORT_EDGE
     ): Boolean {
         val before = Triple(
             shortEdge,
@@ -1034,53 +1033,59 @@ internal class MotionVideoBudget {
          * trees from drifting apart.
          */
         /*
-         * Keep a universal 360px emergency floor, but protect small text more
-         * aggressively on STANDARD/HIGH hardware during ordinary adaptation.
-         * Those tiers keep 540px while temporal cadence/GCC absorb additional
-         * non-severe pressure. A genuinely severe path may still descend to 360
-         * so remote control remains usable instead of accumulating stale frames.
+         * 360 remains the established global readability floor. The caller may
+         * raise the floor for ONE already-classified spatial decision (the
+         * clean local-compute/high-cadence lane uses 540) without changing the
+         * long-standing network, emergency and recovery contracts.
          */
         val currentSourceShortEdge =
             admittedSourceShortEdge(profile)
+        val scopedSpatialFloor =
+            minimumSpatialShortEdge.coerceIn(
+                CLARITY_FLOOR_SHORT_EDGE,
+                DETAIL_CLARITY_FLOOR_SHORT_EDGE
+            )
 
-        fun nextPressureRung(severePressure: Boolean): Int {
-            val activeClarityFloor =
-                if (severePressure || severeProducerStarvation) {
-                    CLARITY_FLOOR_SHORT_EDGE
-                } else {
-                    ordinaryClarityFloor(profile)
-                }
-
-            return when {
+        fun nextPressureRung(severePressure: Boolean): Int =
+            when {
+                /*
+                 * Severe producer starvation is an emergency capture-repair
+                 * path and is allowed to spend the universal 360 floor.
+                 */
                 severeProducerStarvation &&
-                    currentSourceShortEdge >
-                    CLARITY_FLOOR_SHORT_EDGE ->
+                    shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
                     CLARITY_FLOOR_SHORT_EDGE
 
                 /*
-                 * Drive the ladder from geometry ACTUALLY admitted to the source,
-                 * not from a speculative warm-start control value. This prevents
-                 * native 1080/1440-class capture from jumping directly to a
-                 * blurry low rung when the first pressure proof arrives.
+                 * Preserve the existing warm-start contract: if the control
+                 * plane already selected a readable budget, commit that exact
+                 * budget when pressure proves a real resize is needed. The
+                 * scoped floor only prevents the new local-compute lane from
+                 * turning that single decision into a <540p clarity collapse.
                  */
-                currentSourceShortEdge >
-                    NATIVE_WARM_START_SHORT_EDGE ->
-                    maxOf(
-                        NATIVE_WARM_START_SHORT_EDGE,
-                        activeClarityFloor
-                    )
-                currentSourceShortEdge >
-                    DETAIL_CLARITY_FLOOR_SHORT_EDGE ->
+                currentSourceShortEdge > shortEdge ->
+                    if (severePressure) {
+                        shortEdge
+                    } else {
+                        maxOf(
+                            shortEdge,
+                            scopedSpatialFloor
+                        )
+                    }
+                shortEdge > DETAIL_CLARITY_FLOOR_SHORT_EDGE ->
                     maxOf(
                         DETAIL_CLARITY_FLOOR_SHORT_EDGE,
-                        activeClarityFloor
+                        scopedSpatialFloor
                     )
-                currentSourceShortEdge > activeClarityFloor ->
-                    activeClarityFloor
+                shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
+                    if (severePressure) {
+                        CLARITY_FLOOR_SHORT_EDGE
+                    } else {
+                        scopedSpatialFloor
+                    }
                 else ->
-                    currentSourceShortEdge
+                    shortEdge
             }
-        }
 
         /*
          * A speculative motion warm-start is only a control-plane prediction:
@@ -1680,22 +1685,6 @@ internal class MotionVideoBudget {
         implementation: String
     ): Boolean =
         SOFTWARE_ENCODER_MARKERS.any(implementation::contains)
-
-    /**
-     * Ordinary interactive clarity floor. Stronger device tiers reserve enough
-     * source detail for small text/forms; 360 remains available to every tier
-     * only through severe/emergency pressure.
-     */
-    private fun ordinaryClarityFloor(
-        profile: CaptureProfile?
-    ): Int =
-        when (profile?.tier) {
-            CaptureTier.STANDARD,
-            CaptureTier.HIGH ->
-                DETAIL_CLARITY_FLOOR_SHORT_EDGE
-            else ->
-                CLARITY_FLOOR_SHORT_EDGE
-        }
 
     /**
      * Source geometry that the app has actually admitted to VideoSource /
