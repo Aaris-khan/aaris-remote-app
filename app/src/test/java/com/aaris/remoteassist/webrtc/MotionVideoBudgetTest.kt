@@ -1090,6 +1090,67 @@ class MotionVideoBudgetTest {
         assertEquals(720, budget.shortEdge)
     }
 
+    @Test
+    fun measuredClarityUtilizationSharesNominalTenPercentReserve() {
+        val budget = nativeWarmBudget()
+        val base =
+            sender(
+                fps = 36,
+                encode = 5.0,
+                queue = 0.0,
+                implementation = "c2.qti.avc.encoder"
+            )
+
+        val cleanEightyFivePercent =
+            base.copy(
+                availableOutgoingBitrateBps = 4_000_000.0,
+                recent =
+                    base.recent!!.copy(
+                        bitrateBps = 3_400_000L
+                    )
+            )
+
+        // 3.4 / 4.0 = 85%. This is below the same ~90.9% utilization
+        // implied by the nominal 1.10x reserve and must not cancel clean cadence.
+        assertNull(
+            budget.clarityPreservingCadenceCeiling(
+                profile = profile.copy(maxVideoBitrateBps = 10_000_000),
+                outbound = cleanEightyFivePercent,
+                receiver = receiver(fps = 36, decode = 5.0, presented = 36),
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 36,
+                interactionActive = true
+            )
+        )
+
+        val nearSaturated =
+            base.copy(
+                availableOutgoingBitrateBps = 4_000_000.0,
+                recent =
+                    base.recent!!.copy(
+                        frames = 40,
+                        bitrateBps = 3_850_000L
+                    )
+            )
+
+        // 96.25% violates the shared reserve. Preserve the 720 pixels and
+        // return temporal relief before queue debt forms.
+        assertEquals(
+            37,
+            budget.clarityPreservingCadenceCeiling(
+                profile = profile.copy(maxVideoBitrateBps = 10_000_000),
+                outbound = nearSaturated,
+                receiver = receiver(fps = 40, decode = 5.0, presented = 40),
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 40,
+                interactionActive = true
+            )
+        )
+        assertEquals(720, budget.shortEdge)
+    }
+
     @Test fun severeBandwidthConstraintStillFallsThroughToSpatialRelief() {
         val budget = nativeWarmBudget()
         val constrained =
