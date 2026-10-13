@@ -101,6 +101,60 @@ class VideoUrgentFreshnessTest {
     }
 
     @Test
+    fun isolatedMissedVsyncWindowDoesNotDownshiftHealthySixtyFps() {
+        val governor = measuredHighCadence()
+
+        assertFalse(
+            governor.observeFastPresentation(
+                intervalMs = 500,
+                renderedFrames = 30,
+                maxGapMs = 34,
+                requestedFps = 60,
+                interactionActive = true,
+                nowMs = 500
+            )
+        )
+        assertFalse(
+            governor.observeFastPresentation(
+                intervalMs = 500,
+                renderedFrames = 30,
+                maxGapMs = 20,
+                requestedFps = 60,
+                interactionActive = true,
+                nowMs = 1_000
+            )
+        )
+        assertEquals(60, governor.cap)
+    }
+
+    @Test
+    fun recurringMissedVsyncWindowsTriggerEarlyFineRelief() {
+        val governor = measuredHighCadence()
+
+        assertFalse(
+            governor.observeFastPresentation(
+                intervalMs = 500,
+                renderedFrames = 30,
+                maxGapMs = 34,
+                requestedFps = 60,
+                interactionActive = true,
+                nowMs = 500
+            )
+        )
+        assertTrue(
+            governor.observeFastPresentation(
+                intervalMs = 500,
+                renderedFrames = 30,
+                maxGapMs = 34,
+                requestedFps = 60,
+                interactionActive = true,
+                nowMs = 1_000
+            )
+        )
+        assertEquals(58, governor.cap)
+    }
+
+    @Test
     fun twoModerateGlassHitchesConfirmFineRelief() {
         val governor = measuredHighCadence()
 

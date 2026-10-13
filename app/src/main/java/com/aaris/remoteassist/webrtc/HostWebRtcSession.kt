@@ -977,13 +977,16 @@ class HostWebRtcSession(
                 ) {
                     /*
                      * EGL cadence is already reported every ~500 ms, sooner than
-                     * the outbound getStats() loop. During active control, use
-                     * that fresh proof-of-glass only as an emergency downshift
-                     * signal so a 60 Hz stream cannot spend another stats cycle
-                     * accumulating obsolete frames on the controller.
+                     * the outbound getStats() loop. Use that fresh proof-of-glass
+                     * while latency-sensitive screen motion is active: either a
+                     * controller gesture or the natural motion tail it triggered
+                     * (fling, animation, game/video updates). Restricting this
+                     * brake to finger-down left visible post-touch motion exposed
+                     * to another full stats cycle of recurring frame hitches.
                      *
-                     * This never promotes FPS or estimates bandwidth. The normal
-                     * sender/receiver/GCC telemetry path remains the authority
+                     * This remains downshift-only: it never promotes FPS,
+                     * estimates bandwidth, or changes resolution. The normal
+                     * sender/receiver/GCC telemetry path remains authoritative
                      * for recovery and stronger congestion decisions.
                      */
                     val requestedFps =
@@ -994,7 +997,7 @@ class HostWebRtcSession(
                             renderedFrames = packet.renderedFrames,
                             maxGapMs = packet.maxGapMs,
                             requestedFps = requestedFps,
-                            interactionActive = interactionActive,
+                            interactionActive = freshnessPriorityActive(now),
                             nowMs = now,
                             displayRefreshRateHz =
                                 receiverFeedback.currentDisplayRefreshRateHz(
