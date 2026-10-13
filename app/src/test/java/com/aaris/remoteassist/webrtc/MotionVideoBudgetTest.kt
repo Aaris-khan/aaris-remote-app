@@ -2024,6 +2024,163 @@ class MotionVideoBudgetTest {
         assertEquals(540, budget.shortEdge)
     }
 
+    @Test fun cleanHighCadenceCodecPressurePrefersOneSpatialRungBeforeCadence() {
+        val budget = MotionVideoBudget()
+        val overloaded =
+            sender(
+                fps = 42,
+                encode = 20.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            ).copy(
+                roundTripTimeMs = 35,
+                packetLossRatio = 0.0,
+                qualityLimitationReason = "cpu"
+            )
+        val glass =
+            receiver(
+                fps = 42,
+                decode = 5.0,
+                presented = 42
+            )
+
+        assertTrue(
+            budget.prefersSpatialReliefBeforeCadence(
+                profile = profile,
+                outbound = overloaded,
+                receiver = glass,
+                sourceFps = 60.0,
+                sourceMaxGapMs = 17.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+    }
+
+    @Test fun networkPressureAndLastReadableRungStayCadenceFirst() {
+        val budget = MotionVideoBudget()
+        val overloaded =
+            sender(
+                fps = 42,
+                encode = 20.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            ).copy(
+                roundTripTimeMs = 35,
+                packetLossRatio = 0.0,
+                qualityLimitationReason = "bandwidth"
+            )
+        val glass =
+            receiver(
+                fps = 42,
+                decode = 5.0,
+                presented = 42
+            )
+
+        assertFalse(
+            budget.prefersSpatialReliefBeforeCadence(
+                profile = profile,
+                outbound = overloaded,
+                receiver = glass,
+                sourceFps = 60.0,
+                sourceMaxGapMs = 17.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+
+        val fiveFortyProfile =
+            profile.copy(
+                captureWidthPx = 540,
+                captureHeightPx = 1200,
+                displayWidthPx = 540,
+                displayHeightPx = 1200
+            )
+        assertFalse(
+            budget.prefersSpatialReliefBeforeCadence(
+                profile = fiveFortyProfile,
+                outbound =
+                    overloaded.copy(
+                        qualityLimitationReason = "cpu"
+                    ),
+                receiver = glass,
+                sourceFps = 60.0,
+                sourceMaxGapMs = 17.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+    }
+
+    @Test fun scopedSpatialDecisionCanProtectFiveFortyDetailFloor() {
+        val budget = nativeWarmBudget()
+        val stressed =
+            sender(
+                fps = 20,
+                encode = 35.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            ).copy(
+                roundTripTimeMs = 35,
+                packetLossRatio = 0.0
+            )
+        val glass = receiver(fps = 20, presented = 20)
+
+        // First sustained pressure step: 720 -> 540.
+        assertFalse(
+            budget.observe(
+                outbound = stressed,
+                receiver = glass,
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 4_000L,
+                interactionActive = true,
+                profile = profile,
+                allowSpatialRelief = true,
+                minimumSpatialShortEdge = 540
+            )
+        )
+        assertTrue(
+            budget.observe(
+                outbound = stressed,
+                receiver = glass,
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 5_000L,
+                interactionActive = true,
+                profile = profile,
+                allowSpatialRelief = true,
+                minimumSpatialShortEdge = 540
+            )
+        )
+        assertEquals(540, budget.apply(profile, true).captureWidthPx)
+
+        // A caller-scoped clarity floor prevents this decision lane from
+        // spending 540 -> 360; the default budget contract remains unchanged.
+        repeat(4) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = stressed,
+                    receiver = glass,
+                    sourceFps = 30.0,
+                    motionActive = true,
+                    targetFps = 30,
+                    nowMs = 8_000L + index * 1_000L,
+                    interactionActive = true,
+                    profile = profile,
+                    allowSpatialRelief = true,
+                minimumSpatialShortEdge = 540
+                )
+            )
+        }
+        assertEquals(540, budget.apply(profile, true).captureWidthPx)
+    }
+
     @Test fun highCadenceSpatialPressureWaitsForTemporalReliefAndFreshEvidence() {
         val budget = nativeWarmBudget()
         val stressed =

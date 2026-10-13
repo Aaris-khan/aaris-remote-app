@@ -361,6 +361,163 @@ internal class MotionVideoBudget {
             )
     }
 
+    /**
+     * Route proven LOCAL pixel-processing pressure to one explicit spatial rung
+     * before the cadence governor halves a high-cadence stream.
+     *
+     * This is intentionally narrow. Bandwidth/jitter pressure remains
+     * cadence-first so forms/text keep their pixels. Encoder, decoder or
+     * MediaProjection pressure on an otherwise clean path is different: reducing
+     * 60 -> 30 fps does not remove the per-frame pixel cost that caused the
+     * overload and is directly visible as gaming-style judder. When there is
+     * still a >540px rung to spend, one measured source-size step is the cheaper
+     * freshness repair.
+     *
+     * The method is pure and uses the same hard evidence as observe(); it never
+     * changes geometry by itself. HostWebRtcSession uses it only to decide which
+     * existing actuator gets first refusal for the current health window.
+     */
+    fun prefersSpatialReliefBeforeCadence(
+        profile: CaptureProfile,
+        outbound: VideoHealthSnapshot,
+        receiver: VideoHealthWindow?,
+        sourceFps: Double?,
+        sourceMaxGapMs: Double?,
+        motionActive: Boolean,
+        targetFps: Int,
+        interactionActive: Boolean = false,
+        sourceMotionActive: Boolean = false,
+        interactionCaptureStarved: Boolean = false,
+        canResizeProducerSurface: Boolean = false
+    ): Boolean {
+        if (!motionActive || targetFps < HIGH_CADENCE_FPS) return false
+
+        /*
+         * Never trade the last high-detail rung for cadence. At <=540p the
+         * temporal governor owns relief unless observe() later sees a genuinely
+         * severe/emergency condition.
+         */
+        if (
+            admittedSourceShortEdge(profile) <=
+                DETAIL_CLARITY_FLOOR_SHORT_EDGE
+        ) {
+            return false
+        }
+
+        val sender =
+            outbound.recent
+                ?.takeIf {
+                    it.intervalMs in 500..6000 &&
+                        it.frames >= 2
+                }
+                ?: return false
+        val received =
+            receiver
+                ?.takeIf {
+                    it.intervalMs in 500..6000 &&
+                        it.frames >= 2
+                }
+                ?: return false
+
+        val goal =
+            targetFps.coerceIn(
+                1,
+                MAX_MOTION_TARGET_FPS
+            )
+        val frameMs = 1_000.0 / goal
+        val encodeMs = sender.processingMs.valid()
+        val decodeMs = received.processingMs.valid()
+        val queueMs = sender.sendQueueMs.valid()
+        val jitterMs = received.playoutDelayMs.valid()
+
+        /*
+         * Spatial-first is a LOCAL-compute lane, not a congestion heuristic.
+         * Require the measured transport path to be quiet enough that changing
+         * pixels is actually aimed at codec/capture work rather than masking a
+         * network problem.
+         */
+        val transportClean =
+            !outbound.qualityLimitationReason
+                .equals("bandwidth", ignoreCase = true) &&
+                queueMs?.let {
+                    it < CLARITY_PRESERVING_MAX_QUEUE_MS
+                } == true &&
+                jitterMs?.let {
+                    it < CLARITY_PRESERVING_MAX_JITTER_MS
+                } == true &&
+                outbound.roundTripTimeMs?.let {
+                    it <= CLARITY_PRESERVING_MAX_RTT_MS
+                } != false &&
+                (outbound.packetLossRatio ?: 0.0) <
+                CLARITY_PRESERVING_MAX_LOSS_RATIO
+
+        if (!transportClean) return false
+
+        /*
+         * Match observe()'s measured codec-pressure contract exactly. A generic
+         * "cpu" label alone is still insufficient: real encode/decode service
+         * time must be missing the active frame deadline.
+         */
+        val encoderComputePressure =
+            sender.fps < goal * 0.85 &&
+                encodeMs?.let {
+                    it > frameMs * 0.85
+                } == true
+        val decoderComputePressure =
+            decodeMs?.let {
+                it > frameMs * 0.85
+            } == true &&
+                received.fps <
+                minOf(
+                    sender.fps,
+                    goal.toDouble()
+                ) * 0.85
+
+        val measuredSourceFps = sourceFps.valid()
+        val producerGapThresholdMs =
+            maxOf(
+                MIN_PRODUCER_STALL_GAP_MS,
+                frameMs * PRODUCER_STALL_FRAME_MULTIPLIER
+            )
+        val causalInteractionMotionEvidence =
+            interactionActive &&
+                interactionCaptureStarved &&
+                measuredSourceFps?.let {
+                    it >= MIN_CAUSAL_INTERACTION_SOURCE_FPS
+                } == true
+        val producerMotionEvidence =
+            sourceMotionActive ||
+                causalInteractionMotionEvidence
+        val lowCadenceProducerStarvation =
+            measuredSourceFps?.let { measured ->
+                measured < MIN_MOVING_SOURCE_FPS &&
+                    (
+                        (
+                            sourceMotionActive &&
+                                measured >= MIN_PRODUCER_STARVATION_FPS
+                            ) ||
+                            (
+                                causalInteractionMotionEvidence &&
+                                    measured >=
+                                    MIN_CAUSAL_INTERACTION_SOURCE_FPS
+                                )
+                        )
+            } == true
+        val producerPressure =
+            canResizeProducerSurface &&
+                producerMotionEvidence &&
+                (
+                    lowCadenceProducerStarvation ||
+                        sourceMaxGapMs.valid()?.let {
+                            it >= producerGapThresholdMs
+                        } == true
+                    )
+
+        return encoderComputePressure ||
+            decoderComputePressure ||
+            producerPressure
+    }
+
     fun observe(
         outbound: VideoHealthSnapshot,
         receiver: VideoHealthWindow?,
@@ -375,7 +532,8 @@ internal class MotionVideoBudget {
         interactionCaptureStarved: Boolean = false,
         canResizeProducerSurface: Boolean = false,
         profile: CaptureProfile? = null,
-        allowSpatialRelief: Boolean = true
+        allowSpatialRelief: Boolean = true,
+        minimumSpatialShortEdge: Int = CLARITY_FLOOR_SHORT_EDGE
     ): Boolean {
         val before = Triple(
             shortEdge,
@@ -875,32 +1033,58 @@ internal class MotionVideoBudget {
          * trees from drifting apart.
          */
         /*
-         * 360 is a hard readability floor for primary remote-control video.
-         * Once the stream reaches it, severe congestion is handled by
-         * VideoCadenceGovernor/GCC rather than another spatial collapse.
-         * Stale motion at 15-24 fps is still operable; unreadable form text is
-         * not.
+         * 360 remains the established global readability floor. The caller may
+         * raise the floor for ONE already-classified spatial decision (the
+         * clean local-compute/high-cadence lane uses 540) without changing the
+         * long-standing network, emergency and recovery contracts.
          */
         val currentSourceShortEdge =
             admittedSourceShortEdge(profile)
+        val scopedSpatialFloor =
+            minimumSpatialShortEdge.coerceIn(
+                CLARITY_FLOOR_SHORT_EDGE,
+                DETAIL_CLARITY_FLOOR_SHORT_EDGE
+            )
 
-        fun nextPressureRung(): Int =
+        fun nextPressureRung(severePressure: Boolean): Int =
             when {
-                severeProducerStarvation && shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
-                    CLARITY_FLOOR_SHORT_EDGE
                 /*
-                 * shortEdge is a control-plane budget; the producer may still be
-                 * running at native geometry. The first validated spatial action
-                 * must commit the current readable budget before spending the
-                 * next rung. Otherwise a native 1080 source with a 720 control
-                 * budget jumps straight to 540 on its first pressure decision.
+                 * Severe producer starvation is an emergency capture-repair
+                 * path and is allowed to spend the universal 360 floor.
+                 */
+                severeProducerStarvation &&
+                    shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
+                    CLARITY_FLOOR_SHORT_EDGE
+
+                /*
+                 * Preserve the existing warm-start contract: if the control
+                 * plane already selected a readable budget, commit that exact
+                 * budget when pressure proves a real resize is needed. The
+                 * scoped floor only prevents the new local-compute lane from
+                 * turning that single decision into a <540p clarity collapse.
                  */
                 currentSourceShortEdge > shortEdge ->
-                    shortEdge
-                shortEdge > 540 -> 540
+                    if (severePressure) {
+                        shortEdge
+                    } else {
+                        maxOf(
+                            shortEdge,
+                            scopedSpatialFloor
+                        )
+                    }
+                shortEdge > DETAIL_CLARITY_FLOOR_SHORT_EDGE ->
+                    maxOf(
+                        DETAIL_CLARITY_FLOOR_SHORT_EDGE,
+                        scopedSpatialFloor
+                    )
                 shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
-                    CLARITY_FLOOR_SHORT_EDGE
-                else -> shortEdge
+                    if (severePressure) {
+                        CLARITY_FLOOR_SHORT_EDGE
+                    } else {
+                        scopedSpatialFloor
+                    }
+                else ->
+                    shortEdge
             }
 
         /*
@@ -994,7 +1178,7 @@ internal class MotionVideoBudget {
                 // Select while the speculative-warm-start guard is still
                 // armed so producer starvation and ordinary pressure share the
                 // same single-step readable spatial ladder.
-                val confirmed = nextPressureRung()
+                val confirmed = nextPressureRung(severe)
                 warmStartResizePending = false
                 if (confirmed != shortEdge) {
                     shortEdge = confirmed
@@ -1051,7 +1235,7 @@ internal class MotionVideoBudget {
             ) {
                 // Every pressure class stops at the 360 readability floor.
                 // Severe transport failure continues through temporal relief.
-                val next = nextPressureRung()
+                val next = nextPressureRung(severe)
                 val sourceCommitNeeded =
                     currentSourceShortEdge > next
                 if (next != shortEdge || sourceCommitNeeded) {
@@ -1788,6 +1972,7 @@ internal class MotionVideoBudget {
         const val PROVEN_NETWORK_RTT_MS = 650
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val CLARITY_FLOOR_SHORT_EDGE = 360
+        const val DETAIL_CLARITY_FLOOR_SHORT_EDGE = 540
         const val INTERACTION_CADENCE_FLOOR_FPS = 30
         const val IDLE_RESTORE_MS = 8_000L
     }

@@ -523,12 +523,11 @@ class GamingSmoothnessLabTest {
                 )
 
             /*
-             * Mirror HostWebRtcSession's one-expensive-actuator ordering:
-             * clarity-preserving temporal pre-relief -> cadence pressure ->
-             * spatial pressure -> high-cadence probe. The old lab ran spatial
-             * observation first and could therefore blur a synthetic stream in
-             * a state that production explicitly protects with cadence-first
-             * relief.
+             * Mirror HostWebRtcSession's one-expensive-actuator routing:
+             * BWE/network pressure remains cadence-first, while proven local
+             * codec pressure may spend one >540px spatial rung before a
+             * high-cadence cliff. Ambiguous pressure keeps the conservative
+             * temporal-first path.
              */
             val clarityCadenceCeiling =
                 budget.clarityPreservingCadenceCeiling(
@@ -549,10 +548,23 @@ class GamingSmoothnessLabTest {
                     sourceRefreshRateHz = scenario.sourceFps
                 )
 
+            val preferSpatialReliefBeforeCadence =
+                budget.prefersSpatialReliefBeforeCadence(
+                    profile = profile,
+                    outbound = outbound,
+                    receiver = receiver,
+                    sourceFps = scenario.sourceFps,
+                    sourceMaxGapMs = null,
+                    motionActive = true,
+                    targetFps = target,
+                    interactionActive = true
+                )
+
             val cadencePressureChanged =
                 if (
                     clarityCadenceChanged ||
-                    clarityCadenceCeiling != null
+                    clarityCadenceCeiling != null ||
+                    preferSpatialReliefBeforeCadence
                 ) {
                     false
                 } else {
@@ -594,9 +606,16 @@ class GamingSmoothnessLabTest {
                         allowResolutionRecovery = false,
                         profile = profile,
                         allowSpatialRelief =
-                            cadence.mayReduceMotionResolution(
-                                requestedFps = target
-                            )
+                            preferSpatialReliefBeforeCadence ||
+                                cadence.mayReduceMotionResolution(
+                                    requestedFps = target
+                                ),
+                        minimumSpatialShortEdge =
+                            if (preferSpatialReliefBeforeCadence) {
+                                540
+                            } else {
+                                360
+                            }
                     )
                 }
 

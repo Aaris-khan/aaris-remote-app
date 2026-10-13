@@ -1322,26 +1322,52 @@ class HostWebRtcSession(
                 )
 
             /*
+             * Pressure-class actuator routing.
+             *
+             * Network/jitter/BWE pressure stays cadence-first because preserving
+             * pixels keeps text and forms readable. Proven local encoder,
+             * decoder or MediaProjection pressure on a clean path is different:
+             * on a 60 Hz source the phase-stable temporal fallback is often
+             * straight to 30 fps. Let MotionVideoBudget spend ONE explicit
+             * >540px spatial rung first when that can reduce per-frame work and
+             * preserve gaming-style motion cadence.
+             */
+            val preferSpatialReliefBeforeCadence =
+                motionVideoBudget.prefersSpatialReliefBeforeCadence(
+                    profile = profile,
+                    outbound = snapshot,
+                    receiver = receiver,
+                    sourceFps = sourceFps,
+                    sourceMaxGapMs = sourceMaxGapMs,
+                    motionActive = motionActive,
+                    targetFps = motionTargetFps,
+                    interactionActive = interactionActive,
+                    sourceMotionActive = sourceMotionActive,
+                    interactionCaptureStarved =
+                        interactionCaptureFreshness.isStarved(now),
+                    canResizeProducerSurface =
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                )
+
+            /*
              * One health window may move ONE expensive media actuator.
              *
-             * The temporal actuator is cheaper: dropping 60 -> 45 -> 30 does
-             * not restart MediaProjection geometry or the hardware codec. Give
-             * cadence the first chance to restore freshness, then let
-             * MotionVideoBudget spend pixels only after the effective stream is
-             * already in the 30-fps class and fresh post-cadence telemetry still
-             * proves pressure. This preserves text/form clarity and removes a
-             * common resolution-reconfiguration hitch from active control.
+             * BWE/network/render pressure keeps the established temporal-first
+             * path. Local pixel-processing pressure may invert only this one
+             * decision while source detail is still above 540px: an explicit
+             * geometry step can remove encoder/decode/capture work without
+             * creating the visible 60 -> 30 cadence cliff.
              *
-             * The BWE clarity guard remains an even earlier cadence-only lane.
-             * Severe producer starvation is explicitly allowed through the
-             * spatial gate because resizing the VirtualDisplay can repair the
-             * producer itself on Android 12+.
+             * The BWE clarity guard remains the earliest cadence-only lane, and
+             * all unresolved/ambiguous pressure keeps the conservative existing
+             * ordering.
              */
             val requestedFps = effectiveCaptureProfile(profile).fps
             val cadencePressureChanged =
                 if (
                     clarityCadenceChanged ||
-                    clarityCadenceCeiling != null
+                    clarityCadenceCeiling != null ||
+                    preferSpatialReliefBeforeCadence
                 ) {
                     false
                 } else {
@@ -1395,9 +1421,16 @@ class HostWebRtcSession(
                             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
                         profile = profile,
                         allowSpatialRelief =
-                            cadenceGovernor.mayReduceMotionResolution(
-                                requestedFps = requestedFps
-                            )
+                            preferSpatialReliefBeforeCadence ||
+                                cadenceGovernor.mayReduceMotionResolution(
+                                    requestedFps = requestedFps
+                                ),
+                        minimumSpatialShortEdge =
+                            if (preferSpatialReliefBeforeCadence) {
+                                LOCAL_COMPUTE_SPATIAL_FLOOR_SHORT_EDGE
+                            } else {
+                                DEFAULT_SPATIAL_FLOOR_SHORT_EDGE
+                            }
                     )
                 }
 
@@ -1435,7 +1468,12 @@ class HostWebRtcSession(
                 listener.onDiagnostic(
                     "Motion video budget → ${effective.captureWidthPx}x${effective.captureHeightPx}@${effective.fps}" +
                         " • max=${motionVideoBudget.bitrateCeiling(profile, motionActive, effective.fps) / 1000}kbps" +
-                        " • source=${sourceFps?.toInt()}fps"
+                        " • source=${sourceFps?.toInt()}fps" +
+                        if (preferSpatialReliefBeforeCadence) {
+                            " • local-compute spatial-first"
+                        } else {
+                            ""
+                        }
                 )
             }
             if (clarityCadenceChanged) {
@@ -2372,6 +2410,13 @@ class HostWebRtcSession(
         private const val INTERACTION_PRIORITY_TIMEOUT_MS = 3_000L
         private const val MAX_WARM_START_EVIDENCE_AGE_MS = 2_500L
         private const val MAX_SESSION_VIDEO_FPS = 60
+        /*
+         * Keep these local to the orchestration policy: MotionVideoBudget's
+         * default contract remains 360, while only the classified clean
+         * local-compute lane temporarily protects a 540px detail floor.
+         */
+        private const val DEFAULT_SPATIAL_FLOOR_SHORT_EDGE = 360
+        private const val LOCAL_COMPUTE_SPATIAL_FLOOR_SHORT_EDGE = 540
         private const val PRESENTATION_HEARTBEAT_FRESH_MS = 1_500
     }
 }
