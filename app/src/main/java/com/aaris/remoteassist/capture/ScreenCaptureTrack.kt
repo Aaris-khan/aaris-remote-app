@@ -137,16 +137,18 @@ class ScreenCaptureTrack(
                     // forceFrame reuses the SurfaceTexture timestamp on a static
                     // screen. Give that new sample a monotonic timestamp so the
                     // native FPS adapter does not discard recovery requests.
+                    val sampledAtNs = System.nanoTime()
                     val forwardToLiveVideo =
                         interactionRepeatGuard
                             .shouldForwardToLiveVideo(
-                                frame.timestampNs
+                                producerTimestampNs = frame.timestampNs,
+                                nowNs = sampledAtNs
                             )
                     if (forwardToLiveVideo) {
                         val sampledTimestampNs =
                             sampleClock.timestamp(
                                 frame.timestampNs,
-                                System.nanoTime()
+                                sampledAtNs
                             )
                         if (sampledTimestampNs == frame.timestampNs) {
                             // Natural frames already carry a valid monotonic
@@ -295,24 +297,19 @@ class ScreenCaptureTrack(
         if (closed.get() || !started) return false
         if (!refreshPolicy.shouldRefreshForInteraction(nowMs)) return false
         /*
-         * Keep the guard on SurfaceTextureHelper's owner queue. forceFrame()
-         * posts its own runnable; enqueue the guard clear immediately after it,
-         * so every callback caused by this one interaction probe is scoped
-         * precisely without leaking policy into normal capture.
+         * Arm one short monotonic repeat-suppression token before forceFrame.
+         * SurfaceTextureHelper may defer the forced callback while its single
+         * texture is in use, so tying the token to Handler runnable ordering is
+         * unsafe. A natural frame that wins the race still passes; the later
+         * exact-timestamp repeat consumes the token. If the force delivers first,
+         * that stale repeat is suppressed and the next natural frame passes.
          *
-         * If a natural frame arrives first it passes and updates the producer
-         * timestamp; the later forced repeat is then suppressed. If the forced
-         * repeat arrives first it is suppressed and the next natural frame
-         * passes normally. No frame is retained and no second queue is added.
+         * No frame is retained and no second queue is added.
          */
-        surfaceTextureHelper.handler.post {
-            if (closed.get() || !started) return@post
-            interactionRepeatGuard.beginInteractionProbe()
-            surfaceTextureHelper.forceFrame()
-            surfaceTextureHelper.handler.post {
-                interactionRepeatGuard.endInteractionProbe()
-            }
-        }
+        interactionRepeatGuard.armInteractionProbe(
+            System.nanoTime()
+        )
+        surfaceTextureHelper.forceFrame()
         return true
     }
 
