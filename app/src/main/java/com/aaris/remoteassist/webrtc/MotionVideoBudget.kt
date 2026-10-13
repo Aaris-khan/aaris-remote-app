@@ -209,10 +209,23 @@ internal class MotionVideoBudget {
                 sender = sender,
                 bandwidthEstimateBps = bandwidthEstimateBps
             )
+        /*
+         * Measured RTP demand and the nominal fallback must obey the SAME
+         * clarity headroom contract. The fallback path below already reserves
+         * 10% via CLARITY_PRESERVING_BWE_HEADROOM_RATIO (1.10). Keeping a
+         * separate 78% target / 82% trigger here made better telemetry more
+         * conservative than missing telemetry: a fully delivered stream around
+         * 85% utilization could be downshifted despite zero queue or glass debt.
+         *
+         * Derive the measured threshold from the existing headroom constant so
+         * both paths cannot silently drift apart again. Reactive queue/loss/
+         * decode/presentation pressure remains independently authoritative.
+         */
+        val measuredTargetUtilization =
+            1.0 / CLARITY_PRESERVING_BWE_HEADROOM_RATIO
         if (
             observedBandwidthUtilization != null &&
-            observedBandwidthUtilization <
-                CLARITY_PRESERVING_MIN_UTILIZATION_RATIO
+            observedBandwidthUtilization <= measuredTargetUtilization
         ) {
             return null
         }
@@ -288,7 +301,7 @@ internal class MotionVideoBudget {
             val sustainableFps =
                 (
                     measuredSenderFps *
-                        CLARITY_PRESERVING_TARGET_UTILIZATION_RATIO /
+                        measuredTargetUtilization /
                         utilization
                     )
                     .toInt()
@@ -1667,8 +1680,6 @@ internal class MotionVideoBudget {
          * VideoCadenceGovernor before it acts.
          */
         const val CLARITY_PRESERVING_FPS_FLOOR = 30
-        const val CLARITY_PRESERVING_MIN_UTILIZATION_RATIO = 0.82
-        const val CLARITY_PRESERVING_TARGET_UTILIZATION_RATIO = 0.78
         const val CLARITY_PRESERVING_BWE_HEADROOM_RATIO = 1.10
         const val CLARITY_PRESERVING_CODEC_BUDGET_RATIO = 0.80
         const val CLARITY_PRESERVING_MAX_QUEUE_MS = 35.0
