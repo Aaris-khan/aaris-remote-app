@@ -870,6 +870,15 @@ internal class MotionVideoBudget {
             when {
                 severeProducerStarvation && shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
                     CLARITY_FLOOR_SHORT_EDGE
+                /*
+                 * shortEdge is a control-plane budget; the producer may still be
+                 * running at native geometry. The first validated spatial action
+                 * must commit the current readable budget before spending the
+                 * next rung. Otherwise a native 1080 source with a 720 control
+                 * budget jumps straight to 540 on its first pressure decision.
+                 */
+                committedSourceShortEdge > shortEdge ->
+                    shortEdge
                 shortEdge > 540 -> 540
                 shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
                     CLARITY_FLOOR_SHORT_EDGE
@@ -1025,11 +1034,15 @@ internal class MotionVideoBudget {
                 // Every pressure class stops at the 360 readability floor.
                 // Severe transport failure continues through temporal relief.
                 val next = nextPressureRung()
-                if (next != shortEdge) {
+                val sourceCommitNeeded =
+                    committedSourceShortEdge > next
+                if (next != shortEdge || sourceCommitNeeded) {
                     shortEdge = next
                     committedSourceShortEdge = shortEdge
                     changedAtMs = nowMs
                     resetResidenceGrowth()
+                    pressureSamples = 0
+                    return true
                 }
                 pressureSamples = 0
             }
