@@ -41,8 +41,17 @@ internal class ScreenEncoderPerformance private constructor(
         val implementationName: String?
     )
 
+    private data class GeometryKey(
+        val width: Int,
+        val height: Int
+    )
+
     private val knownLimits = ConcurrentHashMap<LimitKey, Int>()
     private val unknownSizes = ConcurrentHashMap.newKeySet<LimitKey>()
+    private val guaranteedMinimumLimits =
+        ConcurrentHashMap<GeometryKey, Int>()
+    private val unknownGuaranteedMinimumSizes =
+        ConcurrentHashMap.newKeySet<GeometryKey>()
 
     fun maxFps(
         width: Int,
@@ -138,15 +147,32 @@ internal class ScreenEncoderPerformance private constructor(
 
         val safeWidth = width.coerceAtLeast(2)
         val safeHeight = height.coerceAtLeast(2)
-        return minimumCompleteLimit(
-            capabilities.map { capability ->
-                guaranteedRealtimeLimit(
-                    capability.video,
-                    safeWidth,
-                    safeHeight
-                )
-            }
-        )
+        val key =
+            GeometryKey(
+                width = safeWidth,
+                height = safeHeight
+            )
+        guaranteedMinimumLimits[key]?.let { return it }
+        if (unknownGuaranteedMinimumSizes.contains(key)) {
+            return null
+        }
+
+        val minimum =
+            minimumCompleteLimit(
+                capabilities.map { capability ->
+                    guaranteedRealtimeLimit(
+                        capability.video,
+                        safeWidth,
+                        safeHeight
+                    )
+                }
+            )
+        if (minimum == null) {
+            unknownGuaranteedMinimumSizes += key
+        } else {
+            guaranteedMinimumLimits[key] = minimum
+        }
+        return minimum
     }
 
     private fun realtimeLimit(
