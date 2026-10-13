@@ -125,7 +125,7 @@ class CaptureProfileTest {
         assertEquals(1600, profile.captureHeightPx)
         assertEquals(45, profile.fps)
         assertEquals(60, profile.motionFps)
-        assertEquals(10_000_000, profile.maxVideoBitrateBps)
+        assertEquals(20_000_000, profile.maxVideoBitrateBps)
     }
 
     @Test
@@ -141,7 +141,7 @@ class CaptureProfileTest {
         assertEquals(2400, profile.captureHeightPx)
         assertEquals(45, profile.fps)
         assertEquals(60, profile.motionFps)
-        assertEquals(10_000_000, profile.maxVideoBitrateBps)
+        assertEquals(20_000_000, profile.maxVideoBitrateBps)
     }
 
     @Test
@@ -173,7 +173,7 @@ class CaptureProfileTest {
         assertEquals(2400, profile.captureHeightPx)
         assertEquals(60, profile.fps)
         assertEquals(60, profile.motionFps)
-        assertEquals(12_000_000, profile.maxVideoBitrateBps)
+        assertEquals(28_000_000, profile.maxVideoBitrateBps)
     }
 
     @Test
@@ -189,7 +189,7 @@ class CaptureProfileTest {
         assertEquals(2560, profile.captureHeightPx)
         assertEquals(60, profile.fps)
         assertEquals(60, profile.motionFps)
-        assertEquals(12_000_000, profile.maxVideoBitrateBps)
+        assertEquals(28_000_000, profile.maxVideoBitrateBps)
     }
 
     @Test
