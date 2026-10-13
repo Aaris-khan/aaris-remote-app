@@ -32,6 +32,7 @@ class ScreenCaptureTrack(
     private val sampleClock = CaptureSampleClock()
     private val activityTracker = CaptureActivityTracker()
     private val refreshPolicy = CaptureRefreshPolicy()
+    private val interactionRepeatGuard = InteractionRepeatGuard()
 
     private val capturer = ScreenCapturerAndroid(
         grant.data,
@@ -136,26 +137,45 @@ class ScreenCaptureTrack(
                     // forceFrame reuses the SurfaceTexture timestamp on a static
                     // screen. Give that new sample a monotonic timestamp so the
                     // native FPS adapter does not discard recovery requests.
-                    val sampledTimestampNs =
-                        sampleClock.timestamp(
-                            frame.timestampNs,
-                            System.nanoTime()
-                        )
-                    if (sampledTimestampNs == frame.timestampNs) {
-                        // Natural frames already carry a valid monotonic
-                        // timestamp. Forward the producer-owned frame directly
-                        // so the 30/45/60 fps hot path allocates no wrapper.
-                        videoSource.capturerObserver.onFrameCaptured(frame)
-                    } else {
-                        // forceFrame may repeat the SurfaceTexture timestamp.
-                        // Only that recovery path needs a timestamp wrapper.
-                        videoSource.capturerObserver.onFrameCaptured(
-                            VideoFrame(
-                                frame.buffer,
-                                frame.rotation,
-                                sampledTimestampNs
+                    val sampledAtNs = System.nanoTime()
+                    val captureElapsedNs =
+                        android.os.SystemClock.elapsedRealtimeNanos()
+                    val forwardToLiveVideo =
+                        interactionRepeatGuard
+                            .shouldForwardToLiveVideo(
+                                producerTimestampNs = frame.timestampNs,
+                                nowNs = captureElapsedNs
                             )
-                        )
+                    if (forwardToLiveVideo) {
+                        val sampledTimestampNs =
+                            sampleClock.timestamp(
+                                frame.timestampNs,
+                                sampledAtNs
+                            )
+                        if (sampledTimestampNs == frame.timestampNs) {
+                            // Natural frames already carry a valid monotonic
+                            // timestamp. Forward the producer-owned frame directly
+                            // so the 30/45/60 fps hot path allocates no wrapper.
+                            videoSource.capturerObserver.onFrameCaptured(frame)
+                        } else {
+                            /*
+                             * Idle liveness / snapshot forceFrame may repeat the
+                             * SurfaceTexture timestamp. Those non-interaction
+                             * samples keep their existing monotonic wrapper.
+                             *
+                             * Interaction repeats are filtered before this point:
+                             * stale post-touch pixels must never be relabeled as a
+                             * fresh RTP sample and steal the cadence slot from the
+                             * next genuine MediaProjection buffer.
+                             */
+                            videoSource.capturerObserver.onFrameCaptured(
+                                VideoFrame(
+                                    frame.buffer,
+                                    frame.rotation,
+                                    sampledTimestampNs
+                                )
+                            )
+                        }
                     }
                     if (activityTracker.onFrame(frame.timestampNs)) {
                         // The callback is throttled by CaptureActivityTracker.
@@ -278,8 +298,19 @@ class ScreenCaptureTrack(
     ): Boolean {
         if (closed.get() || !started) return false
         if (!refreshPolicy.shouldRefreshForInteraction(nowMs)) return false
-        // forceFrame runs on SurfaceTextureHelper's owner thread and feeds the
-        // same zero-copy RTP source; it does not create a second projection.
+        /*
+         * Arm one short monotonic repeat-suppression token before forceFrame.
+         * SurfaceTextureHelper may defer the forced callback while its single
+         * texture is in use, so tying the token to Handler runnable ordering is
+         * unsafe. A natural frame that wins the race still passes; the later
+         * exact-timestamp repeat consumes the token. If the force delivers first,
+         * that stale repeat is suppressed and the next natural frame passes.
+         *
+         * No frame is retained and no second queue is added.
+         */
+        interactionRepeatGuard.armInteractionProbe(
+            android.os.SystemClock.elapsedRealtimeNanos()
+        )
         surfaceTextureHelper.forceFrame()
         return true
     }
