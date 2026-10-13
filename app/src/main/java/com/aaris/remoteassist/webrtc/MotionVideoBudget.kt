@@ -1,15 +1,17 @@
 package com.aaris.remoteassist.webrtc
 
 import com.aaris.remoteassist.capture.CaptureProfile
+import com.aaris.remoteassist.capture.CaptureTier
 import kotlin.math.roundToInt
 
 /**
  * Remote control is a detail-sensitive workload: text, forms and icons must
- * remain readable while motion stays fresh. One-second telemetry may reduce
- * the normal spatial envelope through 720 -> 540 -> 360, but 360 is the
- * readability floor for all primary-video adaptation. Once 360 is reached,
- * further overload is paid in temporal cadence/bitrate instead of making
- * text, forms and icons unreadable.
+ * remain readable while motion stays fresh. Spatial adaptation is explicit and
+ * pressure-class aware: premium STANDARD/HIGH sessions keep 540px as the normal
+ * interaction floor, while 360px remains the universal emergency floor for
+ * severe transport/producer failure. Once the active floor is reached, further
+ * overload is paid in temporal cadence/bitrate instead of silently making text,
+ * forms and icons unreadable.
  *
  * WebRTC's BWE clarity guard spends high-cadence excess first when the same
  * admitted pixels still fit at a lower interactive cadence. This avoids
@@ -359,6 +361,163 @@ internal class MotionVideoBudget {
                 CLARITY_PRESERVING_FPS_FLOOR,
                 target - 1
             )
+    }
+
+    /**
+     * Route proven LOCAL pixel-processing pressure to one explicit spatial rung
+     * before the cadence governor halves a high-cadence stream.
+     *
+     * This is intentionally narrow. Bandwidth/jitter pressure remains
+     * cadence-first so forms/text keep their pixels. Encoder, decoder or
+     * MediaProjection pressure on an otherwise clean path is different: reducing
+     * 60 -> 30 fps does not remove the per-frame pixel cost that caused the
+     * overload and is directly visible as gaming-style judder. When there is
+     * still a >540px rung to spend, one measured source-size step is the cheaper
+     * freshness repair.
+     *
+     * The method is pure and uses the same hard evidence as observe(); it never
+     * changes geometry by itself. HostWebRtcSession uses it only to decide which
+     * existing actuator gets first refusal for the current health window.
+     */
+    fun prefersSpatialReliefBeforeCadence(
+        profile: CaptureProfile,
+        outbound: VideoHealthSnapshot,
+        receiver: VideoHealthWindow?,
+        sourceFps: Double?,
+        sourceMaxGapMs: Double?,
+        motionActive: Boolean,
+        targetFps: Int,
+        interactionActive: Boolean = false,
+        sourceMotionActive: Boolean = false,
+        interactionCaptureStarved: Boolean = false,
+        canResizeProducerSurface: Boolean = false
+    ): Boolean {
+        if (!motionActive || targetFps < HIGH_CADENCE_FPS) return false
+
+        /*
+         * Never trade the last high-detail rung for cadence. At <=540p the
+         * temporal governor owns relief unless observe() later sees a genuinely
+         * severe/emergency condition.
+         */
+        if (
+            admittedSourceShortEdge(profile) <=
+                DETAIL_CLARITY_FLOOR_SHORT_EDGE
+        ) {
+            return false
+        }
+
+        val sender =
+            outbound.recent
+                ?.takeIf {
+                    it.intervalMs in 500..6000 &&
+                        it.frames >= 2
+                }
+                ?: return false
+        val received =
+            receiver
+                ?.takeIf {
+                    it.intervalMs in 500..6000 &&
+                        it.frames >= 2
+                }
+                ?: return false
+
+        val goal =
+            targetFps.coerceIn(
+                1,
+                MAX_MOTION_TARGET_FPS
+            )
+        val frameMs = 1_000.0 / goal
+        val encodeMs = sender.processingMs.valid()
+        val decodeMs = received.processingMs.valid()
+        val queueMs = sender.sendQueueMs.valid()
+        val jitterMs = received.playoutDelayMs.valid()
+
+        /*
+         * Spatial-first is a LOCAL-compute lane, not a congestion heuristic.
+         * Require the measured transport path to be quiet enough that changing
+         * pixels is actually aimed at codec/capture work rather than masking a
+         * network problem.
+         */
+        val transportClean =
+            !outbound.qualityLimitationReason
+                .equals("bandwidth", ignoreCase = true) &&
+                queueMs?.let {
+                    it < CLARITY_PRESERVING_MAX_QUEUE_MS
+                } == true &&
+                jitterMs?.let {
+                    it < CLARITY_PRESERVING_MAX_JITTER_MS
+                } == true &&
+                outbound.roundTripTimeMs?.let {
+                    it <= CLARITY_PRESERVING_MAX_RTT_MS
+                } != false &&
+                (outbound.packetLossRatio ?: 0.0) <
+                CLARITY_PRESERVING_MAX_LOSS_RATIO
+
+        if (!transportClean) return false
+
+        /*
+         * Match observe()'s measured codec-pressure contract exactly. A generic
+         * "cpu" label alone is still insufficient: real encode/decode service
+         * time must be missing the active frame deadline.
+         */
+        val encoderComputePressure =
+            sender.fps < goal * 0.85 &&
+                encodeMs?.let {
+                    it > frameMs * 0.85
+                } == true
+        val decoderComputePressure =
+            decodeMs?.let {
+                it > frameMs * 0.85
+            } == true &&
+                received.fps <
+                minOf(
+                    sender.fps,
+                    goal.toDouble()
+                ) * 0.85
+
+        val measuredSourceFps = sourceFps.valid()
+        val producerGapThresholdMs =
+            maxOf(
+                MIN_PRODUCER_STALL_GAP_MS,
+                frameMs * PRODUCER_STALL_FRAME_MULTIPLIER
+            )
+        val causalInteractionMotionEvidence =
+            interactionActive &&
+                interactionCaptureStarved &&
+                measuredSourceFps?.let {
+                    it >= MIN_CAUSAL_INTERACTION_SOURCE_FPS
+                } == true
+        val producerMotionEvidence =
+            sourceMotionActive ||
+                causalInteractionMotionEvidence
+        val lowCadenceProducerStarvation =
+            measuredSourceFps?.let { measured ->
+                measured < MIN_MOVING_SOURCE_FPS &&
+                    (
+                        (
+                            sourceMotionActive &&
+                                measured >= MIN_PRODUCER_STARVATION_FPS
+                            ) ||
+                            (
+                                causalInteractionMotionEvidence &&
+                                    measured >=
+                                    MIN_CAUSAL_INTERACTION_SOURCE_FPS
+                                )
+                        )
+            } == true
+        val producerPressure =
+            canResizeProducerSurface &&
+                producerMotionEvidence &&
+                (
+                    lowCadenceProducerStarvation ||
+                        sourceMaxGapMs.valid()?.let {
+                            it >= producerGapThresholdMs
+                        } == true
+                    )
+
+        return encoderComputePressure ||
+            decoderComputePressure ||
+            producerPressure
     }
 
     fun observe(
@@ -875,32 +1034,50 @@ internal class MotionVideoBudget {
          * trees from drifting apart.
          */
         /*
-         * 360 is a hard readability floor for primary remote-control video.
-         * Once the stream reaches it, severe congestion is handled by
-         * VideoCadenceGovernor/GCC rather than another spatial collapse.
-         * Stale motion at 15-24 fps is still operable; unreadable form text is
-         * not.
+         * Keep a universal 360px emergency floor, but protect small text more
+         * aggressively on STANDARD/HIGH hardware during ordinary adaptation.
+         * Those tiers keep 540px while temporal cadence/GCC absorb additional
+         * non-severe pressure. A genuinely severe path may still descend to 360
+         * so remote control remains usable instead of accumulating stale frames.
          */
         val currentSourceShortEdge =
             admittedSourceShortEdge(profile)
+        val activeClarityFloor =
+            if (severe || severeProducerStarvation) {
+                CLARITY_FLOOR_SHORT_EDGE
+            } else {
+                ordinaryClarityFloor(profile)
+            }
 
         fun nextPressureRung(): Int =
             when {
-                severeProducerStarvation && shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
+                severeProducerStarvation &&
+                    currentSourceShortEdge >
+                    CLARITY_FLOOR_SHORT_EDGE ->
                     CLARITY_FLOOR_SHORT_EDGE
+
                 /*
-                 * shortEdge is a control-plane budget; the producer may still be
-                 * running at native geometry. The first validated spatial action
-                 * must commit the current readable budget before spending the
-                 * next rung. Otherwise a native 1080 source with a 720 control
-                 * budget jumps straight to 540 on its first pressure decision.
+                 * Drive the ladder from geometry ACTUALLY admitted to the source,
+                 * not from a speculative warm-start control value. This prevents
+                 * native 1080/1440-class capture from jumping directly to a
+                 * blurry low rung when the first pressure proof arrives.
                  */
-                currentSourceShortEdge > shortEdge ->
-                    shortEdge
-                shortEdge > 540 -> 540
-                shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
-                    CLARITY_FLOOR_SHORT_EDGE
-                else -> shortEdge
+                currentSourceShortEdge >
+                    NATIVE_WARM_START_SHORT_EDGE ->
+                    maxOf(
+                        NATIVE_WARM_START_SHORT_EDGE,
+                        activeClarityFloor
+                    )
+                currentSourceShortEdge >
+                    DETAIL_CLARITY_FLOOR_SHORT_EDGE ->
+                    maxOf(
+                        DETAIL_CLARITY_FLOOR_SHORT_EDGE,
+                        activeClarityFloor
+                    )
+                currentSourceShortEdge > activeClarityFloor ->
+                    activeClarityFloor
+                else ->
+                    currentSourceShortEdge
             }
 
         /*
@@ -1511,6 +1688,22 @@ internal class MotionVideoBudget {
      * profile geometry is physically active. Without a profile, retain the
      * historical fallback to the committed rung or, if none exists, shortEdge.
      */
+    /**
+     * Ordinary interactive clarity floor. Stronger device tiers reserve enough
+     * source detail for small text/forms; 360 remains available to every tier
+     * only through severe/emergency pressure.
+     */
+    private fun ordinaryClarityFloor(
+        profile: CaptureProfile?
+    ): Int =
+        when (profile?.tier) {
+            CaptureTier.STANDARD,
+            CaptureTier.HIGH ->
+                DETAIL_CLARITY_FLOOR_SHORT_EDGE
+            else ->
+                CLARITY_FLOOR_SHORT_EDGE
+        }
+
     private fun admittedSourceShortEdge(
         profile: CaptureProfile? = null
     ): Int {
@@ -1788,6 +1981,7 @@ internal class MotionVideoBudget {
         const val PROVEN_NETWORK_RTT_MS = 650
         const val SEVERE_NETWORK_QUEUE_MS = 250.0
         const val CLARITY_FLOOR_SHORT_EDGE = 360
+        const val DETAIL_CLARITY_FLOOR_SHORT_EDGE = 540
         const val INTERACTION_CADENCE_FLOOR_FPS = 30
         const val IDLE_RESTORE_MS = 8_000L
     }
