@@ -873,6 +873,15 @@ internal class MotionVideoBudget {
                     committedSourceShortEdge
                 )
             } ?: committedSourceShortEdge
+                .takeUnless { it == Int.MAX_VALUE }
+                /*
+                 * Without a CaptureProfile there is no proof that the producer
+                 * is still above the control rung. Preserve the historical
+                 * pressure ladder instead of treating the sentinel as physical
+                 * native geometry. Production HostWebRtcSession supplies the
+                 * profile, so native->720 protection still uses real pixels.
+                 */
+                ?: shortEdge
 
         fun nextPressureRung(): Int =
             when {
