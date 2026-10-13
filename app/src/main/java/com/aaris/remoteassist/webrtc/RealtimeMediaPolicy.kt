@@ -154,6 +154,22 @@ internal object RealtimeMediaPolicy {
         )
 
     /**
+     * Active-motion tier recovery may widen cadence/bitrate policy only when it
+     * leaves the already-admitted producer geometry untouched. This avoids a
+     * MediaCodec resolution restart in the middle of a gesture or game.
+     */
+    fun motionTierPromotionKeepsGeometry(
+        currentWidthPx: Int,
+        currentHeightPx: Int,
+        candidateWidthPx: Int,
+        candidateHeightPx: Int
+    ): Boolean =
+        currentWidthPx > 0 &&
+            currentHeightPx > 0 &&
+            currentWidthPx == candidateWidthPx &&
+            currentHeightPx == candidateHeightPx
+
+    /**
      * Keep exactly one spatial adaptation owner.
      *
      * MotionVideoBudget already owns the app's measured 720 -> 540 -> 360
