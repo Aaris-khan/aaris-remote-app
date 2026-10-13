@@ -9,32 +9,50 @@ package com.aaris.remoteassist.capture
  * post-input probe must not let those stale pixels consume the live video
  * cadence slot immediately before a genuinely new MediaProjection frame.
  *
- * The guard is active only around the interaction forceFrame runnable. Natural
- * frames always pass; an unchanged producer timestamp is suppressed only while
- * that bounded probe is in flight. Idle heartbeat behavior is unchanged.
+ * A forced delivery can be deferred while SurfaceTextureHelper's single texture
+ * is still in use, so this cannot be scoped only to the forceFrame runnable.
+ * Arm one short monotonic window instead. The first exact producer-timestamp
+ * repeat inside that window is suppressed and consumes the token. Natural new
+ * frames always pass. The window is far shorter than the 1 s idle heartbeat.
  */
 internal class InteractionRepeatGuard {
     private var lastProducerTimestampNs = Long.MIN_VALUE
-    private var interactionProbeActive = false
+    private var suppressRepeatUntilNs = Long.MIN_VALUE
 
-    fun beginInteractionProbe() {
-        interactionProbeActive = true
+    fun armInteractionProbe(nowNs: Long) {
+        suppressRepeatUntilNs =
+            nowNs + INTERACTION_REPEAT_WINDOW_NS
     }
 
-    fun endInteractionProbe() {
-        interactionProbeActive = false
-    }
-
-    fun shouldForwardToLiveVideo(producerTimestampNs: Long): Boolean {
+    fun shouldForwardToLiveVideo(
+        producerTimestampNs: Long,
+        nowNs: Long
+    ): Boolean {
         val validTimestamp = producerTimestampNs > 0L
         val repeated =
             validTimestamp &&
                 producerTimestampNs == lastProducerTimestampNs
+        val interactionRepeat =
+            repeated &&
+                nowNs >= 0L &&
+                nowNs <= suppressRepeatUntilNs
 
         if (validTimestamp && !repeated) {
             lastProducerTimestampNs = producerTimestampNs
         }
 
-        return !(interactionProbeActive && repeated)
+        if (interactionRepeat) {
+            suppressRepeatUntilNs = Long.MIN_VALUE
+            return false
+        }
+
+        if (nowNs > suppressRepeatUntilNs) {
+            suppressRepeatUntilNs = Long.MIN_VALUE
+        }
+        return true
+    }
+
+    internal companion object {
+        const val INTERACTION_REPEAT_WINDOW_NS = 100_000_000L
     }
 }
