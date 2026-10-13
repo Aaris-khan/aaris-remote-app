@@ -21,6 +21,78 @@ class MotionVideoBudgetTest {
         assertEquals(720, shortEdge)
     }
 
+    @Test fun nativePressureCommitsSevenTwentyBeforeSpendingFiveForty() {
+        val nativeProfile =
+            profile.copy(
+                captureWidthPx = 1080,
+                captureHeightPx = 2400,
+                displayWidthPx = 1080,
+                displayHeightPx = 2400,
+                maxVideoBitrateBps = 10_000_000
+            )
+        val budget = MotionVideoBudget()
+        val warmEvidence =
+            sender(fps = 1).copy(
+                availableOutgoingBitrateBps = 20_000_000.0
+            )
+
+        assertTrue(
+            budget.primeForMotion(
+                profile = nativeProfile,
+                nowMs = 0L,
+                warmStartEvidence = warmEvidence,
+                targetFps = 30
+            )
+        )
+        // The control budget is already 720, but healthy motion keeps the real
+        // producer at native 1080 until pressure proves a resize is worthwhile.
+        assertEquals(720, budget.shortEdge)
+        assertEquals(1080, budget.apply(nativeProfile, true).captureWidthPx)
+
+        val stressed =
+            sender(
+                fps = 20,
+                encode = 35.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            )
+
+        assertFalse(
+            budget.observe(
+                outbound = stressed,
+                receiver = receiver(fps = 20, presented = 20),
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 4_000L,
+                interactionActive = true,
+                profile = nativeProfile,
+                allowSpatialRelief = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                outbound = stressed,
+                receiver = receiver(fps = 20, presented = 20),
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 5_000L,
+                interactionActive = true,
+                profile = nativeProfile,
+                allowSpatialRelief = true
+            )
+        )
+
+        // First validated relief commits the already-selected 720 rung. It must
+        // not skip directly from native 1080 to 540 and blur small text more than
+        // the measured pressure requires.
+        val adapted = budget.apply(nativeProfile, true)
+        assertEquals(720, adapted.captureWidthPx)
+        assertEquals(1600, adapted.captureHeightPx)
+        assertEquals(720, budget.shortEdge)
+    }
+
     @Test fun isolatedHugeFrameWithoutRepairDoesNotSpendPixels() {
         val budget = nativeWarmBudget()
         val cleanHuge =
