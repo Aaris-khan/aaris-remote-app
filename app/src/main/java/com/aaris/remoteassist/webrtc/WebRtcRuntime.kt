@@ -48,7 +48,7 @@ object WebRtcRuntime {
                 PeerConnectionFactory.InitializationOptions
                     .builder(appContext)
                     /*
-                     * Enable native timestamp-based smoothing with a 10 ms
+                     * Enable native timestamp-based smoothing with a 20 ms
                      * floor and a 180 ms remote-control freshness ceiling.
                      * Packet repair and timed decode stay inside libwebrtc, but
                      * the receiver may not trade half a second of stale glass

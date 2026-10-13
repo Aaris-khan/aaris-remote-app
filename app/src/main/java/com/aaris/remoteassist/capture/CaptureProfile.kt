@@ -110,7 +110,8 @@ data class CaptureProfile(
         private const val LOW_BITRATE_BPS = 1_200_000
         private const val BALANCED_BITRATE_BPS = 3_000_000
         private const val STANDARD_BITRATE_BPS = 25_000_000
-        private const val HIGH_BITRATE_BPS = 32_000_000
+        private const val HIGH_BITRATE_BPS =
+            CaptureVideoContract.MAX_PRIMARY_VIDEO_BITRATE_BPS
 
         private const val LOW_MEMORY_BYTES = 3L * 1024L * 1024L * 1024L
         private const val HIGH_MEMORY_BYTES = 6L * 1024L * 1024L * 1024L

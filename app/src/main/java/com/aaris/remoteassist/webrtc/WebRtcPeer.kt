@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Handler
 import android.os.Looper
+import com.aaris.remoteassist.capture.CaptureVideoContract
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
@@ -2071,7 +2072,8 @@ class WebRtcPeer(
         // instead of keeping a 600 kbps ceiling that can refill the pacer.
         private const val MIN_VIDEO_BITRATE_BPS = 250_000
         private const val DEFAULT_VIDEO_BITRATE_BPS = 1_800_000
-        private const val MAX_VIDEO_BITRATE_BPS = 28_000_000
+        internal const val MAX_VIDEO_BITRATE_BPS =
+            CaptureVideoContract.MAX_PRIMARY_VIDEO_BITRATE_BPS
         private const val MIN_VIDEO_FRAMERATE = 10
         private const val DEFAULT_VIDEO_FRAMERATE = 30
         private const val MAX_VIDEO_FRAMERATE = 60
