@@ -1,58 +1,54 @@
 package com.aaris.remoteassist.ui
 
 import com.aaris.remoteassist.webrtc.PresentationCadenceWindow
-import kotlin.math.roundToInt
 
 /**
- * Keeps the controller's display scheduling stable for an interactive stream.
+ * Keeps the controller's display scheduling stable for a latency-first remote
+ * control stream.
  *
- * The observed VIDEO cadence is not the display's sustainable refresh rate:
- * native WebRTC may temporarily deliver 15/24/30 fps due to network or codec
- * pressure, then recover on the next gesture. Low-cadence pressure must never
- * vote the display down and steal presentation capacity from that recovery.
+ * The primary renderer is intentionally "latest frame wins": decoded pixels are
+ * handed to EglRenderer immediately, presentation timestamps are disabled, and a
+ * stale pending frame may be overwritten. The Surface frame-rate vote must follow
+ * the same model. It is a display-capacity hint, not a mirror of the variable RTP
+ * delivery cadence.
  *
- * High cadence is different. A stable 45/48/50 fps stream presented on a
- * Surface that keeps advertising 60 fps can manufacture deterministic display
- * judder even when capture, encoder, network and decoder are all healthy.
- * Therefore the first gesture still installs the low-latency 60 fps bootstrap,
- * but consecutive clean EGL windows may correct that hint to the ACTUAL stable
- * high cadence. The vote is based on an average across multiple windows, not a
- * single noisy sample, and low-cadence congestion never changes it.
+ * Android may change the physical display refresh rate, Choreographer timing and
+ * buffer-release timing after Surface.setFrameRate(). Retuning that actuator to
+ * measured 45/48/50/55-fps windows therefore creates a second pacing loop around
+ * an otherwise render-ASAP pipeline. Even a perfectly stable network cadence can
+ * cause a seamless mode transition, then another transition when WebRTC recovers
+ * or the next interaction starts.
  *
- * Android treats setFrameRate() as a display-scheduler hint, not a producer
- * throttle. DEFAULT compatibility lets SurfaceFlinger choose a compatible
- * physical mode (for example 90 Hz for a stable 45 fps stream) without adding
- * a frame queue in Aaris.
+ * Keep one high-capacity vote for the lifetime of the current stream instead:
+ * - the first interaction installs it immediately;
+ * - passive streaming may install it after consecutive clean presentation proof;
+ * - congestion/thermal/network cadence never retunes it;
+ * - reset/track replacement clears it.
+ *
+ * This matches the latency-first renderer contract without adding a playback
+ * reservoir, Choreographer dependency, frame copy or second media clock.
  */
 internal class SurfaceFrameRateHintGovernor(
     private val initialWindows: Int = DEFAULT_INITIAL_WINDOWS
 ) {
     private var currentHint = 0
     private var cleanWindows = 0
-    private var cleanFpsSum = 0.0
-    private var lastHintChangedAtMs = Long.MIN_VALUE / 2
 
     init {
         require(initialWindows >= 1)
     }
 
-    /** Passive streaming can establish the one stable display vote. */
+    /**
+     * Passive playback can establish the same stable display-capacity vote once
+     * actual EGL swaps prove that the Surface is alive and presenting cleanly.
+     *
+     * Once a vote exists, presentation cadence remains health telemetry only.
+     * It must never become a second actuator that follows sender/network jitter.
+     */
     fun observe(window: PresentationCadenceWindow, nowMs: Long): Int? {
-        if (nowMs < 0) return null
+        if (nowMs < 0 || currentHint != 0) return null
 
         val fps = window.fps
-        /*
-         * A display-mode vote needs stronger evidence than ordinary playback
-         * health. A single missed 60 fps presentation produces roughly a 33 ms
-         * gap and can make a 500 ms window look like a stable ~58 fps stream.
-         * Treating that hitch as a new steady cadence feeds transient jank back
-         * into Surface.setFrameRate(), which may itself move the display clock.
-         *
-         * Accept only cadence whose worst gap stays within a bounded multiple
-         * of its own measured frame period. This still admits legitimate
-         * high-cadence pulldown such as 45/50/55 fps on a 60 Hz glass clock,
-         * while rejecting one-frame-loss windows masquerading as a new rate.
-         */
         val stableGapBudgetMs =
             if (fps.isFinite() && fps > 0.0) {
                 1_000.0 / fps * MAX_STABLE_GAP_FRAME_MULTIPLIER
@@ -66,61 +62,29 @@ internal class SurfaceFrameRateHintGovernor(
                 window.maxGapMs <= stableGapBudgetMs
 
         if (!clean) {
-            resetCandidate()
+            cleanWindows = 0
             return null
         }
 
         cleanWindows += 1
-        cleanFpsSum += fps
         if (cleanWindows < initialWindows) return null
 
-        val measuredFps =
-            (cleanFpsSum / cleanWindows.toDouble())
-                .roundToInt()
-                .coerceIn(1, PREFERRED_SURFACE_FPS)
-        resetCandidate()
-
-        /*
-         * <=30 fps is commonly a temporary congestion/thermal recovery rung.
-         * Keep display capacity at 60 rather than following that pressure down.
-         * Above 30, use the proven cadence itself so 45/48/50-class streams do
-         * not get forced through a 60-Hz presentation pattern.
-         */
-        val nextHint =
-            if (measuredFps <= LOW_CADENCE_CEILING_FPS) {
-                PREFERRED_SURFACE_FPS
-            } else {
-                measuredFps
-            }
-
-        if (nextHint == currentHint) return null
-        if (
-            currentHint != 0 &&
-            nowMs - lastHintChangedAtMs < MIN_HINT_CHANGE_INTERVAL_MS
-        ) {
-            return null
-        }
-
-        currentHint = nextHint
-        lastHintChangedAtMs = nowMs
+        currentHint = PREFERRED_SURFACE_FPS
+        cleanWindows = 0
         return currentHint
     }
 
     /**
-     * The first gesture may precede any measured presentation windows.
-     * Bootstrap at a display-class ceiling, then let clean EGL cadence correct
-     * the vote if the real high-cadence operating point is not 60 fps.
+     * Interactive control should not wait for cadence measurement. Install the
+     * stable stream-lifetime vote immediately and leave actual frame admission to
+     * WebRTC + EglRenderer.
      */
     fun beginInteraction(
-        maxFps: Int = PREFERRED_SURFACE_FPS,
-        nowMs: Long = -1L
+        maxFps: Int = PREFERRED_SURFACE_FPS
     ): Int? {
         if (maxFps <= 0 || currentHint != 0) return null
         currentHint = minOf(maxFps, PREFERRED_SURFACE_FPS)
-        resetCandidate()
-        if (nowMs >= 0L) {
-            lastHintChangedAtMs = nowMs
-        }
+        cleanWindows = 0
         return currentHint
     }
 
@@ -130,27 +94,21 @@ internal class SurfaceFrameRateHintGovernor(
     fun reset(): Boolean {
         val hadHint = currentHint > 0
         currentHint = 0
-        resetCandidate()
-        lastHintChangedAtMs = Long.MIN_VALUE / 2
-        return hadHint
-    }
-
-    private fun resetCandidate() {
         cleanWindows = 0
-        cleanFpsSum = 0.0
+        return hadHint
     }
 
     private companion object {
         const val PREFERRED_SURFACE_FPS = 60
-        const val LOW_CADENCE_CEILING_FPS = 30
         const val DEFAULT_INITIAL_WINDOWS = 3
-        const val MIN_HINT_CHANGE_INTERVAL_MS = 1_200L
         const val MIN_PRESENTED_FRAMES = 5
         const val MIN_MEASURED_FPS = 10.0
         const val MAX_MEASURED_FPS = 72.0
+
         /*
-         * 1.9x is intentionally below the ~2.0x signature of one dropped frame
-         * while remaining above ordinary 45/50/55-on-60 presentation pulldown.
+         * Passive bootstrap still requires clean presentation evidence. 1.9x is
+         * intentionally below the ~2.0x signature of one dropped frame while
+         * admitting ordinary display pulldown.
          */
         const val MAX_STABLE_GAP_FRAME_MULTIPLIER = 1.9
     }
