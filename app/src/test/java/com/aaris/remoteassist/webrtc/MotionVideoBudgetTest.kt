@@ -2115,7 +2115,7 @@ class MotionVideoBudgetTest {
         )
     }
 
-    @Test fun standardOrdinaryPressureKeepsFiveFortyDetailFloor() {
+    @Test fun scopedSpatialDecisionCanProtectFiveFortyDetailFloor() {
         val budget = nativeWarmBudget()
         val stressed =
             sender(
@@ -2140,7 +2140,8 @@ class MotionVideoBudgetTest {
                 nowMs = 4_000L,
                 interactionActive = true,
                 profile = profile,
-                allowSpatialRelief = true
+                allowSpatialRelief = true,
+                minimumSpatialShortEdge = 540
             )
         )
         assertTrue(
@@ -2153,12 +2154,14 @@ class MotionVideoBudgetTest {
                 nowMs = 5_000L,
                 interactionActive = true,
                 profile = profile,
-                allowSpatialRelief = true
+                allowSpatialRelief = true,
+                minimumSpatialShortEdge = 540
             )
         )
         assertEquals(540, budget.apply(profile, true).captureWidthPx)
 
-        // Continued non-severe pressure spends cadence/bitrate, not 540 -> 360.
+        // A caller-scoped clarity floor prevents this decision lane from
+        // spending 540 -> 360; the default budget contract remains unchanged.
         repeat(4) { index ->
             assertFalse(
                 budget.observe(
@@ -2170,7 +2173,8 @@ class MotionVideoBudgetTest {
                     nowMs = 8_000L + index * 1_000L,
                     interactionActive = true,
                     profile = profile,
-                    allowSpatialRelief = true
+                    allowSpatialRelief = true,
+                minimumSpatialShortEdge = 540
                 )
             )
         }
