@@ -205,6 +205,41 @@ data class CaptureProfile(
                 initialTier
             }
 
+        /**
+         * Give LOW a readability-first geometry without changing its conservative
+         * cadence or bitrate contract, but only under strong device-local proof.
+         *
+         * The caller supplies an Android PerformancePoint-derived floor that was
+         * validated across every hardware implementation eligible for the
+         * preferred screen codec. System low-RAM devices and incomplete metadata
+         * keep the historical 360-class profile exactly.
+         */
+        internal fun withGuaranteedLowDetailBootstrap(
+            low: CaptureProfile,
+            balanced: CaptureProfile,
+            systemLowRamDevice: Boolean,
+            guaranteedBalancedFps: Int?
+        ): CaptureProfile {
+            if (
+                low.tier != CaptureTier.LOW ||
+                balanced.tier != CaptureTier.BALANCED ||
+                systemLowRamDevice ||
+                guaranteedBalancedFps == null ||
+                guaranteedBalancedFps < BALANCED_MOTION_FPS ||
+                low.displayWidthPx != balanced.displayWidthPx ||
+                low.displayHeightPx != balanced.displayHeightPx ||
+                balanced.captureWidthPx < low.captureWidthPx ||
+                balanced.captureHeightPx < low.captureHeightPx
+            ) {
+                return low
+            }
+
+            return low.copy(
+                captureWidthPx = balanced.captureWidthPx,
+                captureHeightPx = balanced.captureHeightPx
+            )
+        }
+
         @Suppress("DEPRECATION")
         fun current(
             context: Context,

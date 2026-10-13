@@ -41,8 +41,17 @@ internal class ScreenEncoderPerformance private constructor(
         val implementationName: String?
     )
 
+    private data class GeometryKey(
+        val width: Int,
+        val height: Int
+    )
+
     private val knownLimits = ConcurrentHashMap<LimitKey, Int>()
     private val unknownSizes = ConcurrentHashMap.newKeySet<LimitKey>()
+    private val guaranteedMinimumLimits =
+        ConcurrentHashMap<GeometryKey, Int>()
+    private val unknownGuaranteedMinimumSizes =
+        ConcurrentHashMap.newKeySet<GeometryKey>()
 
     fun maxFps(
         width: Int,
@@ -112,6 +121,60 @@ internal class ScreenEncoderPerformance private constructor(
         return measured
     }
 
+    /**
+     * Strong startup-only capability proof.
+     *
+     * A low-memory-class session may use extra detail at its existing 15/20-fps
+     * cadence only when Android 10+ publishes explicit PerformancePoint coverage
+     * for the requested geometry on EVERY hardware implementation that WebRTC
+     * could select for the preferred codec. One fast secondary encoder must never
+     * lend its guarantee to a slower component.
+     *
+     * Achievable-rate estimates are intentionally excluded here: they remain
+     * useful as a runtime ceiling, but startup clarity must fail closed when a
+     * hard performance guarantee is unavailable.
+     */
+    fun guaranteedMinimumHardwareFps(
+        width: Int,
+        height: Int
+    ): Int? {
+        if (
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            capabilities.isEmpty()
+        ) {
+            return null
+        }
+
+        val safeWidth = width.coerceAtLeast(2)
+        val safeHeight = height.coerceAtLeast(2)
+        val key =
+            GeometryKey(
+                width = safeWidth,
+                height = safeHeight
+            )
+        guaranteedMinimumLimits[key]?.let { return it }
+        if (unknownGuaranteedMinimumSizes.contains(key)) {
+            return null
+        }
+
+        val minimum =
+            minimumCompleteLimit(
+                capabilities.map { capability ->
+                    guaranteedRealtimeLimit(
+                        capability.video,
+                        safeWidth,
+                        safeHeight
+                    )
+                }
+            )
+        if (minimum == null) {
+            unknownGuaranteedMinimumSizes += key
+        } else {
+            guaranteedMinimumLimits[key] = minimum
+        }
+        return minimum
+    }
+
     private fun realtimeLimit(
         video: MediaCodecInfo.VideoCapabilities,
         width: Int,
@@ -122,31 +185,11 @@ internal class ScreenEncoderPerformance private constructor(
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val points =
-                runCatching { video.supportedPerformancePoints }
-                    .getOrNull()
-            if (!points.isNullOrEmpty()) {
-                val guaranteed =
-                    CADENCE_STEPS.firstOrNull { fps ->
-                        val requested =
-                            MediaCodecInfo.VideoCapabilities.PerformancePoint(
-                                width,
-                                height,
-                                fps
-                            )
-                        points.any { point ->
-                            runCatching { point.covers(requested) }
-                                .getOrDefault(false)
-                        }
-                    }
-                /*
-                 * A non-empty performance-point table is an explicit hardware
-                 * guarantee. If it contains no >=15 fps point for this size,
-                 * keep the session at the realtime safety floor rather than
-                 * repeatedly probing high cadence that the codec never promised.
-                 */
-                return guaranteed ?: MIN_REALTIME_FPS
-            }
+            guaranteedRealtimeLimit(
+                video = video,
+                width = width,
+                height = height
+            )?.let { return it }
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -159,6 +202,42 @@ internal class ScreenEncoderPerformance private constructor(
         }
 
         return null
+    }
+
+    private fun guaranteedRealtimeLimit(
+        video: MediaCodecInfo.VideoCapabilities,
+        width: Int,
+        height: Int
+    ): Int? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return null
+        }
+        if (
+            !runCatching {
+                video.isSizeSupported(width, height)
+            }.getOrDefault(false)
+        ) {
+            return null
+        }
+
+        val points =
+            runCatching { video.supportedPerformancePoints }
+                .getOrNull()
+                ?.takeIf { it.isNotEmpty() }
+                ?: return null
+
+        return CADENCE_STEPS.firstOrNull { fps ->
+            val requested =
+                MediaCodecInfo.VideoCapabilities.PerformancePoint(
+                    width,
+                    height,
+                    fps
+                )
+            points.any { point ->
+                runCatching { point.covers(requested) }
+                    .getOrDefault(false)
+            }
+        } ?: MIN_REALTIME_FPS
     }
 
     companion object {
@@ -247,6 +326,15 @@ internal class ScreenEncoderPerformance private constructor(
                 }
 
             return ScreenEncoderPerformance(videoCapabilities)
+        }
+
+        internal fun minimumCompleteLimit(
+            limits: Collection<Int?>
+        ): Int? {
+            if (limits.isEmpty() || limits.any { it == null }) {
+                return null
+            }
+            return limits.filterNotNull().minOrNull()
         }
 
         internal fun cadenceAtOrBelow(

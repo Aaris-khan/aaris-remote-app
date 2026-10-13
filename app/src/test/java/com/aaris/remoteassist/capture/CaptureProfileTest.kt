@@ -148,6 +148,81 @@ class CaptureProfileTest {
     }
 
     @Test
+    fun guaranteedLowDetailBootstrapChangesOnlyPixels() {
+        val low =
+            CaptureProfile.forDisplay(
+                displayWidthPx = 720,
+                displayHeightPx = 1600,
+                tier = CaptureTier.LOW
+            )
+        val balanced =
+            CaptureProfile.forDisplay(
+                displayWidthPx = 720,
+                displayHeightPx = 1600,
+                tier = CaptureTier.BALANCED
+            )
+
+        val boosted =
+            CaptureProfile.withGuaranteedLowDetailBootstrap(
+                low = low,
+                balanced = balanced,
+                systemLowRamDevice = false,
+                guaranteedBalancedFps = 30
+            )
+
+        assertEquals(540, boosted.captureWidthPx)
+        assertEquals(1200, boosted.captureHeightPx)
+        assertEquals(CaptureTier.LOW, boosted.tier)
+        assertEquals(low.fps, boosted.fps)
+        assertEquals(low.motionFps, boosted.motionFps)
+        assertEquals(low.maxVideoBitrateBps, boosted.maxVideoBitrateBps)
+    }
+
+    @Test
+    fun lowDetailBootstrapFailsClosedWithoutStrongProof() {
+        val low =
+            CaptureProfile.forDisplay(
+                displayWidthPx = 720,
+                displayHeightPx = 1600,
+                tier = CaptureTier.LOW
+            )
+        val balanced =
+            CaptureProfile.forDisplay(
+                displayWidthPx = 720,
+                displayHeightPx = 1600,
+                tier = CaptureTier.BALANCED
+            )
+
+        assertEquals(
+            low,
+            CaptureProfile.withGuaranteedLowDetailBootstrap(
+                low,
+                balanced,
+                systemLowRamDevice = true,
+                guaranteedBalancedFps = 60
+            )
+        )
+        assertEquals(
+            low,
+            CaptureProfile.withGuaranteedLowDetailBootstrap(
+                low,
+                balanced,
+                systemLowRamDevice = false,
+                guaranteedBalancedFps = 24
+            )
+        )
+        assertEquals(
+            low,
+            CaptureProfile.withGuaranteedLowDetailBootstrap(
+                low,
+                balanced,
+                systemLowRamDevice = false,
+                guaranteedBalancedFps = null
+            )
+        )
+    }
+
+    @Test
     fun standardKeepsNative1600pLongSide() {
         val profile =
             CaptureProfile.forDisplay(

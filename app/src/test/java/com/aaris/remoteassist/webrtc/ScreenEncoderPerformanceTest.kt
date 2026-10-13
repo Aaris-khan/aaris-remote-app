@@ -105,6 +105,26 @@ class ScreenEncoderPerformanceTest {
     }
 
     @Test
+    fun startupGuaranteeRequiresEveryHardwareCandidate() {
+        assertEquals(
+            30,
+            ScreenEncoderPerformance.minimumCompleteLimit(
+                listOf(60, 30, 45)
+            )
+        )
+        assertNull(
+            ScreenEncoderPerformance.minimumCompleteLimit(
+                listOf(60, null, 45)
+            )
+        )
+        assertNull(
+            ScreenEncoderPerformance.minimumCompleteLimit(
+                emptyList()
+            )
+        )
+    }
+
+    @Test
     fun malformedOrMissingCodecRateDoesNotInventACeiling() {
         assertNull(
             ScreenEncoderPerformance.cadenceAtOrBelow(null)
