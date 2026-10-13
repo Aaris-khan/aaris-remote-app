@@ -51,6 +51,10 @@ class FallbackScreenStreamer(
     private val frameSequence = AtomicLong(0L)
     private val firstDeltaReported = AtomicBoolean(false)
     private val forceKeyframe = AtomicBoolean(true)
+    // Fallback already sees every natural MediaProjection callback. Keep the
+    // periodic synthetic pull idle while those callbacks are fresh, otherwise
+    // forcing a duplicate texture competes with the primary RTP hot path.
+    private val lastObservedFallbackFrameAtMs = AtomicLong(Long.MIN_VALUE / 2)
     private val clarity = FallbackClarityPolicy()
     private val readbackBudget = FallbackReadbackBudget()
     private val worker =
@@ -79,6 +83,9 @@ class FallbackScreenStreamer(
         }
 
         val now = monotonicNowMs()
+        // Update before admission: a natural sample proves the producer is
+        // alive even when this optional JPEG/delta encoder is backpressured.
+        lastObservedFallbackFrameAtMs.set(now)
         // Only successful single-flight admission may advance the cadence
         // deadline. Blocked DataChannel or worker must not delay recovery.
         when (
@@ -215,6 +222,7 @@ class FallbackScreenStreamer(
          * visible to ScreenCaptureTrack when that frame arrives.
          */
         readbackBudget.reset()
+        lastObservedFallbackFrameAtMs.set(Long.MIN_VALUE / 2)
         attachSinkIfNeeded()
         enabled.set(true)
 
@@ -228,8 +236,19 @@ class FallbackScreenStreamer(
         // can finish. Never retain an old SurfaceTexture as a snapshot cache.
         refreshTask?.cancel(false)
         refreshTask = worker.scheduleWithFixedDelay({
-            if (!closed.get() && enabled.get() && canStartFrame()) runCatching(requestFreshFrame)
-        }, 500, 500, TimeUnit.MILLISECONDS)
+            if (
+                !closed.get() &&
+                enabled.get() &&
+                FallbackRefreshPolicy.shouldForce(
+                    nowMs = monotonicNowMs(),
+                    lastFrameAtMs = lastObservedFallbackFrameAtMs.get(),
+                    quietIntervalMs = FALLBACK_REFRESH_TICK_MS
+                ) &&
+                canStartFrame()
+            ) {
+                runCatching(requestFreshFrame)
+            }
+        }, FALLBACK_REFRESH_TICK_MS, FALLBACK_REFRESH_TICK_MS, TimeUnit.MILLISECONDS)
 
         onDiagnostic(
             if (deltaCapable.get()) {
@@ -783,6 +802,7 @@ class FallbackScreenStreamer(
     }
 
     companion object {
+        private const val FALLBACK_REFRESH_TICK_MS = 500L
         private const val MAX_DIMENSION =
             CaptureVideoContract.MAX_FALLBACK_SAFE_LONG_SIDE_PX
 
@@ -820,5 +840,16 @@ class FallbackScreenStreamer(
         private const val MAX_DELTA_JPEG_BYTES = 56_000
         private const val MAX_JPEG_ESTIMATE_BYTES = 320_000
         private const val MAX_PATCH_ESTIMATE_BYTES = 96_000
+    }
+}
+
+/** Pure capture-idle gate for the existing fallback recovery ticker. */
+internal object FallbackRefreshPolicy {
+    fun shouldForce(nowMs: Long, lastFrameAtMs: Long, quietIntervalMs: Long): Boolean {
+        require(quietIntervalMs > 0L)
+        if (nowMs < 0L) return false
+        return lastFrameAtMs < 0L ||
+            nowMs < lastFrameAtMs ||
+            nowMs - lastFrameAtMs >= quietIntervalMs
     }
 }
