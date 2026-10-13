@@ -56,6 +56,94 @@ class ControllerDisplayCapacityPolicyTest {
     }
 
     @Test
+    fun highCadenceMaskKeepsOnlyEvenPresentationRates() {
+        val ninetyOnly =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 90f,
+                seamlessAlternativeRefreshRatesHz = floatArrayOf()
+            )
+        assertEquals(
+            true,
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                ninetyOnly,
+                45
+            )
+        )
+        assertEquals(
+            false,
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                ninetyOnly,
+                60
+            )
+        )
+
+        val oneTwenty =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 120f,
+                seamlessAlternativeRefreshRatesHz = floatArrayOf()
+            )
+        assertEquals(
+            true,
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                oneTwenty,
+                60
+            )
+        )
+        assertEquals(
+            true,
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                oneTwenty,
+                40
+            )
+        )
+
+        val oneFortyFour =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 144f,
+                seamlessAlternativeRefreshRatesHz = floatArrayOf()
+            )
+        assertEquals(
+            true,
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                oneFortyFour,
+                48
+            )
+        )
+        assertEquals(
+            true,
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                oneFortyFour,
+                36
+            )
+        )
+        assertEquals(
+            false,
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                oneFortyFour,
+                60
+            )
+        )
+    }
+
+    @Test
+    fun seamlessAlternativeCanMakeSixtyJudderFreeOnNinetyClassPanel() {
+        val mask =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = 90f,
+                seamlessAlternativeRefreshRatesHz =
+                    floatArrayOf(60f)
+            )
+
+        assertEquals(
+            true,
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                mask,
+                60
+            )
+        )
+    }
+
+    @Test
     fun invalidVendorRatesCannotPoisonCapacity() {
         val capacity =
             ControllerDisplayCapacityPolicy.resolve(

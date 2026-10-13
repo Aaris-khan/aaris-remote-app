@@ -28,12 +28,34 @@ class VideoCadenceGovernor(
     private var lastSenderAtMs = Long.MIN_VALUE / 2
     private var lastDisplayRefreshRateHz: Double? = null
     private var lastSourceRefreshRateHz: Double? = null
+    private var controllerHighCadenceMask: Int? = null
+    private var controllerHarmonicConstraintActive = false
+    private var displayJudderWindows = 0
     private var clarityBandwidthPressure = 0
     private var clarityBandwidthVoteCap = 0
     private var clarityBandwidthVoteTarget = 0
     private val highCadenceProbe = HighCadenceProbe()
     private val highCadencePressureGate = HighCadencePressureGate()
     val probingHighCadence: Boolean get() = highCadenceProbe.probing
+
+    fun updateControllerHighCadenceMask(mask: Int?) {
+        if (mask == controllerHighCadenceMask) return
+        controllerHighCadenceMask = mask
+        controllerHarmonicConstraintActive = false
+        displayJudderWindows = 0
+        highCadenceProbe.setControllerHighCadenceMask(null)
+    }
+
+    fun clearControllerHighCadenceMask() {
+        controllerHighCadenceMask = null
+        controllerHarmonicConstraintActive = false
+        displayJudderWindows = 0
+        highCadenceProbe.setControllerHighCadenceMask(null)
+    }
+
+    private fun activeControllerHighCadenceMask(): Int? =
+        controllerHighCadenceMask
+            .takeIf { controllerHarmonicConstraintActive }
 
     /**
      * Consume MotionVideoBudget's "same pixels still fit at lower cadence"
@@ -90,7 +112,9 @@ class VideoCadenceGovernor(
                 refreshRateHz = lastDisplayRefreshRateHz,
                 ceilingFps = current,
                 floorFps = CLARITY_BANDWIDTH_MIN_FPS,
-                sourceRefreshRateHz = lastSourceRefreshRateHz
+                sourceRefreshRateHz = lastSourceRefreshRateHz,
+                controllerHighCadenceMask =
+                    activeControllerHighCadenceMask()
             )
         if (target >= current) {
             resetClarityBandwidthVotes()
@@ -643,7 +667,9 @@ class VideoCadenceGovernor(
                 refreshRateHz = lastDisplayRefreshRateHz,
                 floorFps = 1,
                 ceilingFps = maxFps,
-                sourceRefreshRateHz = lastSourceRefreshRateHz
+                sourceRefreshRateHz = lastSourceRefreshRateHz,
+                controllerHighCadenceMask =
+                    activeControllerHighCadenceMask()
             )?.takeIf { it < cap } ?: return false
 
         // Moderate presentation-only relief is deliberately one fine step.
@@ -659,6 +685,140 @@ class VideoCadenceGovernor(
         interactiveHeadroom = 0
         interactiveFloorHeadroom = 0
         lastDecision = "fast-presentation-relief->$next"
+        return true
+    }
+
+    /**
+     * Correct deterministic controller-display pulldown only after proof.
+     *
+     * A stable display capability mask alone is not enough: modern VRR/frame-
+     * rate override implementations may present a nominally non-divisible rate
+     * smoothly. Require two real EGL windows with high gap variance while sender
+     * delivery is complete. This distinguishes visual 11/22 ms-style pulldown
+     * from congestion and avoids adding a pacing queue or media clock.
+     */
+    fun observeDisplayJudder(
+        intervalMs: Int,
+        renderedFrames: Int,
+        gapStdDevMs: Int,
+        requestedFps: Int,
+        freshnessActive: Boolean,
+        nowMs: Long,
+        displayRefreshRateHz: Double? = null,
+        sourceRefreshRateHz: Double? = null
+    ): Boolean {
+        displayRefreshRateHz
+            ?.takeIf {
+                it.isFinite() &&
+                    it in MIN_DISPLAY_REFRESH_HZ..MAX_DISPLAY_REFRESH_HZ
+            }
+            ?.let { lastDisplayRefreshRateHz = it }
+        sourceRefreshRateHz
+            ?.takeIf {
+                it.isFinite() &&
+                    it in MIN_DISPLAY_REFRESH_HZ..MAX_DISPLAY_REFRESH_HZ
+            }
+            ?.let { lastSourceRefreshRateHz = it }
+
+        val mask = controllerHighCadenceMask
+        val effectiveFps =
+            minOf(cap, requestedFps, maxFps)
+                .coerceAtLeast(1)
+        if (
+            !freshnessActive ||
+            nowMs < 0L ||
+            mask == null ||
+            intervalMs !in DISPLAY_JUDDER_MIN_WINDOW_MS..
+                DISPLAY_JUDDER_MAX_WINDOW_MS ||
+            renderedFrames < DISPLAY_JUDDER_MIN_FRAMES ||
+            gapStdDevMs !in 0..6_000 ||
+            effectiveFps <= LOW_CADENCE_MAX_FPS ||
+            ControllerDisplayCapacityPolicy.supportsHighCadence(
+                mask,
+                effectiveFps
+            )
+        ) {
+            displayJudderWindows = 0
+            return false
+        }
+
+        val suppliedFps =
+            lastSenderFps
+                ?.takeIf {
+                    nowMs - lastSenderAtMs in
+                        0L..DISPLAY_JUDDER_MAX_SENDER_AGE_MS
+                }
+                ?: run {
+                    displayJudderWindows = 0
+                    return false
+                }
+        val expectedFps =
+            minOf(
+                effectiveFps.toDouble(),
+                suppliedFps
+            )
+        if (expectedFps < DISPLAY_JUDDER_MIN_EXPECTED_FPS) {
+            displayJudderWindows = 0
+            return false
+        }
+
+        val measuredFps =
+            renderedFrames * 1_000.0 /
+                intervalMs.toDouble()
+        val deliveryRatio =
+            measuredFps / expectedFps
+        val frameBudgetMs = 1_000.0 / expectedFps
+        val deviationThresholdMs =
+            maxOf(
+                DISPLAY_JUDDER_MIN_STDDEV_MS,
+                frameBudgetMs *
+                    DISPLAY_JUDDER_STDDEV_BUDGET_RATIO
+            )
+        val provenJudder =
+            deliveryRatio >= DISPLAY_JUDDER_MIN_DELIVERY_RATIO &&
+                gapStdDevMs.toDouble() >=
+                    deviationThresholdMs
+
+        displayJudderWindows =
+            if (provenJudder) {
+                (displayJudderWindows + 1)
+                    .coerceAtMost(
+                        DISPLAY_JUDDER_WINDOWS_TO_CORRECT
+                    )
+            } else {
+                0
+            }
+        if (
+            displayJudderWindows <
+                DISPLAY_JUDDER_WINDOWS_TO_CORRECT
+        ) {
+            return false
+        }
+
+        controllerHarmonicConstraintActive = true
+        highCadenceProbe.setControllerHighCadenceMask(mask)
+
+        val next =
+            DisplayCadencePolicy.nearestAtOrBelow(
+                limitFps = effectiveFps,
+                refreshRateHz = lastDisplayRefreshRateHz,
+                ceilingFps = maxFps,
+                floorFps = 1,
+                sourceRefreshRateHz =
+                    lastSourceRefreshRateHz,
+                controllerHighCadenceMask = mask
+            )
+        displayJudderWindows = 0
+        if (next >= cap) return false
+
+        cap = next
+        changedAt = nowMs
+        pressure = 0
+        healthy = 0
+        interactiveHeadroom = 0
+        interactiveFloorHeadroom = 0
+        highCadencePressureGate.reset()
+        lastDecision = "display-harmonic-relief->$next"
         return true
     }
 
@@ -718,7 +878,9 @@ class VideoCadenceGovernor(
                     refreshRateHz = lastDisplayRefreshRateHz,
                     ceilingFps = minOf(maxFps, maximumFps.coerceAtLeast(1)),
                     floorFps = minimumFps.coerceAtLeast(1),
-                    sourceRefreshRateHz = lastSourceRefreshRateHz
+                    sourceRefreshRateHz = lastSourceRefreshRateHz,
+                    controllerHighCadenceMask =
+                        activeControllerHighCadenceMask()
                 )
 
             if (clockAlignedCap < cap) {
@@ -1071,7 +1233,9 @@ class VideoCadenceGovernor(
                     refreshRateHz = lastDisplayRefreshRateHz,
                     ceilingFps = maxFps,
                     floorFps = 1,
-                    sourceRefreshRateHz = lastSourceRefreshRateHz
+                    sourceRefreshRateHz = lastSourceRefreshRateHz,
+                    controllerHighCadenceMask =
+                        activeControllerHighCadenceMask()
                 )
             val ordinaryNext = cadenceSteps.firstOrNull { candidate ->
                 candidate < ceiling &&
@@ -1320,6 +1484,17 @@ class VideoCadenceGovernor(
         const val URGENT_FRESHNESS_MULTIPLIER = 1.75
         const val URGENT_FRESHNESS_CHANGE_INTERVAL_MS = 1_500L
         const val HIGH_CADENCE_FAST_RELIEF_FPS = 60
+        const val LOW_CADENCE_MAX_FPS = 30
+
+        const val DISPLAY_JUDDER_MIN_WINDOW_MS = 500
+        const val DISPLAY_JUDDER_MAX_WINDOW_MS = 2_000
+        const val DISPLAY_JUDDER_MIN_FRAMES = 5
+        const val DISPLAY_JUDDER_MAX_SENDER_AGE_MS = 1_500L
+        const val DISPLAY_JUDDER_MIN_EXPECTED_FPS = 45.0
+        const val DISPLAY_JUDDER_MIN_STDDEV_MS = 3.0
+        const val DISPLAY_JUDDER_STDDEV_BUDGET_RATIO = 0.20
+        const val DISPLAY_JUDDER_MIN_DELIVERY_RATIO = 0.92
+        const val DISPLAY_JUDDER_WINDOWS_TO_CORRECT = 2
         const val HIGH_CADENCE_FAST_RELIEF_CHANGE_INTERVAL_MS = 1_000L
 
         /*

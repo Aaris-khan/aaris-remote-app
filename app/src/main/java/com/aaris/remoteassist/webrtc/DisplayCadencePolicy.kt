@@ -36,13 +36,18 @@ internal object DisplayCadencePolicy {
         refreshRateHz: Double?,
         ceilingFps: Int = PRODUCT_MAX_FPS,
         floorFps: Int = 1,
-        sourceRefreshRateHz: Double? = null
+        sourceRefreshRateHz: Double? = null,
+        controllerHighCadenceMask: Int? = null
     ): List<Int> {
         val floor = floorFps.coerceAtLeast(1)
         val ceiling = ceilingFps.coerceAtLeast(floor)
         val refresh = normalizedRefresh(refreshRateHz)
         val sourceRefresh = normalizedRefresh(sourceRefreshRateHz)
-        if (refresh == null && sourceRefresh == null) {
+        if (
+            refresh == null &&
+            sourceRefresh == null &&
+            controllerHighCadenceMask == null
+        ) {
             return legacyDescending
                 .filter { it in floor..ceiling }
                 .ifEmpty { listOf(ceiling) }
@@ -71,6 +76,10 @@ internal object DisplayCadencePolicy {
          */
         fun admitHigh(fps: Int): Boolean =
             fps in firstHigh..ceiling &&
+                ControllerDisplayCapacityPolicy.supportsHighCadence(
+                    controllerHighCadenceMask,
+                    fps
+                ) &&
                 sourceClockCompatible(sourceRefresh, fps) &&
                 if (sourceRefresh != null) {
                     controllerRefreshCapacityCompatible(refresh, fps)
@@ -135,14 +144,19 @@ internal object DisplayCadencePolicy {
         refreshRateHz: Double?,
         ceilingFps: Int = PRODUCT_MAX_FPS,
         floorFps: Int = 1,
-        sourceRefreshRateHz: Double? = null
+        sourceRefreshRateHz: Double? = null,
+        controllerHighCadenceMask: Int? = null
     ): List<Int> {
         val floor = floorFps.coerceAtLeast(1)
         val ceiling = ceilingFps.coerceAtLeast(floor)
         val refresh = normalizedRefresh(refreshRateHz)
         val sourceRefresh = normalizedRefresh(sourceRefreshRateHz)
 
-        if (refresh == null && sourceRefresh == null) {
+        if (
+            refresh == null &&
+            sourceRefresh == null &&
+            controllerHighCadenceMask == null
+        ) {
             return legacyDescending
                 .filter { it in floor..ceiling }
                 .ifEmpty { listOf(ceiling) }
@@ -156,6 +170,10 @@ internal object DisplayCadencePolicy {
 
         fun admitHigh(fps: Int): Boolean =
             fps in firstHigh..ceiling &&
+                ControllerDisplayCapacityPolicy.supportsHighCadence(
+                    controllerHighCadenceMask,
+                    fps
+                ) &&
                 if (sourceRefresh != null) {
                     sourcePressureCompatible(fps) &&
                         controllerRefreshCapacityCompatible(refresh, fps)
@@ -206,13 +224,15 @@ internal object DisplayCadencePolicy {
         refreshRateHz: Double?,
         floorFps: Int = 1,
         ceilingFps: Int = PRODUCT_MAX_FPS,
-        sourceRefreshRateHz: Double? = null
+        sourceRefreshRateHz: Double? = null,
+        controllerHighCadenceMask: Int? = null
     ): Int? =
         pressureReliefDescending(
             refreshRateHz = refreshRateHz,
             ceilingFps = maxOf(ceilingFps, currentFps),
             floorFps = floorFps,
-            sourceRefreshRateHz = sourceRefreshRateHz
+            sourceRefreshRateHz = sourceRefreshRateHz,
+            controllerHighCadenceMask = controllerHighCadenceMask
         ).firstOrNull { it < currentFps }
 
     fun nextHigher(
@@ -220,7 +240,8 @@ internal object DisplayCadencePolicy {
         refreshRateHz: Double?,
         ceilingFps: Int = PRODUCT_MAX_FPS,
         floorFps: Int = 1,
-        sourceRefreshRateHz: Double? = null
+        sourceRefreshRateHz: Double? = null,
+        controllerHighCadenceMask: Int? = null
     ): Int? {
         /*
          * Promotion and relief have different visual failure modes.
@@ -260,7 +281,9 @@ internal object DisplayCadencePolicy {
                 refreshRateHz = refreshRateHz,
                 ceilingFps = boundedCeiling,
                 floorFps = floorFps,
-                sourceRefreshRateHz = sourceRefreshRateHz
+                sourceRefreshRateHz = sourceRefreshRateHz,
+                controllerHighCadenceMask =
+                    controllerHighCadenceMask
             ).toMutableSet()
 
         /*
@@ -272,7 +295,11 @@ internal object DisplayCadencePolicy {
         harmonicCeiling
             ?.takeIf {
                 it in maxOf(currentFps + 1, floorFps)..boundedCeiling &&
-                    sourceClockCompatible(sourceRefresh, it)
+                    sourceClockCompatible(sourceRefresh, it) &&
+                    ControllerDisplayCapacityPolicy.supportsHighCadence(
+                        controllerHighCadenceMask,
+                        it
+                    )
             }
             ?.let(candidates::add)
 
@@ -293,13 +320,15 @@ internal object DisplayCadencePolicy {
         refreshRateHz: Double?,
         ceilingFps: Int = PRODUCT_MAX_FPS,
         floorFps: Int = 1,
-        sourceRefreshRateHz: Double? = null
+        sourceRefreshRateHz: Double? = null,
+        controllerHighCadenceMask: Int? = null
     ): Int =
         pressureReliefDescending(
             refreshRateHz = refreshRateHz,
             ceilingFps = maxOf(ceilingFps, limitFps),
             floorFps = floorFps,
-            sourceRefreshRateHz = sourceRefreshRateHz
+            sourceRefreshRateHz = sourceRefreshRateHz,
+            controllerHighCadenceMask = controllerHighCadenceMask
         ).firstOrNull { it <= limitFps }
             ?: minOf(limitFps.coerceAtLeast(1), HIGH_CADENCE_MIN_FPS - 1)
 
@@ -308,13 +337,15 @@ internal object DisplayCadencePolicy {
         refreshRateHz: Double?,
         ceilingFps: Int = PRODUCT_MAX_FPS,
         floorFps: Int = 1,
-        sourceRefreshRateHz: Double? = null
+        sourceRefreshRateHz: Double? = null,
+        controllerHighCadenceMask: Int? = null
     ): Int =
         descending(
             refreshRateHz = refreshRateHz,
             ceilingFps = maxOf(ceilingFps, limitFps),
             floorFps = floorFps,
-            sourceRefreshRateHz = sourceRefreshRateHz
+            sourceRefreshRateHz = sourceRefreshRateHz,
+            controllerHighCadenceMask = controllerHighCadenceMask
         ).firstOrNull { it <= limitFps }
             ?: minOf(limitFps.coerceAtLeast(1), HIGH_CADENCE_MIN_FPS - 1)
 

@@ -174,6 +174,45 @@ sealed interface ControlPacket {
     }
 
     /**
+     * Optional high-cadence presentation capability. Bits 0..29 represent
+     * 31..60 fps and are set only when a stable/seamless controller display
+     * mode can present that rate as an integer refresh divisor.
+     *
+     * This is separate from DisplayCapabilities so older peers keep decoding
+     * the original capacity packet unchanged.
+     */
+    data class DisplayCadenceCapabilities(
+        val leaseSecret: Long,
+        val generation: Int,
+        val sequence: Long,
+        val highCadenceMask: Int
+    ) : ControlPacket {
+        fun valid() =
+            sequence > 0 &&
+                highCadenceMask in 0..0x3fffffff
+    }
+
+    /**
+     * Optional proof of glass pacing quality. It duplicates only the tiny window
+     * identity/count needed by new peers; the original PresentationFeedback
+     * remains untouched for backward compatibility.
+     */
+    data class PresentationSmoothnessFeedback(
+        val leaseSecret: Long,
+        val generation: Int,
+        val sequence: Long,
+        val intervalMs: Int,
+        val renderedFrames: Int,
+        val gapStdDevMs: Int
+    ) : ControlPacket {
+        fun valid() =
+            sequence > 0 &&
+                intervalMs in 500..6000 &&
+                renderedFrames in 1..2048 &&
+                gapStdDevMs in 0..6000
+    }
+
+    /**
      * Controller-clock ACK-to-next-swap proxy; legacy field names are retained.
      *
      * The next swap may contain an older buffered frame. This is not a bound on
@@ -226,6 +265,8 @@ object ControlProtocol {
     private const val PRESENTATION_HEARTBEAT: Byte = 21
     private const val DISPLAY_CAPABILITIES: Byte = 22
     private const val PHOTON_FEEDBACK: Byte = 23
+    private const val DISPLAY_CADENCE_CAPABILITIES: Byte = 24
+    private const val PRESENTATION_SMOOTHNESS_FEEDBACK: Byte = 25
 
     private const val MAX_TEXT_BYTES = 2048
     private const val MAX_GESTURE_PATH_POINTS = 96
@@ -237,6 +278,8 @@ object ControlProtocol {
         if (packet is ControlPacket.PresentationHeartbeat) require(packet.valid())
         if (packet is ControlPacket.DisplayCapabilities) require(packet.valid())
         if (packet is ControlPacket.PhotonFeedback) require(packet.valid())
+        if (packet is ControlPacket.DisplayCadenceCapabilities) require(packet.valid())
+        if (packet is ControlPacket.PresentationSmoothnessFeedback) require(packet.valid())
         val textBytes = (packet as? ControlPacket.Text)
             ?.text
             ?.toByteArray(Charsets.UTF_8)
@@ -295,6 +338,10 @@ object ControlProtocol {
             is ControlPacket.PresentationHeartbeat -> 2 + 8 + 4 + 8
             is ControlPacket.DisplayCapabilities -> 2 + 8 + 4 + 8 + 4
             is ControlPacket.PhotonFeedback -> 2 + 8 + 4 + 8 + 12
+            is ControlPacket.DisplayCadenceCapabilities ->
+                2 + 8 + 4 + 8 + 4
+            is ControlPacket.PresentationSmoothnessFeedback ->
+                2 + 8 + 4 + 8 + 12
             ControlPacket.Disconnect -> 2
         }
 
@@ -497,6 +544,26 @@ object ControlProtocol {
                 buffer.putInt(packet.inputToGlassUpperBoundMs)
                 buffer.putInt(packet.commandAckMs)
                 buffer.putInt(packet.postAckPresentMs)
+            }
+            is ControlPacket.DisplayCadenceCapabilities -> {
+                putCommandHeader(
+                    buffer,
+                    packet.leaseSecret,
+                    packet.generation,
+                    packet.sequence
+                )
+                buffer.putInt(packet.highCadenceMask)
+            }
+            is ControlPacket.PresentationSmoothnessFeedback -> {
+                putCommandHeader(
+                    buffer,
+                    packet.leaseSecret,
+                    packet.generation,
+                    packet.sequence
+                )
+                buffer.putInt(packet.intervalMs)
+                buffer.putInt(packet.renderedFrames)
+                buffer.putInt(packet.gapStdDevMs)
             }
             ControlPacket.Disconnect -> Unit
         }
@@ -776,6 +843,28 @@ object ControlProtocol {
                         postAckPresentMs = buffer.int
                     ).also { require(it.valid()) }
                 }
+                DISPLAY_CADENCE_CAPABILITIES -> {
+                    require(buffer.remaining() == 24)
+                    val header = readHeader(buffer)
+                    ControlPacket.DisplayCadenceCapabilities(
+                        leaseSecret = header.leaseSecret,
+                        generation = header.generation,
+                        sequence = header.sequence,
+                        highCadenceMask = buffer.int
+                    ).also { require(it.valid()) }
+                }
+                PRESENTATION_SMOOTHNESS_FEEDBACK -> {
+                    require(buffer.remaining() == 32)
+                    val header = readHeader(buffer)
+                    ControlPacket.PresentationSmoothnessFeedback(
+                        leaseSecret = header.leaseSecret,
+                        generation = header.generation,
+                        sequence = header.sequence,
+                        intervalMs = buffer.int,
+                        renderedFrames = buffer.int,
+                        gapStdDevMs = buffer.int
+                    ).also { require(it.valid()) }
+                }
                 DISCONNECT -> {
                     require(buffer.remaining() == 0)
                     ControlPacket.Disconnect
@@ -921,6 +1010,8 @@ object ControlProtocol {
             is ControlPacket.PresentationFeedback,
             is ControlPacket.PresentationHeartbeat,
             is ControlPacket.DisplayCapabilities,
+            is ControlPacket.DisplayCadenceCapabilities,
+            is ControlPacket.PresentationSmoothnessFeedback,
             is ControlPacket.PhotonFeedback,
             ControlPacket.Disconnect -> null
         }
@@ -986,6 +1077,10 @@ object ControlProtocol {
         is ControlPacket.PresentationFeedback -> PRESENTATION_FEEDBACK
         is ControlPacket.PresentationHeartbeat -> PRESENTATION_HEARTBEAT
         is ControlPacket.DisplayCapabilities -> DISPLAY_CAPABILITIES
+        is ControlPacket.DisplayCadenceCapabilities ->
+            DISPLAY_CADENCE_CAPABILITIES
+        is ControlPacket.PresentationSmoothnessFeedback ->
+            PRESENTATION_SMOOTHNESS_FEEDBACK
         is ControlPacket.PhotonFeedback -> PHOTON_FEEDBACK
         ControlPacket.Disconnect -> DISCONNECT
     }

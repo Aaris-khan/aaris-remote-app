@@ -1,24 +1,28 @@
 package com.aaris.remoteassist.webrtc
 
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /** Actual controller-side EGL presentation cadence, not decoder/RTP cadence. */
 data class PresentationCadenceWindow(
     val intervalMs: Int,
     val renderedFrames: Int,
-    val maxGapMs: Int
+    val maxGapMs: Int,
+    val gapStdDevMs: Int = 0
 ) {
     init {
         require(intervalMs in 1..6_000)
         require(renderedFrames in 1..2_048)
         require(maxGapMs in 0..6_000)
+        require(gapStdDevMs in 0..6_000)
     }
 
     val fps: Double
         get() = renderedFrames * 1000.0 / intervalMs
 
     fun compact(): String =
-        "present=${fps.roundToInt()}fps maxGap=${maxGapMs}ms"
+        "present=${fps.roundToInt()}fps maxGap=${maxGapMs}ms " +
+            "gapStd=${gapStdDevMs}ms"
 }
 
 /**
@@ -45,6 +49,9 @@ class PresentationCadenceTracker(
     private var lastFrameMs = -1L
     private var frames = 0
     private var largestGapMs = 0L
+    private var gapSamples = 0
+    private var meanGapMs = 0.0
+    private var gapM2 = 0.0
 
     @Synchronized
     fun onPresented(nowMs: Long): PresentationCadenceWindow? {
@@ -61,10 +68,18 @@ class PresentationCadenceTracker(
             // First EGL swap is the interval anchor, not an interval arrival.
             frames = 0
             largestGapMs = 0L
+            resetGapVariance()
             return null
         }
 
-        largestGapMs = maxOf(largestGapMs, nowMs - lastFrameMs)
+        val gapMs = nowMs - lastFrameMs
+        largestGapMs = maxOf(largestGapMs, gapMs)
+        gapSamples += 1
+        val delta = gapMs.toDouble() - meanGapMs
+        meanGapMs += delta / gapSamples.toDouble()
+        val deltaAfterMean = gapMs.toDouble() - meanGapMs
+        gapM2 += delta * deltaAfterMean
+
         lastFrameMs = nowMs
         frames += 1
 
@@ -74,7 +89,14 @@ class PresentationCadenceTracker(
         val sample = PresentationCadenceWindow(
             intervalMs = elapsed.coerceIn(1L, 6_000L).toInt(),
             renderedFrames = frames.coerceIn(1, 2_048),
-            maxGapMs = largestGapMs.coerceIn(0L, 6_000L).toInt()
+            maxGapMs = largestGapMs.coerceIn(0L, 6_000L).toInt(),
+            gapStdDevMs =
+                sqrt(
+                    (gapM2 / gapSamples.coerceAtLeast(1).toDouble())
+                        .coerceAtLeast(0.0)
+                )
+                    .roundToInt()
+                    .coerceIn(0, 6_000)
         )
 
         // The current frame closes the old window. The next frame starts the
@@ -82,6 +104,7 @@ class PresentationCadenceTracker(
         windowStartMs = nowMs
         frames = 0
         largestGapMs = 0L
+        resetGapVariance()
         return sample
     }
 
@@ -91,5 +114,12 @@ class PresentationCadenceTracker(
         lastFrameMs = -1L
         frames = 0
         largestGapMs = 0L
+        resetGapVariance()
+    }
+
+    private fun resetGapVariance() {
+        gapSamples = 0
+        meanGapMs = 0.0
+        gapM2 = 0.0
     }
 }
