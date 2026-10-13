@@ -609,7 +609,13 @@ class GamingSmoothnessLabTest {
                             preferSpatialReliefBeforeCadence ||
                                 cadence.mayReduceMotionResolution(
                                     requestedFps = target
-                                )
+                                ),
+                        minimumSpatialShortEdge =
+                            if (preferSpatialReliefBeforeCadence) {
+                                540
+                            } else {
+                                360
+                            }
                     )
                 }
 
