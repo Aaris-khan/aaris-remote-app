@@ -1,5 +1,6 @@
 package com.aaris.remoteassist.webrtc
 
+import android.app.ActivityManager
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Handler
@@ -50,6 +51,10 @@ class HostWebRtcSession(
     private val closed = AtomicBoolean(false)
     private val displayManager =
         appContext.getSystemService(DisplayManager::class.java)
+    private val systemLowRamDevice =
+        appContext
+            .getSystemService(ActivityManager::class.java)
+            ?.isLowRamDevice == true
     private val displayHandler = Handler(Looper.getMainLooper())
 
     /*
@@ -139,12 +144,22 @@ class HostWebRtcSession(
                 balancedRealtimeEncoderFpsLimit
         )
 
+    /*
+     * This flag is bootstrap-only. If the live tier ever changes, a later
+     * downgrade to LOW must regain LOW's original 360-class safety geometry
+     * rather than silently inheriting the startup detail exception.
+     */
+    @Volatile
+    private var measuredLowDetailBootstrapActive =
+        initialCaptureTier == CaptureTier.LOW &&
+            !systemLowRamDevice
+
     @Volatile
     private var captureTier = initialCaptureTier
 
     @Volatile
     private var profile =
-        CaptureProfile.current(appContext, captureTier)
+        captureProfileForTier(captureTier)
 
     @Volatile
     private var activeScreenCodec = preferredScreenCodec
@@ -572,6 +587,24 @@ class HostWebRtcSession(
                     initialCaptureTier.name
             )
         }
+        if (
+            captureTier == CaptureTier.LOW &&
+            profile.captureWidthPx >
+            CaptureProfile.current(
+                appContext,
+                CaptureTier.LOW
+            ).captureWidthPx
+        ) {
+            listener.onDiagnostic(
+                "Measured LOW detail bootstrap → " +
+                    profile.captureWidthPx +
+                    "x" +
+                    profile.captureHeightPx +
+                    "@" +
+                    profile.fps +
+                    " • cadence/bitrate remain LOW"
+            )
+        }
         listener.onDiagnostic(
             "Starting MediaProjection capture • app=" +
                 com.aaris.remoteassist.BuildConfig.VERSION_NAME +
@@ -628,14 +661,58 @@ class HostWebRtcSession(
         }
     }
 
+    /**
+     * Resolve the product tier plus the one evidence-gated startup exception:
+     * a non-system-low-RAM LOW device may start with BALANCED pixel geometry
+     * while retaining LOW's 15/20-fps and 1.2-Mbps safety envelope.
+     *
+     * Android 10+ PerformancePoint coverage must exist for every preferred-codec
+     * hardware implementation. Missing metadata or one weaker candidate fails
+     * closed to the historical 360-class LOW profile.
+     */
+    private fun captureProfileForTier(
+        tier: CaptureTier
+    ): CaptureProfile {
+        val base =
+            CaptureProfile.current(
+                appContext,
+                tier
+            )
+        if (
+            tier != CaptureTier.LOW ||
+            !measuredLowDetailBootstrapActive ||
+            systemLowRamDevice
+        ) {
+            return base
+        }
+
+        val balanced =
+            CaptureProfile.current(
+                appContext,
+                CaptureTier.BALANCED
+            )
+        val guaranteedFps =
+            screenEncoderPerformance[preferredScreenCodec]
+                ?.guaranteedMinimumHardwareFps(
+                    width = balanced.captureWidthPx,
+                    height = balanced.captureHeightPx
+                )
+
+        return CaptureProfile.withGuaranteedLowDetailBootstrap(
+            low = base,
+            balanced = balanced,
+            systemLowRamDevice = systemLowRamDevice,
+            guaranteedBalancedFps = guaranteedFps
+        )
+    }
+
     @Synchronized
     fun refreshDisplayProfile() {
         if (closed.get()) return
 
         val previous = profile
         val latest =
-            CaptureProfile.current(
-                appContext,
+            captureProfileForTier(
                 captureTier
             )
         val latestSourceDisplayClockHz =
@@ -709,12 +786,12 @@ class HostWebRtcSession(
             return
         }
 
+        if (nextTier != CaptureTier.LOW) {
+            measuredLowDetailBootstrapActive = false
+        }
         captureTier = nextTier
         val next =
-            CaptureProfile.current(
-                appContext,
-                nextTier
-            )
+            captureProfileForTier(nextTier)
         profile = next
         applyVideoPolicy(next)
 
@@ -1788,10 +1865,7 @@ class HostWebRtcSession(
                 val currentEffective =
                     effectiveCaptureProfile(profile)
                 val candidateProfile =
-                    CaptureProfile.current(
-                        appContext,
-                        nextTier
-                    )
+                    captureProfileForTier(nextTier)
                 val candidateEffective =
                     effectiveCaptureProfile(candidateProfile)
                 if (
