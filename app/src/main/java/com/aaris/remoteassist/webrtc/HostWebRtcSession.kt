@@ -835,6 +835,7 @@ class HostWebRtcSession(
         policyHandler.post {
             passiveMotionPriority.reset()
             photonGovernor.reset()
+            cadenceGovernor.clearControllerHighCadenceMask()
             updateInteractionPriority(false)
         }
         displayHandler.removeCallbacks(startupControlRecovery)
@@ -1189,6 +1190,85 @@ class HostWebRtcSession(
                     }
                 }
             }
+            is ControlPacket.DisplayCadenceCapabilities ->
+                policyHandler.post {
+                    val current = lease
+                    if (
+                        !closed.get() &&
+                        current != null &&
+                        SessionRuntime.isAuthorized(
+                            sessionId,
+                            current.leaseSecret,
+                            current.displayGeneration
+                        ) &&
+                        receiverFeedback.accept(
+                            packet,
+                            current.leaseSecret,
+                            current.displayGeneration
+                        )
+                    ) {
+                        /*
+                         * Capability alone never changes FPS. It becomes an
+                         * actuator constraint only after real EGL variance proves
+                         * pulldown on the controller glass.
+                         */
+                        cadenceGovernor.updateControllerHighCadenceMask(
+                            packet.highCadenceMask
+                        )
+                    }
+                }
+            is ControlPacket.PresentationSmoothnessFeedback ->
+                policyHandler.post {
+                    val current = lease
+                    val now =
+                        android.os.SystemClock.elapsedRealtime()
+                    if (
+                        !closed.get() &&
+                        current != null &&
+                        SessionRuntime.isAuthorized(
+                            sessionId,
+                            current.leaseSecret,
+                            current.displayGeneration
+                        ) &&
+                        receiverFeedback.accept(
+                            packet,
+                            current.leaseSecret,
+                            current.displayGeneration
+                        )
+                    ) {
+                        val requestedFps =
+                            effectiveCaptureProfile(profile).fps
+                        if (
+                            cadenceGovernor.observeDisplayJudder(
+                                intervalMs = packet.intervalMs,
+                                renderedFrames =
+                                    packet.renderedFrames,
+                                gapStdDevMs =
+                                    packet.gapStdDevMs,
+                                requestedFps = requestedFps,
+                                freshnessActive =
+                                    freshnessPriorityActive(now),
+                                nowMs = now,
+                                displayRefreshRateHz =
+                                    receiverFeedback
+                                        .currentDisplayRefreshRateHz(
+                                            current.leaseSecret,
+                                            current.displayGeneration,
+                                            now
+                                        ),
+                                sourceRefreshRateHz =
+                                    sourceDisplayRefreshRateHz()
+                            )
+                        ) {
+                            applyVideoPolicy(profile)
+                            listener.onDiagnostic(
+                                "Controller display pulldown → " +
+                                    cadenceGovernor.cap +
+                                    "fps harmonic correction"
+                            )
+                        }
+                    }
+                }
             is ControlPacket.PhotonFeedback -> policyHandler.post {
                 val current = lease
                 if (
