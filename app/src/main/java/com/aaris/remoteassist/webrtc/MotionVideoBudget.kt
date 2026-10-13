@@ -323,16 +323,8 @@ internal class MotionVideoBudget {
          * available. Budget the geometry actually admitted to the encoder, not
          * a speculative control-plane rung.
          */
-        val profileShortEdge =
-            minOf(
-                profile.captureWidthPx,
-                profile.captureHeightPx
-            )
         val admittedShortEdge =
-            minOf(
-                profileShortEdge,
-                committedSourceShortEdge
-            )
+            admittedSourceShortEdge(profile)
         val currentDemandBps =
             nominalMotionBitrateBps(
                 admittedShortEdge,
@@ -722,8 +714,18 @@ internal class MotionVideoBudget {
          */
         val bandwidthEstimateBps =
             outbound.availableOutgoingBitrateBps.valid()
+        /*
+         * shortEdge may still be the speculative warm-start control rung while
+         * MediaProjection/VideoSource/MediaCodec remain at the pre-motion
+         * geometry. BWE fallback must budget the pixels actually admitted to
+         * the encoder; otherwise a native 720/1080 stream can be costed as
+         * 360p until queue debt is already visible.
+         */
         val currentRungBitrateBps =
-            nominalMotionBitrateBps(shortEdge, goal)
+            nominalMotionBitrateBps(
+                admittedSourceShortEdge(profile),
+                goal
+            )
         val bandwidthHeadroomRatio =
             bandwidthEstimateBps?.let { estimate ->
                 estimate / currentRungBitrateBps
@@ -880,21 +882,7 @@ internal class MotionVideoBudget {
          * not.
          */
         val currentSourceShortEdge =
-            profile?.let {
-                minOf(
-                    minOf(it.captureWidthPx, it.captureHeightPx),
-                    committedSourceShortEdge
-                )
-            } ?: committedSourceShortEdge
-                .takeUnless { it == Int.MAX_VALUE }
-                /*
-                 * Without a CaptureProfile there is no proof that the producer
-                 * is still above the control rung. Preserve the historical
-                 * pressure ladder instead of treating the sentinel as physical
-                 * native geometry. Production HostWebRtcSession supplies the
-                 * profile, so native->720 protection still uses real pixels.
-                 */
-                ?: shortEdge
+            admittedSourceShortEdge(profile)
 
         fun nextPressureRung(): Int =
             when {
@@ -1096,20 +1084,8 @@ internal class MotionVideoBudget {
                     shortEdge < 540 -> 540
                     else -> 720
                 }
-            val profileShortEdge =
-                profile?.let {
-                    minOf(
-                        it.captureWidthPx,
-                        it.captureHeightPx
-                    )
-                } ?: committedSourceShortEdge
-                    .takeIf { it != Int.MAX_VALUE }
-                    ?: shortEdge
             val currentRecoveryShortEdge =
-                minOf(
-                    profileShortEdge,
-                    committedSourceShortEdge
-                )
+                admittedSourceShortEdge(profile)
             val nextRecoveryBitrateBps =
                 projectedRecoveryBitrateBps(
                     sender = sender,
@@ -1275,7 +1251,7 @@ internal class MotionVideoBudget {
          */
         val edge = minOf(profile.captureWidthPx, profile.captureHeightPx)
         val sourceShortEdge =
-            minOf(edge, committedSourceShortEdge)
+            admittedSourceShortEdge(profile)
         if (edge <= sourceShortEdge) return profile
         val scale = sourceShortEdge.toDouble() / edge
         fun even(value: Int) = ((value * scale).roundToInt() / 2 * 2).coerceAtLeast(2)
@@ -1357,10 +1333,8 @@ internal class MotionVideoBudget {
          * before that point because WebRTC congestion control is authoritative;
          * a higher max ceiling never forces the sender to transmit above BWE.
          */
-        val profileShortEdge =
-            minOf(profile.captureWidthPx, profile.captureHeightPx)
         val admittedShortEdge =
-            minOf(profileShortEdge, committedSourceShortEdge)
+            admittedSourceShortEdge(profile)
         val motionCeiling =
             if (admittedShortEdge <= 540) {
                 nominalMotionBitrateBps(admittedShortEdge, targetFps)
@@ -1527,6 +1501,31 @@ internal class MotionVideoBudget {
         implementation: String
     ): Boolean =
         SOFTWARE_ENCODER_MARKERS.any(implementation::contains)
+
+    /**
+     * Source geometry that the app has actually admitted to VideoSource /
+     * MediaCodec. shortEdge is intentionally excluded while a warm-start
+     * prediction is still uncommitted.
+     *
+     * With a CaptureProfile, Int.MAX_VALUE means there is no app clamp and the
+     * profile geometry is physically active. Without a profile, retain the
+     * historical fallback to the committed rung or, if none exists, shortEdge.
+     */
+    private fun admittedSourceShortEdge(
+        profile: CaptureProfile? = null
+    ): Int {
+        val committed =
+            committedSourceShortEdge
+                .takeUnless { it == Int.MAX_VALUE }
+
+        return profile?.let {
+            val profileShortEdge =
+                minOf(it.captureWidthPx, it.captureHeightPx)
+            committed?.let { edge ->
+                minOf(profileShortEdge, edge)
+            } ?: profileShortEdge
+        } ?: committed ?: shortEdge
+    }
 
     /**
      * Actual encoder/RTP demand relative to GCC/TWCC path capacity.
