@@ -97,14 +97,17 @@ data class CaptureProfile(
         /*
          * These are encoder ceilings, not forced send rates. WebRTC congestion
          * control still chooses the actual bitrate from current path capacity.
-         * STANDARD gets enough headroom for native 1080x2400 text/UI detail;
-         * constrained links remain protected by CaptureQualityGovernor and the
-         * sender's own congestion control.
+         * STANDARD/HIGH are quality ceilings, not target rates. A 10-12 Mbps
+         * ceiling was enough for basic mirroring but could become the limiting
+         * factor for 1080x2400-class UI at 60 fps even on a clean LAN, forcing
+         * small text through avoidable quantization. Keep enough headroom for a
+         * game-streaming-class operating point; constrained links remain
+         * protected by GCC/TWCC, CaptureQualityGovernor and MotionVideoBudget.
          */
         private const val LOW_BITRATE_BPS = 1_200_000
         private const val BALANCED_BITRATE_BPS = 3_000_000
-        private const val STANDARD_BITRATE_BPS = 10_000_000
-        private const val HIGH_BITRATE_BPS = 12_000_000
+        private const val STANDARD_BITRATE_BPS = 20_000_000
+        private const val HIGH_BITRATE_BPS = 28_000_000
 
         private const val LOW_MEMORY_BYTES = 3L * 1024L * 1024L * 1024L
         private const val HIGH_MEMORY_BYTES = 6L * 1024L * 1024L * 1024L

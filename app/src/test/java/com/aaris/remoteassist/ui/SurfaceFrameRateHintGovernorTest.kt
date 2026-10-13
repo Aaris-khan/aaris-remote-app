@@ -37,6 +37,44 @@ class SurfaceFrameRateHintGovernorTest {
         assertEquals(0, governor.currentHintFps())
     }
 
+
+    @Test
+    fun stableHighCadenceCorrectsSixtyFpsBootstrapToMeasuredCadence() {
+        val governor = SurfaceFrameRateHintGovernor(initialWindows = 2)
+        assertEquals(60, governor.beginInteraction(nowMs = 100))
+
+        // Half-second windows quantize 45 fps as alternating 44/46 fps.
+        assertNull(governor.observe(window(500, 22, 24), 700))
+        assertEquals(45, governor.observe(window(500, 23, 24), 1_300))
+        assertEquals(45, governor.currentHintFps())
+
+        // A real recovery to 60 fps may update the stable hint after another
+        // clean vote; this is not tied to finger-up/down events.
+        assertNull(governor.observe(window(500, 30, 18), 1_900))
+        assertEquals(60, governor.observe(window(500, 30, 18), 2_500))
+        assertEquals(60, governor.currentHintFps())
+    }
+
+    @Test
+    fun congestionCadenceNeverVotesDisplayBelowSixty() {
+        val governor = SurfaceFrameRateHintGovernor(initialWindows = 2)
+        assertEquals(60, governor.beginInteraction(nowMs = 100))
+
+        assertNull(governor.observe(window(500, 15, 36), 700))
+        assertNull(governor.observe(window(500, 15, 36), 1_300))
+        assertEquals(60, governor.currentHintFps())
+
+        repeat(6) {
+            assertNull(
+                governor.observe(
+                    window(500, 12, 45),
+                    1_800L + it * 500L
+                )
+            )
+        }
+        assertEquals(60, governor.currentHintFps())
+    }
+
     @Test
     fun noHintUntilCleanConsecutivePresentationWindows() {
         val governor = SurfaceFrameRateHintGovernor(initialWindows = 2)

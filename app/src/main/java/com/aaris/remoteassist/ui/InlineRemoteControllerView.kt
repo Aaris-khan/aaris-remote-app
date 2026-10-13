@@ -2622,12 +2622,15 @@ class InlineRemoteControllerView(
         setRenderInteractionPriority(true)
 
         /*
-         * Install one stable 60 Hz-class Surface hint on the first gesture,
-         * unless clean passive presentation already installed it. Do not
-         * repeatedly switch physical refresh-rate votes on each finger-down.
+         * Bootstrap presentation capacity immediately. Clean EGL windows may
+         * later phase-correct the Surface hint to a proven high cadence (for
+         * example 45 fps on a 90 Hz controller) without following congestion
+         * rungs down to 15/24/30 Hz.
          */
         surfaceFrameRateHints
-            .beginInteraction()
+            .beginInteraction(
+                nowMs = android.os.SystemClock.elapsedRealtime()
+            )
             ?.let(::applySurfaceFrameRateHint)
 
         session()?.setInteractionActive(true)
