@@ -58,18 +58,28 @@ class ControllerWebRtcSession(
         appContext.getSystemService(DisplayManager::class.java)
     @Volatile
     private var lastPublishedDisplayCapacityHz: Float? = null
+    @Volatile
+    private var lastPublishedDisplayCadenceMask: Int? = null
+
+    private data class StableDisplayEnvelope(
+        val capacityHz: Float,
+        val highCadenceMask: Int?
+    )
 
     private val displayRefreshUpdate =
         Runnable {
             if (closed.get()) return@Runnable
-            val capacity = currentDisplayRefreshCapacityHz() ?: return@Runnable
-            val previous = lastPublishedDisplayCapacityHz
+            val envelope = currentDisplayEnvelope() ?: return@Runnable
+            val previousCapacity = lastPublishedDisplayCapacityHz
+            val previousMask = lastPublishedDisplayCadenceMask
             if (
-                previous == null ||
-                kotlin.math.abs(capacity - previous) >=
-                    DISPLAY_REFRESH_CHANGE_EPSILON_HZ
+                previousCapacity == null ||
+                kotlin.math.abs(
+                    envelope.capacityHz - previousCapacity
+                ) >= DISPLAY_REFRESH_CHANGE_EPSILON_HZ ||
+                envelope.highCadenceMask != previousMask
             ) {
-                publishDisplayCapabilities(capacity)
+                publishDisplayCapabilities(envelope)
             }
         }
 
@@ -162,7 +172,7 @@ class ControllerWebRtcSession(
                 // stall cannot make the host forget the controller's stable
                 // presentation envelope. Actual glass cadence is reported by
                 // PresentationFeedback and remains the pressure signal.
-                publishDisplayCapabilities()
+                publishCurrentDisplayCapabilities()
             }
 
             handler.postDelayed(this, HEARTBEAT_MS)
@@ -234,35 +244,73 @@ class ControllerWebRtcSession(
         val lease = leaseSecret ?: return false
         val display = geometry ?: return false
         if (displayRefreshRateHz != null) {
-            publishDisplayCapabilities(displayRefreshRateHz)
+            sendDisplayCapabilities(displayRefreshRateHz)
         }
-        return peer.sendTelemetry(
+        val legacySent =
+            peer.sendTelemetry(
+                bytes = ControlProtocol.encode(
+                    ControlPacket.PresentationFeedback(
+                        leaseSecret = lease,
+                        generation = display.generation,
+                        sequence = feedbackSequence.incrementAndGet(),
+                        intervalMs = window.intervalMs,
+                        renderedFrames = window.renderedFrames,
+                        maxGapMs = window.maxGapMs
+                    )
+                )
+            )
+
+        /*
+         * Keep PresentationFeedback byte-for-byte compatible with older peers.
+         * New peers get one tiny optional packet carrying variance of the exact
+         * same EGL window. Failure to send the optional packet never turns a
+         * healthy legacy presentation report into failure.
+         */
+        peer.sendTelemetry(
             bytes = ControlProtocol.encode(
-                ControlPacket.PresentationFeedback(
+                ControlPacket.PresentationSmoothnessFeedback(
                     leaseSecret = lease,
                     generation = display.generation,
                     sequence = feedbackSequence.incrementAndGet(),
                     intervalMs = window.intervalMs,
                     renderedFrames = window.renderedFrames,
-                    maxGapMs = window.maxGapMs
+                    gapStdDevMs = window.gapStdDevMs
                 )
+            )
+        )
+        return legacySent
+    }
+
+    fun sendDisplayCapabilities(
+        refreshRateHz: Float? = null
+    ): Boolean {
+        val envelope = currentDisplayEnvelope()
+        val refresh =
+            refreshRateHz
+                ?: envelope?.capacityHz
+                ?: return false
+        return publishDisplayCapabilities(
+            StableDisplayEnvelope(
+                capacityHz = refresh,
+                highCadenceMask = envelope?.highCadenceMask
             )
         )
     }
 
-    fun sendDisplayCapabilities(
-        refreshRateHz: Float? = currentDisplayRefreshCapacityHz()
-    ): Boolean = publishDisplayCapabilities(refreshRateHz)
+    private fun publishCurrentDisplayCapabilities(): Boolean =
+        currentDisplayEnvelope()
+            ?.let(::publishDisplayCapabilities)
+            ?: false
 
     private fun publishDisplayCapabilities(
-        refreshRateHz: Float? = currentDisplayRefreshCapacityHz()
+        envelope: StableDisplayEnvelope
     ): Boolean {
         if (closed.get()) return false
         val lease = leaseSecret ?: return false
         val display = geometry ?: return false
         val refresh =
-            refreshRateHz
-                ?.takeIf { it.isFinite() && it in 1f..240f }
+            envelope.capacityHz
+                .takeIf { it.isFinite() && it in 1f..240f }
                 ?: return false
 
         val sent =
@@ -279,10 +327,27 @@ class ControllerWebRtcSession(
         if (sent) {
             lastPublishedDisplayCapacityHz = refresh
         }
+
+        envelope.highCadenceMask?.let { mask ->
+            val cadenceSent =
+                peer.sendTelemetry(
+                    ControlProtocol.encode(
+                        ControlPacket.DisplayCadenceCapabilities(
+                            leaseSecret = lease,
+                            generation = display.generation,
+                            sequence = feedbackSequence.incrementAndGet(),
+                            highCadenceMask = mask
+                        )
+                    )
+                )
+            if (cadenceSent) {
+                lastPublishedDisplayCadenceMask = mask
+            }
+        }
         return sent
     }
 
-    private fun currentDisplayRefreshCapacityHz(): Float? {
+    private fun currentDisplayEnvelope(): StableDisplayEnvelope? {
         val display =
             displayManager
                 ?.getDisplay(Display.DEFAULT_DISPLAY)
@@ -331,14 +396,27 @@ class ControllerWebRtcSession(
                 floatArrayOf()
             }
 
-        return ControllerDisplayCapacityPolicy.resolve(
-            activeModeRefreshRateHz = activeMode.refreshRate,
-            seamlessAlternativeRefreshRatesHz = seamlessAlternatives,
-            sameResolutionRefreshRatesHz = sameResolutionRates
+        val capacity =
+            ControllerDisplayCapacityPolicy.resolve(
+                activeModeRefreshRateHz = activeMode.refreshRate,
+                seamlessAlternativeRefreshRatesHz = seamlessAlternatives,
+                sameResolutionRefreshRatesHz = sameResolutionRates
+            )
+                ?: display.refreshRate.takeIf {
+                    it.isFinite() && it in 1f..240f
+                }
+                ?: return null
+        val highCadenceMask =
+            ControllerDisplayCapacityPolicy.highCadenceMask(
+                activeModeRefreshRateHz = activeMode.refreshRate,
+                seamlessAlternativeRefreshRatesHz = seamlessAlternatives,
+                sameResolutionRefreshRatesHz = sameResolutionRates
+            )
+
+        return StableDisplayEnvelope(
+            capacityHz = capacity,
+            highCadenceMask = highCadenceMask
         )
-            ?: display.refreshRate.takeIf {
-                it.isFinite() && it in 1f..240f
-            }
     }
 
     fun sendPresentationHeartbeat(): Boolean {
@@ -758,7 +836,7 @@ class ControllerWebRtcSession(
                 listener.onLive(geometry)
                 // Publish display capability immediately at lease bind; do not
                 // wait for the first rendered frame/presentation window.
-                publishDisplayCapabilities()
+                publishCurrentDisplayCapabilities()
                 peer.sendControl(
                     ControlProtocol.encode(
                         ControlPacket.FallbackDeltaReady(
