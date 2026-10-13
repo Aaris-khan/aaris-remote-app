@@ -21,6 +21,30 @@ class MotionVideoBudgetTest {
         assertEquals(720, shortEdge)
     }
 
+    @Test fun lowCadenceThreeSixtyKeepsReadableBitrateCeilingHeadroom() {
+        val lowProfile =
+            CaptureProfile(
+                displayWidthPx = 720,
+                displayHeightPx = 1600,
+                captureWidthPx = 360,
+                captureHeightPx = 800,
+                fps = 15,
+                maxVideoBitrateBps = 1_200_000,
+                tier = CaptureTier.LOW,
+                motionFps = 20
+            )
+        val budget = MotionVideoBudget()
+
+        assertEquals(
+            1_200_000,
+            budget.bitrateCeiling(
+                profile = lowProfile,
+                motionActive = true,
+                targetFps = 20
+            )
+        )
+    }
+
     @Test fun nativePressureCommitsSevenTwentyBeforeSpendingFiveForty() {
         val nativeProfile =
             profile.copy(
@@ -1055,7 +1079,7 @@ class MotionVideoBudgetTest {
             )
         )
         assertEquals(360, budget.shortEdge)
-        assertEquals(900_000, budget.bitrateCeiling(profile, true))
+        assertEquals(1_200_000, budget.bitrateCeiling(profile, true))
     }
 
     @Test fun mildBandwidthDipCanPreservePixelsBySpendingHighCadenceFirst() {
@@ -1244,7 +1268,7 @@ class MotionVideoBudgetTest {
             )
         )
         assertEquals(360, budget.shortEdge)
-        assertEquals(900_000, budget.bitrateCeiling(profile, true))
+        assertEquals(1_200_000, budget.bitrateCeiling(profile, true))
     }
 
     @Test fun bandwidthPredictionUsesActuallyAdmittedPixelRateAcrossCadence() {
@@ -1534,7 +1558,7 @@ class MotionVideoBudgetTest {
         // warm-start resize, but it must stop at the readable 360 floor.
         assertTrue(budget.observe(recorded, null, 14.0, true, 30, 1_000L))
         assertEquals(360, budget.shortEdge)
-        assertEquals(900_000, budget.bitrateCeiling(profile, true))
+        assertEquals(1_200_000, budget.bitrateCeiling(profile, true))
         assertTrue(
             cadence.observe(
                 recorded,
@@ -1554,7 +1578,7 @@ class MotionVideoBudgetTest {
         // transport pressure must keep the readable 360px spatial floor.
         assertFalse(budget.observe(worse, null, 31.0, true, 24, 2_000L))
         assertEquals(360, budget.shortEdge)
-        assertEquals(900_000, budget.bitrateCeiling(profile, true))
+        assertEquals(1_200_000, budget.bitrateCeiling(profile, true))
         assertTrue(
             cadence.observe(
                 worse,
@@ -1598,7 +1622,7 @@ class MotionVideoBudgetTest {
             )
         )
         assertEquals(360, budget.shortEdge)
-        assertEquals(900_000, budget.bitrateCeiling(profile, true))
+        assertEquals(1_200_000, budget.bitrateCeiling(profile, true))
 
         val floor = budget.cadenceFloor(
             profile = profile,
