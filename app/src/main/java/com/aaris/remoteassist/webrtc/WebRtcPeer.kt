@@ -2071,7 +2071,7 @@ class WebRtcPeer(
         // instead of keeping a 600 kbps ceiling that can refill the pacer.
         private const val MIN_VIDEO_BITRATE_BPS = 250_000
         private const val DEFAULT_VIDEO_BITRATE_BPS = 1_800_000
-        private const val MAX_VIDEO_BITRATE_BPS = 12_000_000
+        private const val MAX_VIDEO_BITRATE_BPS = 28_000_000
         private const val MIN_VIDEO_FRAMERATE = 10
         private const val DEFAULT_VIDEO_FRAMERATE = 30
         private const val MAX_VIDEO_FRAMERATE = 60
