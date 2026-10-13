@@ -364,6 +364,44 @@ class ControlProtocolTest {
     }
 
     @Test
+    fun optionalDisplayCadenceCapabilitiesRoundTrip() {
+        val source =
+            ControlPacket.DisplayCadenceCapabilities(
+                leaseSecret = 99L,
+                generation = 7,
+                sequence = 12L,
+                highCadenceMask = 0x123456
+            )
+
+        assertEquals(
+            source,
+            ControlProtocol.decode(
+                ControlProtocol.encode(source)
+            )
+        )
+    }
+
+    @Test
+    fun optionalPresentationSmoothnessFeedbackRoundTrips() {
+        val source =
+            ControlPacket.PresentationSmoothnessFeedback(
+                leaseSecret = 99L,
+                generation = 7,
+                sequence = 13L,
+                intervalMs = 520,
+                renderedFrames = 31,
+                gapStdDevMs = 6
+            )
+
+        assertEquals(
+            source,
+            ControlProtocol.decode(
+                ControlProtocol.encode(source)
+            )
+        )
+    }
+
+    @Test
     fun rejectsWrongProtocolVersion() {
         val encoded = ControlProtocol.encode(
             ControlPacket.Heartbeat(7L)
