@@ -31,8 +31,16 @@ data class FrameDeltaPlan(
  */
 object FrameDeltaAnalyzer {
     private const val TILE_SIZE = 96
-    private const val TILE_SAMPLE_STEP = 8
+    private const val TILE_SAMPLE_STEP = 4
     private const val TILE_DIRTY_AVG_DIFF = 10.0
+    private const val TILE_DIRTY_STRONG_DIFF = 28
+    /*
+     * Three strong samples in a full 96 px tile are enough to prove a real
+     * digital-UI edge moved. Screen capture has no camera sensor noise, so a
+     * tiny strong-change fraction is safer than leaving the corner of an icon
+     * on the previous recovery frame.
+     */
+    private const val TILE_DIRTY_STRONG_FRACTION = 0.005
     private const val FORCE_KEYFRAME_FRACTION = 0.58
     private const val MAX_REGIONS = 12
 
@@ -196,6 +204,7 @@ object FrameDeltaAnalyzer {
     ): Boolean {
         var totalDiff = 0L
         var samples = 0
+        var strongSamples = 0
 
         var y = top
         while (y < bottom) {
@@ -210,7 +219,11 @@ object FrameDeltaAnalyzer {
                     currentY[y * width + x].toInt() and 0xff
                 val previous =
                     previousY[sourceY * width + x].toInt() and 0xff
-                totalDiff += abs(current - previous)
+                val difference = abs(current - previous)
+                totalDiff += difference
+                if (difference >= TILE_DIRTY_STRONG_DIFF) {
+                    strongSamples += 1
+                }
                 samples += 1
                 x += TILE_SAMPLE_STEP
             }
@@ -218,8 +231,12 @@ object FrameDeltaAnalyzer {
         }
 
         if (samples == 0) return false
-        return totalDiff.toDouble() / samples.toDouble() >=
-            TILE_DIRTY_AVG_DIFF
+        val averageDifference =
+            totalDiff.toDouble() / samples.toDouble()
+        val strongFraction =
+            strongSamples.toDouble() / samples.toDouble()
+        return averageDifference >= TILE_DIRTY_AVG_DIFF ||
+            strongFraction >= TILE_DIRTY_STRONG_FRACTION
     }
 
     private fun mergeDirtyTiles(
@@ -418,4 +435,29 @@ object FrameDeltaAnalyzer {
         }
         return size.coerceAtMost(limit - start)
     }
+}
+
+/**
+ * Decides when a recovery update must be one coherent full-frame anchor.
+ *
+ * Tile deltas are efficient for small UI changes and verified vertical scrolls,
+ * but a broad non-scroll animation during direct control (launcher pages,
+ * carousels, app transitions) can move thin icon edges across tile boundaries.
+ * Showing those independently decoded tiles creates the exact half-old/
+ * half-new "cut icon" artifact that recovery video must avoid.
+ */
+internal object FallbackMotionIntegrityPolicy {
+    private const val INTERACTIVE_ANIMATION_ANCHOR_FRACTION = 0.30
+
+    fun requiresAnchor(
+        plan: FrameDeltaPlan,
+        interactionActive: Boolean
+    ): Boolean =
+        plan.forceKeyframe ||
+            (
+                interactionActive &&
+                    plan.shiftY == 0 &&
+                    plan.changedFraction >=
+                        INTERACTIVE_ANIMATION_ANCHOR_FRACTION
+                )
 }

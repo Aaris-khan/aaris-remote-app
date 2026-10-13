@@ -63,7 +63,9 @@ class FallbackReadbackBudgetTest {
         assertNull(budget.observe(40, 1_000))
         assertEquals(160L, budget.minimumIntervalMs())
 
-        assertNull(budget.observe(200, 1_100))
+        // This is also the second consecutive overload vote, so the spatial
+        // hysteresis legitimately enters tier 1 while cadence stays clamped.
+        assertEquals(1, budget.observe(200, 1_100))
         assertEquals(300L, budget.minimumIntervalMs())
     }
 
