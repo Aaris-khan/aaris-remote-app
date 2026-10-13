@@ -73,113 +73,111 @@ public final class AarisLowLatencyVideoDecoderFactory implements VideoDecoderFac
   private static final class LowLatencyHardwareVideoDecoderFactory
       implements VideoDecoderFactory {
     private final @Nullable EglBase.Context sharedContext;
-    private final VideoDecoderFactory supportedCodecsDelegate;
+    private final HardwareVideoDecoderFactory stockFactory;
 
     LowLatencyHardwareVideoDecoderFactory(@Nullable EglBase.Context sharedContext) {
       this.sharedContext = sharedContext;
-      this.supportedCodecsDelegate = new HardwareVideoDecoderFactory(sharedContext);
+      this.stockFactory = new HardwareVideoDecoderFactory(sharedContext);
     }
 
     @Override
     public @Nullable VideoDecoder createDecoder(VideoCodecInfo codecInfo) {
+      /*
+       * Keep libwebrtc's decoder selection authoritative. Multi-decoder Android
+       * devices can expose several components for the same MIME type; preferring
+       * an arbitrary component only because it advertises FEATURE_LowLatency can
+       * silently replace WebRTC's compatibility-tested choice. A decoder may
+       * initialize successfully yet deliver poor cadence, so software fallback
+       * does not necessarily rescue that failure mode.
+       *
+       * Ask stock WebRTC to choose first, then reconstruct only that exact
+       * implementation so Aaris can add public realtime MediaCodec hints.
+       */
+      final VideoDecoder stockDecoder;
+      try {
+        stockDecoder = stockFactory.createDecoder(codecInfo);
+      } catch (RuntimeException stockSelectionFailure) {
+        return null;
+      }
+      if (stockDecoder == null) {
+        return null;
+      }
+
+      final String codecName = stockDecoder.getImplementationName();
+      final MediaCodecInfo mediaCodecInfo = findCodecByName(codecName);
+      if (mediaCodecInfo == null) {
+        // Broken/incomplete OEM metadata must not replace a working stock path.
+        return stockDecoder;
+      }
+
       final VideoCodecMimeType type;
       try {
         type = VideoCodecMimeType.valueOf(codecInfo.getName());
       } catch (IllegalArgumentException unsupported) {
-        return null;
+        return stockDecoder;
       }
 
-      MediaCodecInfo mediaCodecInfo = findHardwareDecoder(type);
-      if (mediaCodecInfo == null) {
-        return null;
-      }
-
-      CodecCapabilities capabilities;
       try {
-        capabilities = mediaCodecInfo.getCapabilitiesForType(type.mimeType());
-      } catch (RuntimeException capabilityFailure) {
+        final CodecCapabilities capabilities =
+            mediaCodecInfo.getCapabilitiesForType(type.mimeType());
+        final Integer colorFormat =
+            MediaCodecUtils.selectColorFormat(
+                MediaCodecUtils.DECODER_COLOR_FORMATS,
+                capabilities);
+        if (colorFormat == null) {
+          return stockDecoder;
+        }
+
+        final boolean lowLatencySupported =
+            LowLatencyCapability.isSupported(capabilities);
+        VideoCapabilities videoCapabilities;
+        try {
+          videoCapabilities = capabilities.getVideoCapabilities();
+        } catch (RuntimeException incompleteVendorMetadata) {
+          videoCapabilities = null;
+        }
+
+        return new AndroidVideoDecoder(
+            new LowLatencyMediaCodecWrapperFactory(
+                type.mimeType(),
+                lowLatencySupported,
+                videoCapabilities),
+            codecName,
+            type,
+            colorFormat,
+            sharedContext);
+      } catch (RuntimeException incompleteVendorMetadata) {
         Logging.w(
             TAG,
-            "Capability query failed for " + mediaCodecInfo.getName() + "; using normal fallback");
-        return null;
+            "Unable to wrap stock decoder "
+                + codecName
+                + " with realtime hints; using WebRTC stock decoder");
+        return stockDecoder;
       }
-
-      Integer colorFormat =
-          MediaCodecUtils.selectColorFormat(
-              MediaCodecUtils.DECODER_COLOR_FORMATS,
-              capabilities);
-      if (colorFormat == null) {
-        return null;
-      }
-
-      boolean lowLatencySupported =
-          LowLatencyCapability.isSupported(capabilities);
-      VideoCapabilities videoCapabilities;
-      try {
-        videoCapabilities = capabilities.getVideoCapabilities();
-      } catch (RuntimeException incompleteVendorMetadata) {
-        videoCapabilities = null;
-      }
-
-      return new AndroidVideoDecoder(
-          new LowLatencyMediaCodecWrapperFactory(
-              type.mimeType(),
-              lowLatencySupported,
-              videoCapabilities),
-          mediaCodecInfo.getName(),
-          type,
-          colorFormat,
-          sharedContext);
     }
 
     @Override
     public VideoCodecInfo[] getSupportedCodecs() {
-      // Preserve WebRTC's exact published codec/profile ordering and fmtp.
-      return supportedCodecsDelegate.getSupportedCodecs();
+      return stockFactory.getSupportedCodecs();
     }
-
   }
 
-  static @Nullable MediaCodecInfo findHardwareDecoder(VideoCodecMimeType type) {
-    final MediaCodecInfo[] codecs;
-    try {
-      // ALL_CODECS also includes secure-only and tunneled-only decoders. A
-      // low-latency feature does not make those compatible with WebRTC's
-      // ordinary SurfaceTexture + null MediaCrypto configuration.
-      codecs = new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos();
-    } catch (RuntimeException unavailableMetadata) {
+  static @Nullable MediaCodecInfo findCodecByName(@Nullable String codecName) {
+    if (codecName == null || codecName.isEmpty()) {
       return null;
     }
 
-    MediaCodecInfo firstCompatible = null;
-    for (MediaCodecInfo info : codecs) {
-      try {
-        if (info == null || info.isEncoder()
-            || !MediaCodecUtils.isHardwareAccelerated(info)
-            || !MediaCodecUtils.codecSupportsType(info, type)) {
-          continue;
-        }
-        CodecCapabilities capabilities = info.getCapabilitiesForType(type.mimeType());
-        // Defensive per-MIME guard for incomplete OEM regular-codec metadata.
-        // Optional secure/tunneled support is fine; requiring it is not.
-        if (capabilities.isFeatureRequired(CodecCapabilities.FEATURE_SecurePlayback)
-            || capabilities.isFeatureRequired(CodecCapabilities.FEATURE_TunneledPlayback)
-            || MediaCodecUtils.selectColorFormat(
-                MediaCodecUtils.DECODER_COLOR_FORMATS, capabilities) == null) {
-          continue;
-        }
-        if (firstCompatible == null) {
-          firstCompatible = info;
-        }
-        // Prefer low latency only within the compatible regular decoder set.
-        if (LowLatencyCapability.isSupported(capabilities)) {
+    try {
+      for (MediaCodecInfo info :
+          new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
+        if (info != null && codecName.equals(info.getName())) {
           return info;
         }
-      } catch (RuntimeException incompleteVendorMetadata) {
-        // Broken entries must not prevent discovery of a later valid decoder.
       }
+    } catch (RuntimeException unavailableMetadata) {
+      // The already-selected stock decoder remains the safe fallback.
     }
-    return firstCompatible;
+    return null;
   }
 
   private static final class LowLatencyCapability {
