@@ -281,7 +281,23 @@ class GamingSmoothnessLabTest {
         while (nowMs <= scenario.durationMs) {
             val net = scenario.netAt(nowMs)
             val target = cadence.cap.coerceIn(15, 60)
-            val edge = budget.shortEdge
+            /*
+             * Model the geometry actually admitted to VideoSource/MediaCodec,
+             * not MotionVideoBudget's speculative control-plane shortEdge.
+             * A warm-start prediction may be 360 while the real producer is
+             * still 720/native; feeding the prediction into the plant made the
+             * lab report clarity that production had never physically applied.
+             */
+            val activeProfile =
+                budget.apply(
+                    profile = profile,
+                    motionActive = true
+                )
+            val edge =
+                min(
+                    activeProfile.captureWidthPx,
+                    activeProfile.captureHeightPx
+                )
             /*
              * Keep the digital-twin plant independent from the configured RTP
              * max-bitrate ceiling. In production maxBitrateBps is an admission
@@ -492,43 +508,103 @@ class GamingSmoothnessLabTest {
                     nowMs = nowMs
                 )
 
-            val resolutionChanged =
-                budget.observe(
+            /*
+             * Mirror HostWebRtcSession's one-expensive-actuator ordering:
+             * clarity-preserving temporal pre-relief -> cadence pressure ->
+             * spatial pressure -> high-cadence probe. The old lab ran spatial
+             * observation first and could therefore blur a synthetic stream in
+             * a state that production explicitly protects with cadence-first
+             * relief.
+             */
+            val clarityCadenceCeiling =
+                budget.clarityPreservingCadenceCeiling(
+                    profile = profile,
                     outbound = outbound,
                     receiver = receiver,
                     sourceFps = scenario.sourceFps,
                     motionActive = true,
                     targetFps = target,
+                    interactionActive = true
+                )
+            val clarityCadenceChanged =
+                cadence.observeClarityBandwidthCeiling(
+                    ceilingFps = clarityCadenceCeiling,
+                    requestedFps = target,
                     nowMs = nowMs,
-                    interactionActive = true,
-                    allowResolutionRecovery = false
+                    displayRefreshRateHz = 60.0,
+                    sourceRefreshRateHz = scenario.sourceFps
                 )
 
-            cadence.observe(
-                outbound = outbound,
-                receiver = receiver,
-                requestedFps = cadence.cap,
-                nowMs = nowMs,
-                minimumFps =
-                    budget.cadenceFloor(
-                        profile = profile,
-                        motionActive = true,
+            val cadencePressureChanged =
+                if (
+                    clarityCadenceChanged ||
+                    clarityCadenceCeiling != null
+                ) {
+                    false
+                } else {
+                    cadence.observe(
+                        outbound = outbound,
+                        receiver = receiver,
+                        requestedFps = target,
                         nowMs = nowMs,
-                        interactionActive = true
-                    ),
-                producerFps = scenario.sourceFps,
-                maximumFps = 60,
-                allowHighCadenceProbe =
-                    !resolutionChanged &&
-                        photonPolicy.allowCadencePromotion
-            )
-            cadence.tryProbeDuringInteraction(
-                outbound = outbound,
-                receiver = receiver,
-                producerFps = scenario.sourceFps,
-                interactionActive = true,
-                nowMs = nowMs
-            )
+                        minimumFps =
+                            budget.cadenceFloor(
+                                profile = profile,
+                                motionActive = true,
+                                nowMs = nowMs,
+                                interactionActive = true
+                            ),
+                        producerFps = scenario.sourceFps,
+                        maximumFps = 60,
+                        allowHighCadenceProbe =
+                            photonPolicy.allowCadencePromotion,
+                        sourceRefreshRateHz = scenario.sourceFps
+                    )
+                }
+
+            val resolutionChanged =
+                if (
+                    clarityCadenceCeiling != null ||
+                    cadencePressureChanged
+                ) {
+                    false
+                } else {
+                    budget.observe(
+                        outbound = outbound,
+                        receiver = receiver,
+                        sourceFps = scenario.sourceFps,
+                        motionActive = true,
+                        targetFps = target,
+                        nowMs = nowMs,
+                        interactionActive = true,
+                        allowResolutionRecovery = false,
+                        profile = profile,
+                        allowSpatialRelief =
+                            cadence.mayReduceMotionResolution(
+                                requestedFps = target
+                            )
+                    )
+                }
+
+            if (resolutionChanged) {
+                cadence.onSpatialBudgetTransition(nowMs)
+            }
+
+            if (
+                !resolutionChanged &&
+                !clarityCadenceChanged &&
+                !cadencePressureChanged &&
+                clarityCadenceCeiling == null
+            ) {
+                cadence.tryProbeDuringInteraction(
+                    outbound = outbound,
+                    receiver = receiver,
+                    producerFps = scenario.sourceFps,
+                    interactionActive = true,
+                    nowMs = nowMs,
+                    maximumFps = 60
+                )
+            }
 
             val lag =
                 glassRatio < 0.80 ||
@@ -547,7 +623,16 @@ class GamingSmoothnessLabTest {
                     sendFps = sendFps,
                     decodeFps = decodeFps,
                     presentFps = presentFps,
-                    shortEdge = budget.shortEdge,
+                    shortEdge =
+                        budget.apply(
+                            profile = profile,
+                            motionActive = true
+                        ).let {
+                            min(
+                                it.captureWidthPx,
+                                it.captureHeightPx
+                            )
+                        },
                     queueMs = queueMs,
                     jitterMs = jitterMs,
                     encodeMs = encodeMs,
