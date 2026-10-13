@@ -97,6 +97,28 @@ class VideoCadenceGovernor(
             return false
         }
 
+        /*
+         * A BWE estimate is predictive capacity evidence, not proof that glass
+         * freshness is already failing. When the known source clock has no
+         * phase-stable high-cadence rung below this soft ceiling, do not turn a
+         * tiny estimate miss (for example 59 fps worth of bits at a 60 Hz
+         * source) into a 60 -> 30 cliff. Let GCC lower actual rate first and let
+         * the full encode/queue/decode/presentation governor make that larger
+         * temporal decision only if measured staleness appears.
+         *
+         * An explicit <=30 fps ceiling remains actionable because the clarity
+         * guard has then proved that the same pixels no longer fit anywhere in
+         * the high-cadence class.
+         */
+        if (
+            current > CLARITY_BANDWIDTH_MIN_FPS &&
+            rawCeiling > CLARITY_BANDWIDTH_MIN_FPS &&
+            target <= CLARITY_BANDWIDTH_MIN_FPS
+        ) {
+            resetClarityBandwidthVotes()
+            return false
+        }
+
         if (
             clarityBandwidthVoteCap != current ||
             clarityBandwidthVoteTarget != target
@@ -477,11 +499,12 @@ class VideoCadenceGovernor(
      * glass cadence with recent completed sender supply; sparse/unknown/expired
      * supply cannot establish a fast display-overload vote.
      *
-     * At high cadence one trustworthy hitch earns one display-paced relief
-     * step. This avoids long frame/vsync beat patterns such as 58/60 while a
-     * large fall toward 30 still requires severe presentation/pipeline evidence.
-     * The bounded cooldown plus one-step rule prevents one scheduler pause from
-     * cascading through multiple levels.
+     * At high cadence, presentation pressure is only allowed to select a
+     * phase-stable source rung. Pure pacing jitter with complete delivery stays
+     * at the current cadence; if no safe fine rung exists, soft glass evidence
+     * waits for corroborated telemetry rather than manufacturing periodic
+     * source judder. Severe presentation pressure may still take the larger
+     * freshness step immediately.
      */
     fun observeFastPresentation(
         intervalMs: Int,
@@ -564,21 +587,39 @@ class VideoCadenceGovernor(
                 frameBudgetMs *
                     FAST_PRESENTATION_FULL_CADENCE_GAP_MULTIPLIER
             )
+        /*
+         * A long individual swap interval with otherwise complete delivery is
+         * pacing evidence, not throughput evidence. The previous fast path could
+         * see 30 frames in a 500 ms 60-fps window (100% delivery), notice one
+         * ~34 ms gap, then downshift the source. On a 60 Hz producer that
+         * manufactured recurring frame-selection judder even though no frames
+         * were actually missing.
+         *
+         * Keep severe gaps actionable, but ordinary max-gap pressure must be
+         * accompanied by a meaningful delivery deficit. Full telemetry still
+         * observes the raw presentation gap and can act when queue/decode/glass
+         * evidence corroborates a real overload.
+         */
+        val gapBackedByDeliveryDeficit =
+            maxGapMs >= fullCadenceGapMs &&
+                deliveryRatio <
+                    FAST_PRESENTATION_GAP_DELIVERY_RATIO
         val fullCadencePressure =
             effectiveFps >= HIGH_CADENCE_FAST_RELIEF_FPS &&
                 (
                     deliveryRatio <
                         FAST_PRESENTATION_FULL_CADENCE_DELIVERY_RATIO ||
-                        maxGapMs >= fullCadenceGapMs
+                        gapBackedByDeliveryDeficit
                     )
 
         /*
          * A single moderate full-cadence hitch is evidence, not yet proof of a
          * sustainable overload. Require a second distinct EGL window before
-         * trimming 60 fps. Severe presentation pressure bypasses confirmation,
-         * but still receives only the bounded one-rung presentation relief
-         * below. The gate keeps this render-clock evidence separate from the
-         * getStats lane so the same physical hitch cannot be double-counted.
+         * considering source relief. Severe presentation pressure bypasses
+         * confirmation. If the source clock has no phase-stable fine rung, soft
+         * evidence intentionally leaves cadence unchanged and lets full
+         * telemetry decide. The gate keeps this render-clock evidence separate
+         * from the getStats lane so one physical hitch is not double-counted.
          */
         if (
             !highCadencePressureGate.observePresentation(
@@ -874,15 +915,13 @@ class VideoCadenceGovernor(
         /*
          * Remote control is more sensitive to stale frames than a passive call.
          * A queue that is clearly beyond the normal alarm budget should not need
-         * a second full stats window before receiving the gentle 60 -> 45 relief.
-         * This is intentionally NOT classified as severe: it earns one fast soft
-         * cadence step, while 30 fps-or-lower jumps remain reserved for genuinely
-         * severe loss/queue/decode/GPU pressure.
+         * a second full stats window before receiving relief. This is intentionally
+         * NOT classified as severe: it accelerates the decision interval, while
+         * the cadence ladder still decides the nearest phase-stable source rung.
          *
          * Requiring 2x the ordinary budget makes this a high-confidence signal.
          * The shorter change interval is bounded to prevent repeated downshifts
-         * while GCC is draining the previous queue. Ordinary full-cadence relief
-         * is handled separately below and cannot cascade below the 60 -> 45 step.
+         * while GCC is draining the previous queue.
          */
         val fallbackUrgentResidence =
             !freshnessDeadline.complete &&
@@ -904,8 +943,8 @@ class VideoCadenceGovernor(
          * mobile-network or scheduler excursion is not enough to prove that 60
          * fps is unsustainable. Keep this signal scoped to full cadence, then
          * let the confidence gate distinguish isolated evidence from sustained
-         * pressure. Confirmed soft pressure earns only the next fine rung
-         * (normally 60 -> 58); urgent/severe evidence still bypasses the gate.
+         * pressure. Confirmed soft pressure may use the next phase-stable rung
+         * when one exists; urgent/severe evidence still bypasses the gate.
          */
         val highCadenceResidencePressure =
             pipelineResidencePressure || fallbackLayerPressure
@@ -920,7 +959,7 @@ class VideoCadenceGovernor(
          * One ordinary 60-fps queue/render crossing is allowed to be transient.
          * Two fresh telemetry windows confirm it. If residence and actual glass
          * presentation are both bad inside the same stats snapshot, independent
-         * domains corroborate the event and one fine relief step may happen
+         * domains corroborate the event and phase-stable relief may happen
          * immediately. Urgent/severe pressure never waits on this soft gate.
          */
         val highCadenceFreshnessConfirmed =
@@ -1018,14 +1057,13 @@ class VideoCadenceGovernor(
 
             val ceiling = minOf(cap, requestedFps)
             /*
-             * Ordinary pressure takes one bounded short-cycle rung. Steady-state
-             * promotion remains source-harmonic, while measured pressure may use
-             * an intermediate cadence with a short producer repeat cycle.
-             * The remote display is only a capacity ceiling because its clock is
-             * not phase-locked to the host across the network. This avoids a
-             * needless 60 -> 30 cliff while still rejecting long producer beats.
-             * Severe queue/jitter/presentation pressure and CPU limitation may
-             * still jump directly to the <=30 fps freshness ladder.
+             * With a known source clock, pressure relief uses the same
+             * source-harmonic invariant as steady-state admission. An intermediate
+             * nominal FPS that requires uneven frame selection is not a real
+             * smoothness win. The controller clock remains a capacity ceiling.
+             * When no phase-stable high-cadence rung exists, proven pressure may
+             * take the larger <=30 fps freshness step instead of creating
+             * deterministic pulldown judder.
              */
             val needsStrongRelief = severePressure || cpuPressure
             val cadenceSteps =
@@ -1289,11 +1327,11 @@ class VideoCadenceGovernor(
          * fast path bounded to recent half-second-ish windows and high cadence.
          *
          * At 60 fps one missed display opportunity is roughly a 33 ms frame
-         * gap. Waiting for a 70 ms gap allowed recurring two-vsync misses to
-         * look healthy even though they are visible as gaming-style micro-
-         * stutter. The presentation pressure gate still requires two distinct
-         * soft windows, so this tighter deadline reacts to sustained pacing
-         * variance without punishing a single scheduler outlier.
+         * gap. Keep that gap visible to the fast detector, but do not treat it
+         * as source-throughput pressure by itself: a window can still contain
+         * every expected frame and merely have one late/early swap pair.
+         * Ordinary gap-driven relief therefore also requires a delivery deficit;
+         * severe gaps remain immediately actionable.
          */
         const val FAST_PRESENTATION_MIN_WINDOW_MS = 500
         const val FAST_PRESENTATION_MAX_WINDOW_MS = 2_000
@@ -1302,6 +1340,10 @@ class VideoCadenceGovernor(
         const val FAST_PRESENTATION_MIN_CADENCE_FPS = 45
         const val FAST_PRESENTATION_CHANGE_INTERVAL_MS = 450L
         const val FAST_PRESENTATION_FULL_CADENCE_DELIVERY_RATIO = 0.75
+        // Gap-only evidence may reflect a single scheduler/vsync excursion.
+        // Require at least two missing 60-fps-class frames in a ~500 ms window
+        // before using that ordinary gap as a fast source-cadence actuator.
+        const val FAST_PRESENTATION_GAP_DELIVERY_RATIO = 0.94
         const val FAST_PRESENTATION_FULL_CADENCE_GAP_MS = 30.0
         const val FAST_PRESENTATION_FULL_CADENCE_GAP_MULTIPLIER = 1.75
         const val FAST_PRESENTATION_SEVERE_DELIVERY_RATIO = 0.55

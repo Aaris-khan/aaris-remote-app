@@ -866,10 +866,36 @@ internal class MotionVideoBudget {
          * Stale motion at 15-24 fps is still operable; unreadable form text is
          * not.
          */
+        val currentSourceShortEdge =
+            profile?.let {
+                minOf(
+                    minOf(it.captureWidthPx, it.captureHeightPx),
+                    committedSourceShortEdge
+                )
+            } ?: committedSourceShortEdge
+                .takeUnless { it == Int.MAX_VALUE }
+                /*
+                 * Without a CaptureProfile there is no proof that the producer
+                 * is still above the control rung. Preserve the historical
+                 * pressure ladder instead of treating the sentinel as physical
+                 * native geometry. Production HostWebRtcSession supplies the
+                 * profile, so native->720 protection still uses real pixels.
+                 */
+                ?: shortEdge
+
         fun nextPressureRung(): Int =
             when {
                 severeProducerStarvation && shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
                     CLARITY_FLOOR_SHORT_EDGE
+                /*
+                 * shortEdge is a control-plane budget; the producer may still be
+                 * running at native geometry. The first validated spatial action
+                 * must commit the current readable budget before spending the
+                 * next rung. Otherwise a native 1080 source with a 720 control
+                 * budget jumps straight to 540 on its first pressure decision.
+                 */
+                currentSourceShortEdge > shortEdge ->
+                    shortEdge
                 shortEdge > 540 -> 540
                 shortEdge > CLARITY_FLOOR_SHORT_EDGE ->
                     CLARITY_FLOOR_SHORT_EDGE
@@ -1025,11 +1051,15 @@ internal class MotionVideoBudget {
                 // Every pressure class stops at the 360 readability floor.
                 // Severe transport failure continues through temporal relief.
                 val next = nextPressureRung()
-                if (next != shortEdge) {
+                val sourceCommitNeeded =
+                    currentSourceShortEdge > next
+                if (next != shortEdge || sourceCommitNeeded) {
                     shortEdge = next
                     committedSourceShortEdge = shortEdge
                     changedAtMs = nowMs
                     resetResidenceGrowth()
+                    pressureSamples = 0
+                    return true
                 }
                 pressureSamples = 0
             }
