@@ -511,6 +511,62 @@ class CaptureQualityGovernorTest {
     }
 
     @Test
+    fun recoveryOnlyModeCanPromoteButNeverDowngrade() {
+        val governor =
+            CaptureQualityGovernor(
+                initialTier = CaptureTier.LOW,
+                maxTier = CaptureTier.BALANCED
+            )
+
+        repeat(CaptureQualityGovernor.UPGRADE_SAMPLE_COUNT - 1) {
+            assertNull(
+                governor.observeQualityLimitation(
+                    reason = "none",
+                    roundTripTimeMs = 100,
+                    packetLossRatio = 0.0,
+                    encodeTimeMs = 5.0,
+                    sendQueueMs = 2.0,
+                    deliveredFps = 20.0,
+                    requestedFps = 20,
+                    outboundFrameCount = 20,
+                    recoveryOnly = true
+                )
+            )
+        }
+        assertEquals(
+            CaptureTier.BALANCED,
+            governor.observeQualityLimitation(
+                reason = "none",
+                roundTripTimeMs = 100,
+                packetLossRatio = 0.0,
+                encodeTimeMs = 5.0,
+                sendQueueMs = 2.0,
+                deliveredFps = 20.0,
+                requestedFps = 20,
+                outboundFrameCount = 20,
+                recoveryOnly = true
+            )
+        )
+
+        repeat(CaptureQualityGovernor.DOWNGRADE_SAMPLE_COUNT + 1) {
+            assertNull(
+                governor.observeQualityLimitation(
+                    reason = "bandwidth",
+                    roundTripTimeMs = 900,
+                    packetLossRatio = 0.10,
+                    encodeTimeMs = 40.0,
+                    sendQueueMs = 200.0,
+                    deliveredFps = 5.0,
+                    requestedFps = 30,
+                    outboundFrameCount = 5,
+                    recoveryOnly = true
+                )
+            )
+        }
+        assertEquals(CaptureTier.BALANCED, governor.currentTier())
+    }
+
+    @Test
     fun recoveryNeverExceedsDeviceMaximum() {
         val governor =
             CaptureQualityGovernor(
