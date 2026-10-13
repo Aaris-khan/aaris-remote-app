@@ -138,11 +138,13 @@ class ScreenCaptureTrack(
                     // screen. Give that new sample a monotonic timestamp so the
                     // native FPS adapter does not discard recovery requests.
                     val sampledAtNs = System.nanoTime()
+                    val captureElapsedNs =
+                        android.os.SystemClock.elapsedRealtimeNanos()
                     val forwardToLiveVideo =
                         interactionRepeatGuard
                             .shouldForwardToLiveVideo(
                                 producerTimestampNs = frame.timestampNs,
-                                nowNs = sampledAtNs
+                                nowNs = captureElapsedNs
                             )
                     if (forwardToLiveVideo) {
                         val sampledTimestampNs =
@@ -307,7 +309,7 @@ class ScreenCaptureTrack(
          * No frame is retained and no second queue is added.
          */
         interactionRepeatGuard.armInteractionProbe(
-            System.nanoTime()
+            android.os.SystemClock.elapsedRealtimeNanos()
         )
         surfaceTextureHelper.forceFrame()
         return true
