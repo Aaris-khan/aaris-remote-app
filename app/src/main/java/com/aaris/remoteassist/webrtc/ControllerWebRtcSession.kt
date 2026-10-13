@@ -57,19 +57,19 @@ class ControllerWebRtcSession(
     private val displayManager =
         appContext.getSystemService(DisplayManager::class.java)
     @Volatile
-    private var lastPublishedDisplayRefreshRateHz: Float? = null
+    private var lastPublishedDisplayCapacityHz: Float? = null
 
     private val displayRefreshUpdate =
         Runnable {
             if (closed.get()) return@Runnable
-            val refresh = currentDisplayRefreshRateHz() ?: return@Runnable
-            val previous = lastPublishedDisplayRefreshRateHz
+            val capacity = currentDisplayRefreshCapacityHz() ?: return@Runnable
+            val previous = lastPublishedDisplayCapacityHz
             if (
                 previous == null ||
-                kotlin.math.abs(refresh - previous) >=
+                kotlin.math.abs(capacity - previous) >=
                     DISPLAY_REFRESH_CHANGE_EPSILON_HZ
             ) {
-                publishDisplayCapabilities(refresh)
+                publishDisplayCapabilities(capacity)
             }
         }
 
@@ -86,10 +86,11 @@ class ControllerWebRtcSession(
                 ) {
                     /*
                      * Surface.setFrameRate(), power policy, or adaptive-refresh
-                     * policy can move the active clock. Display callbacks may
-                     * arrive in bursts, so coalesce them and only publish a
-                     * materially different rate. The heartbeat remains the
-                     * periodic freshness signal even when the rate is stable.
+                     * policy can move the active clock and trigger this callback.
+                     * Never feed that actuator-owned clock back into the sender.
+                     * Recompute only the stable seamless presentation capacity;
+                     * if Aaris merely switched within the same display group,
+                     * the value stays unchanged and no cadence retune is emitted.
                      */
                     handler.removeCallbacks(displayRefreshUpdate)
                     handler.postDelayed(
@@ -156,10 +157,11 @@ class ControllerWebRtcSession(
                         ControlPacket.Heartbeat(lease)
                     )
                 )
-                // Display capability is control-plane metadata, not proof that
+                // Display capacity is control-plane metadata, not proof that
                 // EGL presented a frame. Publish it independently so a renderer
-                // stall cannot make the host forget the controller's active
-                // presentation clock.
+                // stall cannot make the host forget the controller's stable
+                // presentation envelope. Actual glass cadence is reported by
+                // PresentationFeedback and remains the pressure signal.
                 publishDisplayCapabilities()
             }
 
@@ -249,11 +251,11 @@ class ControllerWebRtcSession(
     }
 
     fun sendDisplayCapabilities(
-        refreshRateHz: Float? = currentDisplayRefreshRateHz()
+        refreshRateHz: Float? = currentDisplayRefreshCapacityHz()
     ): Boolean = publishDisplayCapabilities(refreshRateHz)
 
     private fun publishDisplayCapabilities(
-        refreshRateHz: Float? = currentDisplayRefreshRateHz()
+        refreshRateHz: Float? = currentDisplayRefreshCapacityHz()
     ): Boolean {
         if (closed.get()) return false
         val lease = leaseSecret ?: return false
@@ -275,45 +277,68 @@ class ControllerWebRtcSession(
                 )
             )
         if (sent) {
-            lastPublishedDisplayRefreshRateHz = refresh
+            lastPublishedDisplayCapacityHz = refresh
         }
         return sent
     }
 
-    @Suppress("DEPRECATION")
-    private fun currentDisplayRefreshRateHz(): Float? {
+    private fun currentDisplayRefreshCapacityHz(): Float? {
         val display =
             displayManager
                 ?.getDisplay(Display.DEFAULT_DISPLAY)
                 ?: return null
+        val activeMode = display.mode
 
         /*
-         * This value is a presentation clock, not a capability ceiling.
+         * IMPORTANT CONTROL-LOOP BOUNDARY
          *
-         * Display.getRefreshRate() is intentionally read first. Android's
-         * DisplayManager documentation uses that read to subscribe clients to
-         * refresh-rate change callbacks, and it reflects the effective current
-         * display refresh seen by this process. Using the fastest entry from
-         * supportedModes here used to misclassify a 60 Hz active session on a
-         * 120 Hz-capable panel as 120 Hz. That changes DisplayCadencePolicy's
-         * adaptation ladder (for example, a 60 Hz controller can lose the
-         * 50/45 fps relief rungs and fall much more abruptly).
+         * Surface.setFrameRate() can make Android move the active display clock.
+         * That clock is partly an Aaris actuator, so publishing display.refreshRate
+         * back to the host creates a positive feedback loop:
          *
-         * The physical active mode remains a defensive fallback for OEMs that
-         * return an invalid effective rate.
+         * sender cadence -> EGL cadence -> Surface frame-rate vote -> active
+         * display clock -> DisplayCapabilities -> sender cadence.
+         *
+         * Android 12+ exposes the exact seamless-switch equivalence class through
+         * Display.Mode.alternativeRefreshRates. Its maximum is invariant when the
+         * system moves among members of that class, which makes it suitable as a
+         * CAPACITY signal. Real runtime inability to present at that capacity is
+         * already measured independently by PresentationFeedback (actual EGL
+         * swaps/max gap), so no health information is lost.
+         *
+         * Before Android 12, use same-physical-resolution modes as the closest
+         * stable approximation. This deliberately avoids cross-resolution modes.
          */
-        val effectiveRefresh = display.refreshRate
-        if (
-            effectiveRefresh.isFinite() &&
-            effectiveRefresh in 1f..240f
-        ) {
-            return effectiveRefresh
-        }
+        val seamlessAlternatives =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                activeMode.alternativeRefreshRates
+            } else {
+                null
+            }
 
-        val modeRefresh = display.mode.refreshRate
-        return modeRefresh.takeIf {
-            it.isFinite() && it in 1f..240f
-        }
+        val sameResolutionRates =
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                display.supportedModes
+                    .asSequence()
+                    .filter {
+                        it.physicalWidth == activeMode.physicalWidth &&
+                            it.physicalHeight == activeMode.physicalHeight
+                    }
+                    .map { it.refreshRate }
+                    .toList()
+                    .toFloatArray()
+            } else {
+                floatArrayOf()
+            }
+
+        return ControllerDisplayCapacityPolicy.resolve(
+            activeModeRefreshRateHz = activeMode.refreshRate,
+            seamlessAlternativeRefreshRatesHz = seamlessAlternatives,
+            sameResolutionRefreshRatesHz = sameResolutionRates
+        )
+            ?: display.refreshRate.takeIf {
+                it.isFinite() && it in 1f..240f
+            }
     }
 
     fun sendPresentationHeartbeat(): Boolean {
