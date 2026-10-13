@@ -1148,7 +1148,17 @@ class HostWebRtcSession(
             now - lastPrimaryRepairRequestMs >= 2500L) {
             lastPrimaryRepairRequestMs = now
             primaryRecoveryRequests++
-            if (primaryRecoveryRequests >= 2) peer.recoverPrimaryVideoCodec()
+            /*
+             * Missing decode still gets the existing two-request debounce.
+             * When decode counters are fresh, MediaRecoveryPolicy has already
+             * waited through renderer grace plus a bounded compatibility
+             * window. Escalate that proven no-glass trap immediately so a
+             * broken H264 texture path cannot leave the user watching stale
+             * JPEG/delta tiles indefinitely.
+             */
+            if (decodedRecently || primaryRecoveryRequests >= 2) {
+                peer.recoverPrimaryVideoCodec()
+            }
         }
         listener.onDiagnostic("Video recovery active • fresh capture requested")
     }

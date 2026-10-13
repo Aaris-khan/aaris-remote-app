@@ -411,7 +411,12 @@ class FallbackScreenStreamer(
 
         clarity.changed(now)
 
-        if (plan.forceKeyframe) {
+        if (
+            FallbackMotionIntegrityPolicy.requiresAnchor(
+                plan = plan,
+                interactionActive = interactionActive.get()
+            )
+        ) {
             return sendLegacyKeyframe(
                 i420 = i420,
                 width = width,

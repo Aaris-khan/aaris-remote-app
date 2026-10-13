@@ -10,13 +10,15 @@ class MediaRecoveryPolicyTest {
         assertEquals(MediaRecoveryAction.REFRESH_PRIMARY, policy.request(true, 5_499))
         assertEquals(MediaRecoveryAction.COMPATIBILITY_ONLY, policy.request(true, 5_500))
         assertEquals(MediaRecoveryAction.COMPATIBILITY_ONLY, policy.request(true, 8_000))
+        assertEquals(MediaRecoveryAction.COMPATIBILITY_AND_CODEC, policy.request(true, 9_500))
     }
 
-    @Test fun codecRepairRequiresMissingDecodeAndDecodeCannotRetireFallback() {
+    @Test fun compatibilityEscapesDecodedButUnpresentedPrimaryAfterBoundedDelay() {
         val policy = MediaRecoveryPolicy()
         assertEquals(MediaRecoveryAction.COMPATIBILITY_AND_CODEC, policy.request(false, 3_500))
-        assertEquals(MediaRecoveryAction.COMPATIBILITY_ONLY, policy.request(true, 7_500))
-        assertEquals(MediaRecoveryAction.COMPATIBILITY_ONLY, policy.request(true, 30_000))
+        assertEquals(MediaRecoveryAction.COMPATIBILITY_ONLY, policy.request(true, 7_499))
+        assertEquals(MediaRecoveryAction.COMPATIBILITY_AND_CODEC, policy.request(true, 7_500))
+        assertEquals(MediaRecoveryAction.COMPATIBILITY_AND_CODEC, policy.request(true, 30_000))
         assertEquals(MediaRecoveryAction.COMPATIBILITY_AND_CODEC, policy.request(false, 34_000))
     }
 
@@ -26,6 +28,7 @@ class MediaRecoveryPolicyTest {
         policy.primaryPresented()
         assertEquals(MediaRecoveryAction.REFRESH_PRIMARY, policy.request(true, 8_000))
         assertEquals(MediaRecoveryAction.COMPATIBILITY_ONLY, policy.request(true, 10_000))
+        assertEquals(MediaRecoveryAction.COMPATIBILITY_AND_CODEC, policy.request(true, 14_000))
     }
 
     @Test fun backwardsClockDoesNotEscalateAPrimaryRenderer() {

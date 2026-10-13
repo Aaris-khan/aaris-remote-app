@@ -1795,9 +1795,10 @@ class WebRtcPeer(
     /**
      * One bounded codec repair within the existing peer.
      *
-     * The host invokes this only without recent decode progress. Changing
-     * codec recreates the broken media path without replacing ICE/controls.
-     * Reasserting the same preference would leave the stalled codec running.
+     * The host invokes this after either repeated missing decode progress or a
+     * bounded decoded-but-never-presented EGL failure. Changing codec recreates
+     * the broken media path without replacing ICE/controls. Reasserting the
+     * same preference would leave the stalled codec running.
      */
     fun recoverPrimaryVideoCodec(): Boolean {
         if (

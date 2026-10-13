@@ -104,6 +104,82 @@ class FrameDeltaAnalyzerTest {
         assertTrue(plan.regions.any { region ->
             region.y + region.height >= height - 96
         })
+        assertFalse(
+            FallbackMotionIntegrityPolicy.requiresAnchor(
+                plan,
+                interactionActive = true
+            )
+        )
+    }
+
+    @Test
+    fun movingThinIconEdgesAreNeverLeftSplitAcrossRecoveryTiles() {
+        val width = 384
+        val height = 768
+        val previous = ByteArray(width * height) { 24 }
+        val current = previous.copyOf()
+
+        // A 16 px-wide high-contrast icon crosses the 96 px tile boundary.
+        // Average-only 8 px sampling could miss one half and leave a visibly
+        // cut old/new icon on the controller.
+        paint(previous, width, 88, 240, 16, 56, 230)
+        paint(current, width, 104, 240, 16, 56, 230)
+
+        val plan = FrameDeltaAnalyzer.analyze(
+            previous,
+            current,
+            width,
+            height
+        )
+
+        assertFalse(plan.forceKeyframe)
+        assertTrue(plan.regions.any {
+            it.x <= 88 && it.x + it.width >= 96 &&
+                it.y <= 240 && it.y + it.height >= 296
+        })
+        assertTrue(plan.regions.any {
+            it.x <= 104 && it.x + it.width >= 120 &&
+                it.y <= 240 && it.y + it.height >= 296
+        })
+    }
+
+    @Test
+    fun broadInteractiveNonScrollAnimationUsesCoherentAnchor() {
+        val plan = FrameDeltaPlan(
+            shiftY = 0,
+            regions = listOf(DeltaRegion(0, 0, 192, 576)),
+            changedFraction = 0.38,
+            forceKeyframe = false
+        )
+
+        assertTrue(
+            FallbackMotionIntegrityPolicy.requiresAnchor(
+                plan,
+                interactionActive = true
+            )
+        )
+        assertFalse(
+            FallbackMotionIntegrityPolicy.requiresAnchor(
+                plan,
+                interactionActive = false
+            )
+        )
+    }
+
+    private fun paint(
+        frame: ByteArray,
+        width: Int,
+        left: Int,
+        top: Int,
+        paintWidth: Int,
+        paintHeight: Int,
+        value: Int
+    ) {
+        for (y in top until top + paintHeight) {
+            for (x in left until left + paintWidth) {
+                frame[y * width + x] = value.toByte()
+            }
+        }
     }
 
     private fun patterned(width: Int, height: Int): ByteArray =
