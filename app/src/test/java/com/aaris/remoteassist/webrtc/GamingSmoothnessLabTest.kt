@@ -46,7 +46,8 @@ class GamingSmoothnessLabTest {
         val milestoneCap: Int? = null,
         val milestoneDeadlineMs: Long? = null,
         val maxPostRecoveryLagWindows: Int,
-        val minTailPresentFps: Double
+        val minTailPresentFps: Double,
+        val minFinalShortEdge: Int = 360
     )
 
     private data class Row(
@@ -106,7 +107,8 @@ class GamingSmoothnessLabTest {
                     milestoneCap = 60,
                     milestoneDeadlineMs = 16_000,
                     maxPostRecoveryLagWindows = 1,
-                    minTailPresentFps = 50.0
+                    minTailPresentFps = 50.0,
+                    minFinalShortEdge = 720
                 ),
                 Scenario(
                     name = "stable_4g",
@@ -120,13 +122,20 @@ class GamingSmoothnessLabTest {
                             baseJitterMs = 10.0
                         )
                     },
-                    minFinalCap = 45,
-                    minRecoveredCap = 45,
+                    /*
+                     * On a 60 Hz producer the phase-stable bandwidth fallback is
+                     * 30 fps, not 40/45/50. Those intermediate rates have higher
+                     * averages but uneven source intervals. Require the stable
+                     * half-rate cadence to keep native/readable pixels instead.
+                     */
+                    minFinalCap = 30,
+                    minRecoveredCap = 30,
                     recoveryDeadlineMs = null,
                     milestoneCap = 50,
                     milestoneDeadlineMs = 14_000,
                     maxPostRecoveryLagWindows = 2,
-                    minTailPresentFps = 40.0
+                    minTailPresentFps = 25.0,
+                    minFinalShortEdge = 720
                 ),
                 Scenario(
                     name = "burst_loss_then_recover",
@@ -206,6 +215,11 @@ class GamingSmoothnessLabTest {
                 failures +=
                     "${scenario.name}: tail present %.1ffps < %.1ffps"
                         .format(tailPresent, scenario.minTailPresentFps)
+            }
+            if (final.shortEdge < scenario.minFinalShortEdge) {
+                failures +=
+                    "${scenario.name}: final edge ${final.shortEdge}px < " +
+                        "${scenario.minFinalShortEdge}px clarity floor"
             }
             if (lagAfter16s > scenario.maxPostRecoveryLagWindows) {
                 failures +=
