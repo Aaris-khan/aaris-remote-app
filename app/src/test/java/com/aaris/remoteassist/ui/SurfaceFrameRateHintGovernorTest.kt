@@ -61,14 +61,14 @@ class SurfaceFrameRateHintGovernorTest {
         assertEquals(60, governor.beginInteraction(nowMs = 100))
 
         /*
-         * 29 presentations / 500 ms reports ~58 fps, but the 34 ms worst gap
+         * 29 presentations / 500 ms reports ~58 fps, but the 33 ms worst gap
          * exposes the missing 60 fps opportunity. Repeating the hitch must not
          * turn transient render jank into a persistent 58 fps display vote.
          */
         repeat(4) { sample ->
             assertNull(
                 governor.observe(
-                    window(500, 29, 34),
+                    window(500, 29, 33),
                     700L + sample * 600L
                 )
             )
