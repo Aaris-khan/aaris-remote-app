@@ -41,51 +41,56 @@ class AarisLowLatencyVideoDecoderFactoryTest {
 
     @Test
     @Config(sdk = [30])
-    fun lowLatencySecureOnlyDecoderCannotReplaceWorkingRegularDecoder() {
+    fun exactLookupKeepsStockDecoderInsteadOfPromotingLowLatencyPeer() {
         ShadowMediaCodecList.addCodec(decoder("c2.vendor.avc.decoder"))
-        ShadowMediaCodecList.addCodec(decoder(
-            "c2.vendor.avc.decoder.secure",
-            lowLatency = true,
-            requiredFeature = CodecCapabilities.FEATURE_SecurePlayback
-        ))
+        ShadowMediaCodecList.addCodec(
+            decoder(
+                "c2.vendor.avc.lowlatency.decoder",
+                lowLatency = true
+            )
+        )
 
-        assertEquals("c2.vendor.avc.decoder", AarisLowLatencyVideoDecoderFactory
-            .findHardwareDecoder(VideoCodecMimeType.H264)!!.name)
-    }
-
-    @Test
-    @Config(sdk = [30])
-    fun tunneledOnlyDecoderIsRejectedWithoutDependingOnItsName() {
-        ShadowMediaCodecList.addCodec(decoder(
-            "c2.vendor.avc.fast.decoder",
-            lowLatency = true,
-            requiredFeature = CodecCapabilities.FEATURE_TunneledPlayback
-        ))
-
-        assertNull(AarisLowLatencyVideoDecoderFactory.findHardwareDecoder(VideoCodecMimeType.H264))
-    }
-
-    @Test
-    @Config(sdk = [30])
-    fun compatibleLowLatencyDecoderIsStillPreferred() {
-        ShadowMediaCodecList.addCodec(decoder("c2.vendor.avc.decoder"))
-        ShadowMediaCodecList.addCodec(decoder("c2.vendor.avc.lowlatency.decoder", lowLatency = true))
-
-        assertEquals("c2.vendor.avc.lowlatency.decoder", AarisLowLatencyVideoDecoderFactory
-            .findHardwareDecoder(VideoCodecMimeType.H264)!!.name)
-    }
-
-    @Test
-    @Config(sdk = [30])
-    fun optionalSecureSupportDoesNotExcludeRegularDecoder() {
-        ShadowMediaCodecList.addCodec(decoder(
+        assertEquals(
             "c2.vendor.avc.decoder",
-            lowLatency = true,
-            supportedFeature = CodecCapabilities.FEATURE_SecurePlayback
-        ))
+            AarisLowLatencyVideoDecoderFactory
+                .findCodecByName("c2.vendor.avc.decoder")!!
+                .name
+        )
+    }
 
-        assertEquals("c2.vendor.avc.decoder", AarisLowLatencyVideoDecoderFactory
-            .findHardwareDecoder(VideoCodecMimeType.H264)!!.name)
+    @Test
+    @Config(sdk = [30])
+    fun missingStockCodecMetadataNeverFallsThroughToAnotherDecoder() {
+        ShadowMediaCodecList.addCodec(
+            decoder(
+                "c2.vendor.avc.lowlatency.decoder",
+                lowLatency = true
+            )
+        )
+
+        assertNull(
+            AarisLowLatencyVideoDecoderFactory
+                .findCodecByName("c2.vendor.avc.decoder")
+        )
+    }
+
+    @Test
+    @Config(sdk = [30])
+    fun exactLookupCanStillWrapStockDecoderWhenItSupportsLowLatency() {
+        ShadowMediaCodecList.addCodec(
+            decoder(
+                "c2.vendor.avc.decoder",
+                lowLatency = true,
+                supportedFeature = CodecCapabilities.FEATURE_SecurePlayback
+            )
+        )
+
+        assertEquals(
+            "c2.vendor.avc.decoder",
+            AarisLowLatencyVideoDecoderFactory
+                .findCodecByName("c2.vendor.avc.decoder")!!
+                .name
+        )
     }
 
     @Test
