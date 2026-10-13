@@ -13,7 +13,11 @@ class RealtimeMediaPolicyTest {
     fun remoteControlKeepsAdaptivePlayoutInsideFreshnessBudget() {
         // A positive minimum keeps M150 out of its render-ASAP path, allowing
         // native timestamp/jitter timing to smooth ordinary WAN arrival variance.
-        assertEquals(10, RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS)
+        assertEquals(20, RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS)
+        // Keep at least one 60 Hz frame of native timing reserve without
+        // turning the receiver into a multi-frame playback reservoir.
+        assertTrue(RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS >= 17)
+        assertTrue(RealtimeMediaPolicy.PLAYOUT_DELAY_MIN_MS < 34)
         // The native ceiling and app-level hard-pressure alarm are one invariant.
         assertEquals(160, RealtimeMediaPolicy.PLAYOUT_FRESHNESS_PRESSURE_MS)
         assertEquals(180, RealtimeMediaPolicy.PLAYOUT_DELAY_MAX_MS)
@@ -26,7 +30,7 @@ class RealtimeMediaPolicyTest {
                 RealtimeMediaPolicy.PLAYOUT_FRESHNESS_PRESSURE_MS <= 20
         )
         assertEquals(
-            "WebRTC-ForceSendPlayoutDelay/min_ms:10,max_ms:180/",
+            "WebRTC-ForceSendPlayoutDelay/min_ms:20,max_ms:180/",
             RealtimeMediaPolicy.FIELD_TRIALS
         )
         assertFalse(
