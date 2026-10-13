@@ -179,6 +179,31 @@ data class CaptureProfile(
             return CaptureTier.BALANCED
         }
 
+        /**
+         * Keep conservative LOW startup on constrained devices, but do not turn
+         * the RAM heuristic into a permanent 360p/20-fps ceiling when Android's
+         * own MediaCodec capability data proves the preferred hardware encoder
+         * can sustain the BALANCED 30-fps geometry.
+         *
+         * This expands only the recovery ceiling. CaptureQualityGovernor still
+         * requires consecutive healthy live windows before moving LOW ->
+         * BALANCED, and can return to LOW if the real path cannot sustain it.
+         * Missing/incomplete codec metadata therefore preserves LOW exactly.
+         */
+        internal fun recoveryCeilingForMeasuredEncoder(
+            initialTier: CaptureTier,
+            balancedRealtimeFpsLimit: Int?
+        ): CaptureTier =
+            if (
+                initialTier == CaptureTier.LOW &&
+                balancedRealtimeFpsLimit != null &&
+                balancedRealtimeFpsLimit >= BALANCED_MOTION_FPS
+            ) {
+                CaptureTier.BALANCED
+            } else {
+                initialTier
+            }
+
         @Suppress("DEPRECATION")
         fun current(
             context: Context,
