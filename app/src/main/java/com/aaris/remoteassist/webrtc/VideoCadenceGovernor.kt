@@ -499,11 +499,12 @@ class VideoCadenceGovernor(
      * glass cadence with recent completed sender supply; sparse/unknown/expired
      * supply cannot establish a fast display-overload vote.
      *
-     * At high cadence one trustworthy hitch earns one display-paced relief
-     * step. This avoids long frame/vsync beat patterns such as 58/60 while a
-     * large fall toward 30 still requires severe presentation/pipeline evidence.
-     * The bounded cooldown plus one-step rule prevents one scheduler pause from
-     * cascading through multiple levels.
+     * At high cadence, presentation pressure is only allowed to select a
+     * phase-stable source rung. Pure pacing jitter with complete delivery stays
+     * at the current cadence; if no safe fine rung exists, soft glass evidence
+     * waits for corroborated telemetry rather than manufacturing periodic
+     * source judder. Severe presentation pressure may still take the larger
+     * freshness step immediately.
      */
     fun observeFastPresentation(
         intervalMs: Int,
@@ -614,10 +615,11 @@ class VideoCadenceGovernor(
         /*
          * A single moderate full-cadence hitch is evidence, not yet proof of a
          * sustainable overload. Require a second distinct EGL window before
-         * trimming 60 fps. Severe presentation pressure bypasses confirmation,
-         * but still receives only the bounded one-rung presentation relief
-         * below. The gate keeps this render-clock evidence separate from the
-         * getStats lane so the same physical hitch cannot be double-counted.
+         * considering source relief. Severe presentation pressure bypasses
+         * confirmation. If the source clock has no phase-stable fine rung, soft
+         * evidence intentionally leaves cadence unchanged and lets full
+         * telemetry decide. The gate keeps this render-clock evidence separate
+         * from the getStats lane so one physical hitch is not double-counted.
          */
         if (
             !highCadencePressureGate.observePresentation(
@@ -913,15 +915,13 @@ class VideoCadenceGovernor(
         /*
          * Remote control is more sensitive to stale frames than a passive call.
          * A queue that is clearly beyond the normal alarm budget should not need
-         * a second full stats window before receiving the gentle 60 -> 45 relief.
-         * This is intentionally NOT classified as severe: it earns one fast soft
-         * cadence step, while 30 fps-or-lower jumps remain reserved for genuinely
-         * severe loss/queue/decode/GPU pressure.
+         * a second full stats window before receiving relief. This is intentionally
+         * NOT classified as severe: it accelerates the decision interval, while
+         * the cadence ladder still decides the nearest phase-stable source rung.
          *
          * Requiring 2x the ordinary budget makes this a high-confidence signal.
          * The shorter change interval is bounded to prevent repeated downshifts
-         * while GCC is draining the previous queue. Ordinary full-cadence relief
-         * is handled separately below and cannot cascade below the 60 -> 45 step.
+         * while GCC is draining the previous queue.
          */
         val fallbackUrgentResidence =
             !freshnessDeadline.complete &&
@@ -943,8 +943,8 @@ class VideoCadenceGovernor(
          * mobile-network or scheduler excursion is not enough to prove that 60
          * fps is unsustainable. Keep this signal scoped to full cadence, then
          * let the confidence gate distinguish isolated evidence from sustained
-         * pressure. Confirmed soft pressure earns only the next fine rung
-         * (normally 60 -> 58); urgent/severe evidence still bypasses the gate.
+         * pressure. Confirmed soft pressure may use the next phase-stable rung
+         * when one exists; urgent/severe evidence still bypasses the gate.
          */
         val highCadenceResidencePressure =
             pipelineResidencePressure || fallbackLayerPressure
@@ -959,7 +959,7 @@ class VideoCadenceGovernor(
          * One ordinary 60-fps queue/render crossing is allowed to be transient.
          * Two fresh telemetry windows confirm it. If residence and actual glass
          * presentation are both bad inside the same stats snapshot, independent
-         * domains corroborate the event and one fine relief step may happen
+         * domains corroborate the event and phase-stable relief may happen
          * immediately. Urgent/severe pressure never waits on this soft gate.
          */
         val highCadenceFreshnessConfirmed =
@@ -1057,14 +1057,13 @@ class VideoCadenceGovernor(
 
             val ceiling = minOf(cap, requestedFps)
             /*
-             * Ordinary pressure takes one bounded short-cycle rung. Steady-state
-             * promotion remains source-harmonic, while measured pressure may use
-             * an intermediate cadence with a short producer repeat cycle.
-             * The remote display is only a capacity ceiling because its clock is
-             * not phase-locked to the host across the network. This avoids a
-             * needless 60 -> 30 cliff while still rejecting long producer beats.
-             * Severe queue/jitter/presentation pressure and CPU limitation may
-             * still jump directly to the <=30 fps freshness ladder.
+             * With a known source clock, pressure relief uses the same
+             * source-harmonic invariant as steady-state admission. An intermediate
+             * nominal FPS that requires uneven frame selection is not a real
+             * smoothness win. The controller clock remains a capacity ceiling.
+             * When no phase-stable high-cadence rung exists, proven pressure may
+             * take the larger <=30 fps freshness step instead of creating
+             * deterministic pulldown judder.
              */
             val needsStrongRelief = severePressure || cpuPressure
             val cadenceSteps =
