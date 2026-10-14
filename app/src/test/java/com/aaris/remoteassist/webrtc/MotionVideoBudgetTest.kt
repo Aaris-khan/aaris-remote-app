@@ -2966,4 +2966,67 @@ class MotionVideoBudgetTest {
         assertEquals(360, budget.shortEdge)
     }
 
+
+    @Test
+    fun readabilityRecoveryCannotInventPixelsAboveProfileGeometry() {
+        val budget = MotionVideoBudget()
+        val collapse =
+            sender(
+                fps = 6,
+                encode = 53.0,
+                queue = 585.0,
+                implementation = "libvpx"
+            )
+        budget.observe(collapse, null, 30.0, true, 30, 1_000L)
+        budget.observe(collapse, null, 30.0, true, 30, 4_000L)
+        assertEquals(360, budget.shortEdge)
+
+        val lowProfile =
+            profile.copy(
+                displayWidthPx = 360,
+                displayHeightPx = 800,
+                captureWidthPx = 360,
+                captureHeightPx = 800,
+                maxVideoBitrateBps = 1_200_000,
+                tier = CaptureTier.LOW,
+                motionFps = 20
+            )
+        val cleanBase = sender(fps = 20, encode = 4.0, queue = 4.0)
+        val clean =
+            cleanBase.copy(
+                codec = "video/H264",
+                availableOutgoingBitrateBps = 8_000_000.0,
+                roundTripTimeMs = 30,
+                packetLossRatio = 0.0,
+                recent =
+                    cleanBase.recent!!.copy(
+                        bitrateBps = 700_000,
+                        qpAverage = 18.0
+                    )
+            )
+        val glass =
+            receiver(fps = 20, decode = 4.0, presented = 20)
+                .copy(jitterMs = 8.0, jitterTargetMs = 10.0)
+
+        repeat(8) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = clean,
+                    receiver = glass,
+                    sourceFps = 20.0,
+                    motionActive = true,
+                    targetFps = 20,
+                    nowMs = 8_000L + index * 1_000L,
+                    interactionActive = true,
+                    allowResolutionRecovery = false,
+                    profile = lowProfile,
+                    allowInteractionReadabilityRecovery = true
+                )
+            )
+        }
+
+        assertEquals(360, budget.shortEdge)
+        assertEquals(360, budget.apply(lowProfile, true).captureWidthPx)
+    }
+
 }
