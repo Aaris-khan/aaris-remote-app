@@ -206,6 +206,60 @@ class AdaptiveScreenSmoothnessTest {
     }
 
     @Test
+    fun knownSixtyHzSourceRescuesThroughTwentyThenThirty() {
+        val governor =
+            VideoCadenceGovernor(
+                maxFps = 30,
+                initialCap = 15
+            )
+
+        assertTrue(
+            governor.ensureInteractionFloor(
+                minimumFps = 24,
+                nowMs = 1_000L,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        // 24 fps is not evenly sampleable from a 60 Hz producer.
+        assertEquals(20, governor.cap)
+
+        val cleanTwenty =
+            outbound(
+                fps = 20,
+                processingMs = 8.0,
+                queueMs = 0.0
+            ).copy(
+                roundTripTimeMs = 20,
+                packetLossRatio = 0.0,
+                codecImplementation = "c2.mtk.avc.encoder"
+            )
+
+        assertFalse(
+            governor.tryProbeDuringInteraction(
+                outbound = cleanTwenty,
+                receiver = null,
+                producerFps = 60.0,
+                interactionActive = true,
+                nowMs = 2_500L,
+                maximumFps = 30,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertTrue(
+            governor.tryProbeDuringInteraction(
+                outbound = cleanTwenty,
+                receiver = null,
+                producerFps = 60.0,
+                interactionActive = true,
+                nowMs = 3_000L,
+                maximumFps = 30,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(30, governor.cap)
+    }
+
+    @Test
     fun cleanActiveMotionRescuesRecentOverloadFromFifteenToTwentyFour() {
         val governor = VideoCadenceGovernor(maxFps = 30, initialCap = 15)
 
