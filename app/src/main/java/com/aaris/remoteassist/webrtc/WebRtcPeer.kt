@@ -630,7 +630,7 @@ class WebRtcPeer(
             )
         )
         controllerVideoTransceiver?.let {
-            preferBaselineScreenCodec(
+            preferScreenCodec(
                 transceiver = it,
                 senderSide = false
             )
@@ -676,7 +676,7 @@ class WebRtcPeer(
             )
         )
         localScreenTransceiver = transceiver
-        preferBaselineScreenCodec(
+        preferScreenCodec(
             transceiver = transceiver,
             senderSide = true
         )
@@ -1782,7 +1782,10 @@ class WebRtcPeer(
         }
     }
 
-    private fun preferBaselineScreenCodec(transceiver: RtpTransceiver, senderSide: Boolean) {
+    private fun preferScreenCodec(
+        transceiver: RtpTransceiver,
+        senderSide: Boolean
+    ) {
         runCatching {
             val codecs = if (senderSide) factory.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
                 else factory.getRtpReceiverCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
@@ -1862,7 +1865,7 @@ class WebRtcPeer(
                 onFailure = {
                     offerPreparationInFlight.set(false)
                     codecRepairAttempted.set(false)
-                    preferBaselineScreenCodec(
+                    preferScreenCodec(
                         transceiver,
                         true
                     )
@@ -1872,7 +1875,7 @@ class WebRtcPeer(
         } catch (failure: Exception) {
             offerPreparationInFlight.set(false)
             codecRepairAttempted.set(false)
-            preferBaselineScreenCodec(
+            preferScreenCodec(
                 transceiver,
                 true
             )

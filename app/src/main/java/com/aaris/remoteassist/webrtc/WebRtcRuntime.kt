@@ -77,21 +77,27 @@ object WebRtcRuntime {
              * so texture-backed frames stay on the GPU path without adding a
              * decoded-frame queue or CPU copy.
              *
-             * H264 high-profile remains disabled. Capability-based negotiation
-             * can use hardware baseline H264; VP8 remains available. Intel VP8 acceleration
-             * is harmless on ARM and useful for x86/ChromeOS-class devices.
+             * Enable WebRTC's own hardware-gated constrained-high H.264 path.
+             * The pinned factory publishes it only for its compatibility-tested
+             * encoder set, and SDP selects it only when the remote decoder also
+             * advertises the same profile. Baseline H.264 and VP8 remain in the
+             * preference list, so unsupported phones and browsers keep their
+             * existing path rather than being forced onto High Profile.
+             *
+             * Intel VP8 acceleration is harmless on ARM and useful for
+             * x86/ChromeOS-class devices.
              */
             val encoderFactory =
                 AarisRealtimeVideoEncoderFactory(
                     eglBase.eglBaseContext,
                     true,
-                    false
+                    true
                 )
             val decoderFactory =
                 AarisLowLatencyVideoDecoderFactory(
                     eglBase.eglBaseContext
                 )
-            hardwareEncoders = runCatching { HardwareVideoEncoderFactory(eglBase.eglBaseContext, true, false)
+            hardwareEncoders = runCatching { HardwareVideoEncoderFactory(eglBase.eglBaseContext, true, true)
                 .supportedCodecs.map { it.name.uppercase() }.toSet() }.getOrDefault(emptySet())
             hardwareDecoders = runCatching { HardwareVideoDecoderFactory(eglBase.eglBaseContext)
                 .supportedCodecs.map { it.name.uppercase() }.toSet() }.getOrDefault(emptySet())

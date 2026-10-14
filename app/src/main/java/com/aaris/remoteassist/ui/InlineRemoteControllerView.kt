@@ -1593,8 +1593,8 @@ class InlineRemoteControllerView(
 
     /**
      * Display-scheduler hint only: WebRTC still owns production, congestion
-     * control and pacing. Android may ignore the request. DEFAULT compatibility
-     * fits mixed remote UI/video, and Android 12+ may switch only seamlessly.
+     * control and pacing. Android may ignore the request, and Android 12+ may
+     * switch only seamlessly.
      */
     private fun applySurfaceFrameRateHint(fps: Int) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || fps < 0) return
@@ -1604,20 +1604,28 @@ class InlineRemoteControllerView(
 
         runCatching {
             /*
-             * This stream is variable-rate remote UI/video, not a request for
-             * "any display clock >= 60". On a 90 Hz panel, Android 16's AT_LEAST
-             * contract may legally keep/select 90 Hz for a 60 fps stream, which
-             * creates a deterministic 2:3 presentation cadence. DEFAULT keeps
-             * 60 as a preference while still letting SurfaceFlinger choose a
-             * compatible mode such as 60/120 and while allowing the system to
-             * ignore the hint when necessary.
+             * The Surface contains decoded video, even when those pixels depict
+             * a game or Android UI. Android's Frame Rate API explicitly assigns
+             * video surfaces to FIXED_SOURCE: it tells SurfaceFlinger that a
+             * non-matching display clock requires pulldown and may visibly
+             * stutter. DEFAULT instead claims that this producer can simply run
+             * at whatever clock the system selects, which is false for remote
+             * frames that have already been captured, encoded and decoded.
              *
-             * Keep the request stable for the whole stream and only permit
-             * seamless mode changes. Network-driven FPS changes must never
-             * toggle physical display modes.
+             * The vote itself remains stable for the stream lifetime. A 60 Hz
+             * fixed-source preference composes cleanly with the normal
+             * 60/30/20/15 source harmonics and lets Android choose a compatible
+             * 60/120 Hz mode when available. We still allow only seamless mode
+             * changes, never retune from noisy network cadence, and use DEFAULT
+             * only while clearing the preference (compatibility is ignored for
+             * a zero-Hz request).
              */
             val compatibility =
-                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
+                if (fps == 0) {
+                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
+                } else {
+                    Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
+                }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 surface.setFrameRate(

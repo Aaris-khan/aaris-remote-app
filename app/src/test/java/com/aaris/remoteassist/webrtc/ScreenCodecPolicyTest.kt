@@ -13,14 +13,19 @@ class ScreenCodecPolicyTest {
     private val baseline = codec("H264", 100, "packetization-mode" to "1", "profile-level-id" to "42e01f")
     private val baselineRtx = codec("rtx", 101, "apt" to "100")
     private val high = codec("H264", 102, "packetization-mode" to "1", "profile-level-id" to "640c1f")
+    private val highRtx = codec("rtx", 103, "apt" to "102")
+    private val unsupportedMain = codec("H264", 104, "packetization-mode" to "1", "profile-level-id" to "4d001f")
     private val fec = codec("ulpfec", 116)
-    private val all = listOf(vp8, vp8Rtx, high, baseline, baselineRtx, fec)
+    private val all = listOf(vp8, vp8Rtx, baseline, baselineRtx, high, highRtx, unsupportedMain, fec)
 
-    @Test fun knownHardwareH264ComesFirstWithoutRemovingTheFallback() {
+    @Test fun hardwareHighProfileComesFirstWithoutRemovingBaselineOrVp8Fallback() {
         assertEquals("H264", ScreenCodecPolicy.preferred(setOf("H264")))
         assertEquals("VP8", ScreenCodecPolicy.preferred(emptySet()))
         val order = ScreenCodecPolicy.order(all, "H264")
-        assertSame(baseline, order[0]); assertSame(baselineRtx, order[1])
+        assertSame(high, order[0])
+        assertSame(highRtx, order[1])
+        assertSame(baseline, order[2])
+        assertSame(baselineRtx, order[3])
         assertEquals(all.toSet(), order.toSet())
     }
     @Test fun failedH264CanEscapeToVp8WithoutReassertingTheBrokenCodec() {
@@ -36,8 +41,21 @@ class ScreenCodecPolicyTest {
     @Test fun repairUsesOnlySelectedCodecAndItsRetransmissionPayload() {
         val selected = ScreenCodecPolicy.order(all, "VP8", exclusive = true)
         assertEquals(listOf(vp8, vp8Rtx, fec), selected)
-        assertEquals(listOf(baseline, baselineRtx, fec), ScreenCodecPolicy.order(all, "H264", exclusive = true))
-        assertTrue(ScreenCodecPolicy.order(listOf(high), "H264", exclusive = true).isEmpty())
+        assertEquals(
+            listOf(high, highRtx, baseline, baselineRtx, fec),
+            ScreenCodecPolicy.order(all, "H264", exclusive = true)
+        )
+        assertEquals(
+            listOf(high),
+            ScreenCodecPolicy.order(listOf(high), "H264", exclusive = true)
+        )
+        assertTrue(
+            ScreenCodecPolicy.order(
+                listOf(unsupportedMain),
+                "H264",
+                exclusive = true
+            ).isEmpty()
+        )
     }
     @Test fun repairRequiresExplicitRemoteVideoSupportForTheSameH264Profile() {
         val sdp = "m=video 9 UDP/TLS/RTP/SAVPF 96 100\r\na=rtpmap:96 VP8/90000\r\na=rtpmap:100 H264/90000\r\na=fmtp:100 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"

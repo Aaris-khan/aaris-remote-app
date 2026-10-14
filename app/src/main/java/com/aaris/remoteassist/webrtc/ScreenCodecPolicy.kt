@@ -2,7 +2,7 @@ package com.aaris.remoteassist.webrtc
 
 import org.webrtc.RtpCapabilities
 
-/** Prefer actual hardware support, while keeping a negotiated VP8 safety path. */
+/** Prefer actual hardware support, while keeping negotiated baseline/VP8 safety paths. */
 internal object ScreenCodecPolicy {
     fun preferred(hardware: Set<String>): String = if (hardware.any { it.equals("H264", true) }) "H264" else "VP8"
 
@@ -16,23 +16,89 @@ internal object ScreenCodecPolicy {
     fun recoveryCandidates(current: String): List<String> =
         listOf(if (current.equals("H264", true)) "VP8" else "H264")
 
-    private fun usable(codec: RtpCapabilities.CodecCapability, primary: String): Boolean =
-        codec.name.equals(primary, true) && (primary != "H264" ||
-            (codec.parameters["packetization-mode"] == "1" &&
-                codec.parameters["profile-level-id"]?.startsWith("42", true) == true))
+    /**
+     * Rank only H.264 profiles that pinned WebRTC's Android factories can
+     * construct. Constrained High is published only when the selected hardware
+     * encoder advertises WebRTC's guarded high-profile path; constrained
+     * baseline remains immediately behind it for every peer/browser that does
+     * not negotiate High.
+     */
+    private fun h264ProfileRank(
+        codec: RtpCapabilities.CodecCapability
+    ): Int? {
+        if (
+            !codec.name.equals("H264", true) ||
+            codec.parameters["packetization-mode"] != "1"
+        ) {
+            return null
+        }
+
+        val profile =
+            codec.parameters["profile-level-id"]
+                ?.lowercase()
+                ?: return null
+        return when {
+            profile.startsWith("640c") -> 0
+            profile.startsWith("42") -> 1
+            else -> null
+        }
+    }
+
+    private fun preferredRank(
+        codec: RtpCapabilities.CodecCapability,
+        primary: String
+    ): Int? {
+        if (!codec.name.equals(primary, true)) return null
+        return if (primary.equals("H264", true)) {
+            h264ProfileRank(codec)
+        } else {
+            0
+        }
+    }
 
     fun order(codecs: List<RtpCapabilities.CodecCapability>, primary: String, exclusive: Boolean = false): List<RtpCapabilities.CodecCapability> {
-        val payloads = codecs.filter { usable(it, primary) }.map { it.preferredPayloadType.toString() }.toSet()
-        if (payloads.isEmpty()) return if (exclusive) emptyList() else codecs
-        fun rank(codec: RtpCapabilities.CodecCapability): Int = when {
-            usable(codec, primary) -> 0
-            codec.name.equals("RTX", true) && codec.parameters["apt"] in payloads -> 1
-            codec.name.uppercase() in setOf("RED", "ULPFEC", "FLEXFEC-03") -> 2
-            codec.name.equals("VP8", true) -> 3
-            usable(codec, "H264") -> 4
-            else -> 5
+        val payloadRanks =
+            codecs.mapNotNull { codec ->
+                preferredRank(codec, primary)?.let { rank ->
+                    codec.preferredPayloadType.toString() to rank
+                }
+            }.toMap()
+        if (payloadRanks.isEmpty()) {
+            return if (exclusive) emptyList() else codecs
         }
-        return codecs.withIndex().filter { !exclusive || rank(it.value) <= 2 }
+        val lastPrimaryRank =
+            payloadRanks.values.maxOrNull() ?: 0
+        // Keep each RTX payload immediately after the profile it repairs.
+        val protectionRank = (lastPrimaryRank + 1) * 2
+        val fallbackRank = protectionRank + 1
+
+        fun rank(codec: RtpCapabilities.CodecCapability): Int {
+            preferredRank(codec, primary)?.let {
+                return it * 2
+            }
+            if (codec.name.equals("RTX", true)) {
+                payloadRanks[codec.parameters["apt"]]?.let {
+                    return it * 2 + 1
+                }
+            }
+            if (
+                codec.name.uppercase() in
+                setOf("RED", "ULPFEC", "FLEXFEC-03")
+            ) {
+                return protectionRank
+            }
+            if (codec.name.equals("VP8", true)) {
+                return fallbackRank
+            }
+            h264ProfileRank(codec)?.let {
+                return fallbackRank + 1 + it
+            }
+            return fallbackRank + 3
+        }
+
+        return codecs.withIndex().filter {
+            !exclusive || rank(it.value) <= protectionRank
+        }
             .sortedWith(compareBy({ rank(it.value) }, { it.index })).map { it.value }
     }
 
