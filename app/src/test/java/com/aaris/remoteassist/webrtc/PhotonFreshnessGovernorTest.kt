@@ -86,15 +86,18 @@ class PhotonFreshnessGovernorTest {
         var p = g.observe(outbound(), receiver(), 60, false, 1_000)
         assertEquals(PhotonFreshnessState.CLEAN, p.state)
         assertFalse(p.allowCadencePromotion)
+        assertFalse(p.allowReadabilityRecovery)
         assertFalse(p.allowResolutionRecovery)
 
         p = g.observe(outbound(), receiver(), 60, false, 1_500)
         assertTrue(p.allowCadencePromotion)
+        assertFalse(p.allowReadabilityRecovery)
         assertFalse(p.allowResolutionRecovery)
 
         g.observe(outbound(), receiver(), 60, false, 2_000)
         p = g.observe(outbound(), receiver(), 60, false, 2_500)
         assertTrue(p.allowCadencePromotion)
+        assertTrue(p.allowReadabilityRecovery)
         assertTrue(p.allowResolutionRecovery)
     }
 
@@ -204,15 +207,23 @@ class PhotonFreshnessGovernorTest {
     }
 
     @Test
-    fun activeTouchCanPromoteCadenceButNeverUpscaleDetail() {
+    fun activeTouchMayRecoverReadabilityButNeverFullDetail() {
         val g = PhotonFreshnessGovernor()
         var p: PhotonPolicy? = null
         repeat(5) { i ->
-            p = g.observe(outbound(), receiver(), 60, true, 1_000L + i * 500L)
+            p = g.observe(
+                outbound(),
+                receiver(),
+                60,
+                true,
+                1_000L + i * 500L
+            )
         }
 
-        assertTrue(checkNotNull(p).allowCadencePromotion)
-        assertFalse(checkNotNull(p).allowResolutionRecovery)
+        val policy = checkNotNull(p)
+        assertTrue(policy.allowCadencePromotion)
+        assertTrue(policy.allowReadabilityRecovery)
+        assertFalse(policy.allowResolutionRecovery)
     }
 
     @Test

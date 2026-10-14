@@ -170,7 +170,13 @@ class GamingSmoothnessLabTest {
                     minRecoveredCap = 30,
                     recoveryDeadlineMs = 19_000,
                     maxPostRecoveryLagWindows = 3,
-                    minTailPresentFps = 40.0
+                    minTailPresentFps = 40.0,
+                    /*
+                     * A transient severe burst may spend the 360 survival rung,
+                     * but a recovered 5.5 Mbps path must restore at least the
+                     * protected readable 540px class during continuous control.
+                     */
+                    minFinalShortEdge = 540
                 ),
                 Scenario(
                     name = "lossy_mobile_6pct",
@@ -603,7 +609,8 @@ class GamingSmoothnessLabTest {
                         targetFps = target,
                         nowMs = nowMs,
                         interactionActive = true,
-                        allowResolutionRecovery = false,
+                        allowResolutionRecovery =
+                            photonPolicy.allowResolutionRecovery,
                         profile = profile,
                         allowSpatialRelief =
                             preferSpatialReliefBeforeCadence ||
@@ -615,7 +622,9 @@ class GamingSmoothnessLabTest {
                                 540
                             } else {
                                 360
-                            }
+                            },
+                        allowInteractionReadabilityRecovery =
+                            photonPolicy.allowReadabilityRecovery
                     )
                 }
 

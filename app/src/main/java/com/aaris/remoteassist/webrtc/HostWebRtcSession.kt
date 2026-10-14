@@ -1615,13 +1615,21 @@ class HostWebRtcSession(
                         targetFps = motionTargetFps,
                         nowMs = now,
                         interactionActive = interactionActive,
-                        // Upscaling changes the encoder input dimensions. Do not pay
-                        // that MediaCodec reconfiguration in the middle of a controller
-                        // gesture; active control values fresh motion over extra detail.
+                        /*
+                         * Full/native upscaling changes the encoder input dimensions
+                         * and remains forbidden during active control. A distinct,
+                         * photon-gated readability lane may restore only 360 -> 540
+                         * after multiple clean glass windows. That bounded step repairs
+                         * small-text legibility after a transient burst without opening
+                         * repeated 540 -> 720/native MediaCodec reconfigurations.
+                         */
                         allowResolutionRecovery =
                             !cadenceGovernor.probingHighCadence &&
-                            !interactionActive &&
-                            photonPolicy.allowResolutionRecovery,
+                                photonPolicy.allowResolutionRecovery,
+                        allowInteractionReadabilityRecovery =
+                            !cadenceGovernor.probingHighCadence &&
+                                interactionActive &&
+                                photonPolicy.allowReadabilityRecovery,
                         sourceMaxGapMs = sourceMaxGapMs,
                         sourceMotionActive = sourceMotionActive,
                         interactionCaptureStarved =

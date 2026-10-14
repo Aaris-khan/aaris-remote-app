@@ -12,6 +12,17 @@ internal enum class PhotonFreshnessState {
 internal data class PhotonPolicy(
     val state: PhotonFreshnessState,
     val allowCadencePromotion: Boolean,
+    /**
+     * Permission to restore only the protected readable spatial rung (<=540px).
+     * Unlike full detail recovery, this may become true during active control
+     * after the same end-to-end clean-glass proof.
+     */
+    val allowReadabilityRecovery: Boolean,
+    /**
+     * Permission for unrestricted spatial recovery (including 540 -> 720/native).
+     * Active control keeps this false to avoid a costly MediaCodec/source resize
+     * in the middle of a gesture.
+     */
     val allowResolutionRecovery: Boolean,
     val glassDeliveryRatio: Double?,
     val pipelineDebtMs: Double?,
@@ -42,7 +53,8 @@ internal data class PhotonPolicy(
             "ack=${ms(commandAckMs)} " +
             "postAck=${ms(postAckPresentMs)} " +
             "clean=$cleanGlassWindows " +
-            "promote=$allowCadencePromotion detail=$allowResolutionRecovery"
+            "promote=$allowCadencePromotion readable=$allowReadabilityRecovery " +
+            "detail=$allowResolutionRecovery"
     }
 }
 
@@ -67,6 +79,7 @@ internal class PhotonFreshnessGovernor {
         PhotonPolicy(
             state = PhotonFreshnessState.UNKNOWN,
             allowCadencePromotion = false,
+            allowReadabilityRecovery = false,
             allowResolutionRecovery = false,
             glassDeliveryRatio = null,
             pipelineDebtMs = null,
@@ -295,14 +308,27 @@ internal class PhotonFreshnessGovernor {
         val allowCadencePromotion =
             state == PhotonFreshnessState.CLEAN &&
                 cleanGlassWindows >= CLEAN_WINDOWS_FOR_CADENCE
-        val allowResolutionRecovery =
+        /*
+         * Upward spatial policy is intentionally split in two.
+         *
+         * Restoring the 540px readability floor after a transient network burst
+         * is materially different from enlarging 540 -> 720/native. The former
+         * repairs small-text legibility and may be worth one bounded codec/source
+         * transition during continuous remote control once glass is proven clean.
+         * The latter remains idle-only because another large MediaCodec operating-
+         * point change can itself create the hitch the user is trying to avoid.
+         */
+        val allowReadabilityRecovery =
             state == PhotonFreshnessState.CLEAN &&
-                cleanGlassWindows >= CLEAN_WINDOWS_FOR_DETAIL &&
+                cleanGlassWindows >= CLEAN_WINDOWS_FOR_DETAIL
+        val allowResolutionRecovery =
+            allowReadabilityRecovery &&
                 !interactionActive
 
         return PhotonPolicy(
             state = state,
             allowCadencePromotion = allowCadencePromotion,
+            allowReadabilityRecovery = allowReadabilityRecovery,
             allowResolutionRecovery = allowResolutionRecovery,
             glassDeliveryRatio = glassRatio,
             pipelineDebtMs = pipelineDebtMs,
@@ -322,6 +348,7 @@ internal class PhotonFreshnessGovernor {
             lastPolicy.copy(
                 state = PhotonFreshnessState.UNKNOWN,
                 allowCadencePromotion = false,
+                allowReadabilityRecovery = false,
                 allowResolutionRecovery = false,
                 cleanGlassWindows = 0
             )
