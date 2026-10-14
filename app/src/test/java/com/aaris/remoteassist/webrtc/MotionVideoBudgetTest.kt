@@ -2721,4 +2721,249 @@ class MotionVideoBudgetTest {
         assertEquals(720, budget.apply(profile, true).captureWidthPx)
     }
 
+
+    @Test
+    fun activeControlRecoversOnlyReadabilityAfterProvenCleanBurstRecovery() {
+        val budget = MotionVideoBudget()
+        val collapse =
+            sender(
+                fps = 6,
+                encode = 53.0,
+                queue = 585.0,
+                implementation = "libvpx"
+            )
+
+        assertTrue(
+            budget.observe(
+                collapse,
+                null,
+                30.0,
+                true,
+                30,
+                1_000L
+            )
+        )
+        assertTrue(
+            budget.observe(
+                collapse,
+                null,
+                30.0,
+                true,
+                30,
+                4_000L
+            )
+        )
+        assertEquals(360, budget.shortEdge)
+
+        val recoveredBase =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            )
+        val recovered =
+            recoveredBase.copy(
+                codec = "video/H264",
+                availableOutgoingBitrateBps = 5_500_000.0,
+                roundTripTimeMs = 55,
+                packetLossRatio = 0.008,
+                recent =
+                    recoveredBase.recent!!.copy(
+                        bitrateBps = 1_800_000,
+                        qpAverage = 20.0
+                    )
+            )
+        val glass =
+            receiver(
+                fps = 60,
+                decode = 4.0,
+                presented = 60
+            ).copy(
+                jitterMs = 10.0,
+                jitterTargetMs = 12.0
+            )
+        val highCeilingProfile =
+            profile.copy(
+                maxVideoBitrateBps = 10_000_000,
+                motionFps = 60
+            )
+
+        // The measured 360 stream uses 1.8 Mbps. Naive 2.25x area projection
+        // plus margin would require more than a 5.5 Mbps path after headroom.
+        // The readability lane caps that estimate at the existing 540 screen
+        // envelope, but still requires three strict BWE/glass-clean windows.
+        repeat(2) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = recovered,
+                    receiver = glass,
+                    sourceFps = 60.0,
+                    motionActive = true,
+                    targetFps = 60,
+                    nowMs = 8_000L + index * 1_000L,
+                    interactionActive = true,
+                    allowResolutionRecovery = false,
+                    profile = highCeilingProfile,
+                    allowInteractionReadabilityRecovery = true
+                )
+            )
+        }
+        assertEquals(360, budget.shortEdge)
+
+        assertTrue(
+            budget.observe(
+                outbound = recovered,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 10_000L,
+                interactionActive = true,
+                allowResolutionRecovery = false,
+                profile = highCeilingProfile,
+                allowInteractionReadabilityRecovery = true
+            )
+        )
+        assertEquals(540, budget.shortEdge)
+        assertEquals(
+            540,
+            budget.apply(
+                highCeilingProfile,
+                motionActive = true
+            ).captureWidthPx
+        )
+
+        // Continuous control may regain readability but never pay the larger
+        // 540 -> 720/native source/MediaCodec reconfiguration.
+        repeat(12) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = recovered,
+                    receiver = glass,
+                    sourceFps = 60.0,
+                    motionActive = true,
+                    targetFps = 60,
+                    nowMs = 11_000L + index * 1_000L,
+                    interactionActive = true,
+                    allowResolutionRecovery = false,
+                    profile = highCeilingProfile,
+                    allowInteractionReadabilityRecovery = true
+                )
+            )
+        }
+        assertEquals(540, budget.shortEdge)
+    }
+
+    @Test
+    fun activeReadabilityRecoveryNeedsExplicitPhotonPermission() {
+        val budget = MotionVideoBudget()
+        val collapse =
+            sender(
+                fps = 6,
+                encode = 53.0,
+                queue = 585.0,
+                implementation = "libvpx"
+            )
+        budget.observe(collapse, null, 30.0, true, 30, 1_000L)
+        budget.observe(collapse, null, 30.0, true, 30, 4_000L)
+        assertEquals(360, budget.shortEdge)
+
+        val cleanBase = sender(fps = 60, encode = 5.0, queue = 5.0)
+        val clean =
+            cleanBase.copy(
+                codec = "video/H264",
+                availableOutgoingBitrateBps = 8_000_000.0,
+                roundTripTimeMs = 40,
+                packetLossRatio = 0.0,
+                recent =
+                    cleanBase.recent!!.copy(
+                        bitrateBps = 1_200_000,
+                        qpAverage = 20.0
+                    )
+            )
+        val glass =
+            receiver(fps = 60, decode = 4.0, presented = 60)
+                .copy(jitterMs = 8.0, jitterTargetMs = 10.0)
+
+        repeat(12) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = clean,
+                    receiver = glass,
+                    sourceFps = 60.0,
+                    motionActive = true,
+                    targetFps = 60,
+                    nowMs = 8_000L + index * 1_000L,
+                    interactionActive = true,
+                    allowResolutionRecovery = false,
+                    profile = profile.copy(maxVideoBitrateBps = 10_000_000),
+                    allowInteractionReadabilityRecovery = false
+                )
+            )
+        }
+
+        assertEquals(360, budget.shortEdge)
+    }
+
+    @Test
+    fun activeReadabilityRecoveryRejectsInsufficientBweHeadroom() {
+        val budget = MotionVideoBudget()
+        val collapse =
+            sender(
+                fps = 6,
+                encode = 53.0,
+                queue = 585.0,
+                implementation = "libvpx"
+            )
+        budget.observe(collapse, null, 30.0, true, 30, 1_000L)
+        budget.observe(collapse, null, 30.0, true, 30, 4_000L)
+        assertEquals(360, budget.shortEdge)
+
+        val constrainedBase =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            )
+        val constrained =
+            constrainedBase.copy(
+                codec = "video/H264",
+                availableOutgoingBitrateBps = 5_000_000.0,
+                roundTripTimeMs = 55,
+                packetLossRatio = 0.008,
+                recent =
+                    constrainedBase.recent!!.copy(
+                        bitrateBps = 1_800_000,
+                        qpAverage = 20.0
+                    )
+            )
+        val glass =
+            receiver(fps = 60, decode = 4.0, presented = 60)
+                .copy(jitterMs = 10.0, jitterTargetMs = 12.0)
+
+        repeat(10) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = constrained,
+                    receiver = glass,
+                    sourceFps = 60.0,
+                    motionActive = true,
+                    targetFps = 60,
+                    nowMs = 8_000L + index * 1_000L,
+                    interactionActive = true,
+                    allowResolutionRecovery = false,
+                    profile = profile.copy(maxVideoBitrateBps = 10_000_000),
+                    allowInteractionReadabilityRecovery = true
+                )
+            )
+        }
+
+        // 5.0 Mbps is below the strict fast-recovery reserve for the modeled
+        // 540@60 operating point, so continuous control stays at 360 instead of
+        // probing a resize that would immediately create fresh congestion.
+        assertEquals(360, budget.shortEdge)
+    }
+
 }
