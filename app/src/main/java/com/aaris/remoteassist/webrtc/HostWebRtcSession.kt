@@ -1521,23 +1521,21 @@ class HostWebRtcSession(
                     displayRefreshRateHz = receiver?.displayRefreshRateHz,
                     sourceRefreshRateHz = sourceRefreshRateHz
                 )
+            val clarityCadenceVotePending =
+                cadenceGovernor.hasPendingClarityBandwidthRelief()
 
             /*
              * Pressure-class actuator routing.
              *
-             * Network/jitter/BWE pressure normally stays cadence-first because
-             * preserving pixels keeps text and forms readable. Two measured
-             * exceptions may spend ONE explicit >540px rung first:
+             * Network/BWE/quantizer pressure stays cadence-first so screen
+             * glyph pixels survive constrained links. The only high-cadence
+             * spatial-first exception is proven LOCAL pixel-processing pressure:
+             * encoder, decoder, or adaptive MediaProjection starvation where
+             * fewer pixels directly reduce per-frame compute cost.
              *
-             * 1) proven local encoder/decoder/MediaProjection pressure, where
-             *    fewer pixels directly reduce per-frame work; and
-             * 2) codec-specific high QP on an otherwise clean path, where the
-             *    current pixels are already visibly starved for bits.
-             *
-             * On a 60 Hz source the next phase-stable temporal fallback can be
-             * straight to 30 fps. A single 720 -> 540 step may therefore preserve
-             * both gaming-style cadence and cleaner encoded detail. The protected
-             * 540px floor remains temporal-first.
+             * This keeps the app aligned with WebRTC screenshare semantics:
+             * compression quality pressure must not geometrically blur the
+             * source before temporal excess has been exhausted.
              */
             val preferSpatialReliefBeforeCadence =
                 motionVideoBudget.prefersSpatialReliefBeforeCadence(
@@ -1559,23 +1557,21 @@ class HostWebRtcSession(
             /*
              * One health window may move ONE expensive media actuator.
              *
-             * BWE/network/render pressure keeps the established temporal-first
-             * path unless codec-specific QP directly proves that the current
-             * pixels are over-quantized on an otherwise clean transport. Local
-             * pixel-processing pressure and that narrow compression-quality
-             * signal may invert only this one decision while source detail is
-             * still above 540px. This avoids a visible 60 -> 30 cadence cliff
-             * without letting generic congestion blur the text-detail floor.
+             * The BWE clarity guard remains the earliest cadence-only lane.
+             * While its two-window vote is genuinely pending it owns the
+             * actuator. A raw ceiling that the cadence governor rejects (for
+             * example because a 60 Hz producer has no safe high-cadence rung)
+             * must NOT reserve the window: measured queue/decode/glass pressure
+             * is allowed to continue through the normal governor immediately.
              *
-             * The BWE clarity guard remains the earliest cadence-only lane, and
-             * all unresolved/ambiguous pressure keeps the conservative existing
-             * ordering.
+             * Proven local compute pressure may still take one spatial rung
+             * first. Generic network/compression pressure never gets that bypass.
              */
             val requestedFps = effectiveCaptureProfile(profile).fps
             val cadencePressureChanged =
                 if (
                     clarityCadenceChanged ||
-                    clarityCadenceCeiling != null ||
+                    clarityCadenceVotePending ||
                     preferSpatialReliefBeforeCadence
                 ) {
                     false
@@ -1602,7 +1598,8 @@ class HostWebRtcSession(
 
             val motionBudgetChanged =
                 if (
-                    clarityCadenceCeiling != null ||
+                    clarityCadenceChanged ||
+                    clarityCadenceVotePending ||
                     cadencePressureChanged
                 ) {
                     false
@@ -1660,7 +1657,7 @@ class HostWebRtcSession(
                     motionBudgetChanged ||
                     clarityCadenceChanged ||
                     cadencePressureChanged ||
-                    clarityCadenceCeiling != null
+                    clarityCadenceVotePending
                 ) {
                     false
                 } else {

@@ -83,6 +83,7 @@ class AdaptiveScreenSmoothnessTest {
                 nowMs = 1_000L
             )
         )
+        assertTrue(governor.hasPendingClarityBandwidthRelief())
         assertEquals(60, governor.cap)
 
         assertTrue(
@@ -95,10 +96,39 @@ class AdaptiveScreenSmoothnessTest {
         // With no physical clock evidence yet, use the existing safe cadence
         // ladder and choose the nearest rung under the measured BWE ceiling.
         assertEquals(33, governor.cap)
+        assertFalse(governor.hasPendingClarityBandwidthRelief())
         assertTrue(
             governor.debugSummary(2_000L)
                 .contains("clarity-bwe-relief->33")
         )
+    }
+
+    @Test
+    fun rejectedSourceHarmonicClaritySuggestionDoesNotReserveActuator() {
+        val governor =
+            VideoCadenceGovernor(
+                maxFps = 60,
+                initialCap = 60
+            )
+
+        /*
+         * A 50 fps soft bandwidth suggestion has no phase-stable high-cadence
+         * rung on a 60 Hz MediaProjection source. The clarity lane deliberately
+         * refuses a predictive 60 -> 30 cliff; that rejection must also release
+         * ownership immediately so the measured pressure governor can still act
+         * on this same health window.
+         */
+        assertFalse(
+            governor.observeClarityBandwidthCeiling(
+                ceilingFps = 50,
+                requestedFps = 60,
+                nowMs = 1_000L,
+                displayRefreshRateHz = 60.0,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(60, governor.cap)
+        assertFalse(governor.hasPendingClarityBandwidthRelief())
     }
 
     @Test

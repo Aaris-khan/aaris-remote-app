@@ -185,6 +185,18 @@ class VideoCadenceGovernor(
     }
 
     /**
+     * True only while the predictive clarity lane owns a real, actionable
+     * temporal vote. A raw MotionVideoBudget suggestion may be rejected here
+     * when source-harmonic pacing would turn a tiny estimate miss into a
+     * 60 -> 30 cliff. Callers must not treat that rejected suggestion as an
+     * actuator reservation, otherwise normal queue/decode/glass pressure is
+     * temporarily blinded and visible micro-stutter can build before relief.
+     */
+    fun hasPendingClarityBandwidthRelief(): Boolean =
+        clarityBandwidthVoteTarget > 0 &&
+            clarityBandwidthPressure > 0
+
+    /**
      * Source geometry is an expensive encoder operating-point transition.
      *
      * The resize itself already acted on the current pressure sample, so clear
