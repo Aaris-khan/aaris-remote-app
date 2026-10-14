@@ -199,6 +199,31 @@ internal class MotionVideoBudget {
         if (!movingDemandProven) return null
 
         /*
+         * A high codec-specific QP is direct evidence that the current screen
+         * pixels are being quantized hard enough to lose edge/detail quality.
+         * When the rest of the path is clean and a >540px rung remains, prefer
+         * one bounded spatial step before spending cadence: 540@60 is often both
+         * sharper per encoded pixel and smoother than a mushy 720@30/45.
+         *
+         * The helper is codec-aware (H264/VP8 only), requires completed sender
+         * and receiver windows, and can never cross the protected 540px detail
+         * floor. If it declines, the existing bandwidth clarity lane below
+         * remains authoritative.
+         */
+        if (
+            quantizerSpatialReliefPreferred(
+                profile = profile,
+                outbound = outbound,
+                sender = sender,
+                receiver = receiver,
+                motionActive = motionActive,
+                targetFps = target
+            )
+        ) {
+            return null
+        }
+
+        /*
          * availableOutgoingBitrate is path capacity, while the completed RTP
          * window is the best measurement of what THIS screen content actually
          * costs. Forms/text can be cheap at 60 fps; games/video can be expensive
@@ -431,9 +456,26 @@ internal class MotionVideoBudget {
         val decodeMs = received.processingMs.valid()
         val queueMs = sender.sendQueueMs.valid()
         val jitterMs = received.playoutDelayMs.valid()
+        val quantizerSpatialPressure =
+            quantizerSpatialReliefPreferred(
+                profile = profile,
+                outbound = outbound,
+                sender = sender,
+                receiver = received,
+                motionActive = motionActive,
+                targetFps = goal
+            )
 
         /*
-         * Spatial-first is a LOCAL-compute lane, not a congestion heuristic.
+         * Spatial-first is normally a LOCAL-compute lane, not a congestion
+         * heuristic. Codec quantizer pressure is the narrow exception: QP is
+         * direct evidence that the current frame has too few bits per pixel.
+         * It may spend exactly one >540px rung while queue/jitter/loss remain
+         * clean even when libwebrtc labels the limiting reason as bandwidth.
+         *
+         * For ordinary CPU/producer pressure, preserve the historical rule that
+         * a bandwidth-limited path stays cadence-first.
+         */
          * Require the measured transport path to be quiet enough that changing
          * pixels is actually aimed at codec/capture work rather than masking a
          * network problem.
@@ -453,7 +495,7 @@ internal class MotionVideoBudget {
                 (outbound.packetLossRatio ?: 0.0) <
                 CLARITY_PRESERVING_MAX_LOSS_RATIO
 
-        if (!transportClean) return false
+        if (!transportClean && !quantizerSpatialPressure) return false
 
         /*
          * Match observe()'s measured codec-pressure contract exactly. A generic
@@ -515,7 +557,8 @@ internal class MotionVideoBudget {
                         } == true
                     )
 
-        return encoderComputePressure ||
+        return quantizerSpatialPressure ||
+            encoderComputePressure ||
             decoderComputePressure ||
             producerPressure
     }
@@ -696,6 +739,17 @@ internal class MotionVideoBudget {
             } == true
         val measuredSourceFps = sourceFps.valid()
         val measuredSourceMaxGapMs = sourceMaxGapMs.valid()
+        val quantizerPressure =
+            profile?.let { activeProfile ->
+                quantizerSpatialReliefPreferred(
+                    profile = activeProfile,
+                    outbound = outbound,
+                    sender = sender,
+                    receiver = received,
+                    motionActive = motionActive,
+                    targetFps = goal
+                )
+            } == true
 
         /*
          * Receiver/encoder telemetry cannot repair a frame that Android never
@@ -1013,8 +1067,15 @@ internal class MotionVideoBudget {
         if (
             bandwidthFreshnessPressure ||
             predictiveBandwidthPressure ||
-            rtpBurstPressure
+            rtpBurstPressure ||
+            quantizerPressure
         ) {
+            /*
+             * Quantizer pressure is not necessarily packet congestion, but it
+             * still proves that the current pixel operating point is starving
+             * for bits. Reuse the recovery cooldown so a clean 720 -> 540
+             * correction cannot bounce straight back to 720 on the next sample.
+             */
             lastBandwidthPressureAtMs = nowMs
         }
         val pressured =
@@ -1027,7 +1088,8 @@ internal class MotionVideoBudget {
                 rtpBurstPressure ||
                 predictiveResidencePressure ||
                 pipelineDeadlinePressure ||
-                producerStarvationPressure
+                producerStarvationPressure ||
+                quantizerPressure
 
         /*
          * Use exactly the same rung selection for a validated warm-start commit
@@ -1246,7 +1308,8 @@ internal class MotionVideoBudget {
                         encodePressure ||
                             decodePressure ||
                             presentationPressure ||
-                            pipelineDeadlinePressure
+                            pipelineDeadlinePressure ||
+                            quantizerPressure
                         )
             val settleMs = when {
                 severeBandwidthFreshnessPressure ->
@@ -1259,6 +1322,8 @@ internal class MotionVideoBudget {
                     RTP_BURST_FAST_SETTLE_MS
                 predictiveResidencePressure ->
                     RESIDENCE_GROWTH_FAST_SETTLE_MS
+                quantizerPressure ->
+                    QUANTIZER_SPATIAL_SETTLE_MS
                 highCadencePipelinePressure ->
                     HIGH_CADENCE_FAST_SETTLE_MS
                 else ->
@@ -1330,6 +1395,11 @@ internal class MotionVideoBudget {
                         nextRecoveryBitrateBps *
                         BWE_RECOVERY_HEADROOM_RATIO
                 } ?: true
+            val quantizerRecoverySafe =
+                ScreenQuantizerPolicy.isRecoverySafe(
+                    codec = outbound.codec,
+                    qpAverage = sender.qpAverage
+                )
             val healthy =
                 sender.fps >= goal * 0.9 &&
                     encodeMs != null &&
@@ -1338,6 +1408,7 @@ internal class MotionVideoBudget {
                     queueMs < 20.0 &&
                     receiverHealthy &&
                     recoveryBandwidthHealthy &&
+                    quantizerRecoverySafe &&
                     (outbound.packetLossRatio ?: 0.0) < 0.025
 
             /*
@@ -1375,6 +1446,10 @@ internal class MotionVideoBudget {
             val fastRecoveryEvidence =
                 healthy &&
                     resolutionRecoveryAllowed &&
+                    ScreenQuantizerPolicy.isFastRecoveryClean(
+                        codec = outbound.codec,
+                        qpAverage = sender.qpAverage
+                    ) &&
                     bandwidthEstimateBps?.let {
                         it >= nextRecoveryBitrateBps * fastHeadroomRatio
                     } == true &&
@@ -1768,6 +1843,88 @@ internal class MotionVideoBudget {
     }
 
     /**
+     * Decide whether measured compression quality justifies one spatial step.
+     *
+     * This path is intentionally narrower than generic bandwidth adaptation:
+     * - only H264/VP8 with codec-specific QP thresholds qualify;
+     * - both sender and receiver must be actively delivering motion;
+     * - queue/jitter/loss/RTT and controller glass must still be clean;
+     * - the admitted source must remain above the protected 540px text floor.
+     *
+     * A high QP therefore means "too many pixels for the bits available", not
+     * "the network is broken". Spending one 720/native -> 540 rung increases
+     * bits per encoded pixel while preserving interactive cadence. QP alone can
+     * never select 360.
+     */
+    private fun quantizerSpatialReliefPreferred(
+        profile: CaptureProfile,
+        outbound: VideoHealthSnapshot,
+        sender: VideoHealthWindow,
+        receiver: VideoHealthWindow?,
+        motionActive: Boolean,
+        targetFps: Int
+    ): Boolean {
+        val goal =
+            targetFps.coerceIn(
+                1,
+                MAX_MOTION_TARGET_FPS
+            )
+        if (
+            !motionActive ||
+            goal < CLARITY_PRESERVING_FPS_FLOOR ||
+            admittedSourceShortEdge(profile) <=
+                DETAIL_CLARITY_FLOOR_SHORT_EDGE ||
+            !ScreenQuantizerPolicy.isHighPressure(
+                codec = outbound.codec,
+                qpAverage = sender.qpAverage
+            )
+        ) {
+            return false
+        }
+
+        val received =
+            receiver
+                ?.takeIf {
+                    it.intervalMs in 500..6000 &&
+                        it.frames >= 2
+                }
+                ?: return false
+        val queueMs = sender.sendQueueMs.valid() ?: return false
+        val jitterMs = received.playoutDelayMs.valid() ?: return false
+        val minimumDelivery =
+            goal * QUANTIZER_SPATIAL_MIN_DELIVERY_RATIO
+        val expectedReceiverFps =
+            minOf(
+                sender.fps,
+                goal.toDouble()
+            )
+
+        if (
+            sender.intervalMs !in 500..6000 ||
+            sender.frames < 2 ||
+            sender.fps < minimumDelivery ||
+            received.fps <
+                expectedReceiverFps *
+                    QUANTIZER_SPATIAL_MIN_DELIVERY_RATIO ||
+            queueMs >= CLARITY_PRESERVING_MAX_QUEUE_MS ||
+            jitterMs >= CLARITY_PRESERVING_MAX_JITTER_MS ||
+            outbound.roundTripTimeMs?.let {
+                it > CLARITY_PRESERVING_MAX_RTT_MS
+            } == true ||
+            (outbound.packetLossRatio ?: 0.0) >=
+                CLARITY_PRESERVING_MAX_LOSS_RATIO ||
+            (received.dropped ?: 0) > 0 ||
+            (received.freezes ?: 0) > 0 ||
+            (received.maxRenderGapMs ?: 0) >=
+                CLARITY_PRESERVING_MAX_RENDER_GAP_MS
+        ) {
+            return false
+        }
+
+        return true
+    }
+
+    /**
      * Actual encoder/RTP demand relative to GCC/TWCC path capacity.
      *
      * A fixed resolution table cannot describe screen entropy: 720p text and
@@ -1926,6 +2083,14 @@ internal class MotionVideoBudget {
         const val CLARITY_PRESERVING_MAX_LOSS_RATIO = 0.04
         const val CLARITY_PRESERVING_MAX_JITTER_MS = 60.0
         const val CLARITY_PRESERVING_MAX_RENDER_GAP_MS = 100
+        /*
+         * QP pressure is meaningful only when the stream is substantially
+         * delivering its requested motion cadence. Below this ratio the primary
+         * problem is freshness/throughput, so existing cadence/queue pressure
+         * remains authoritative rather than blaming compression quality.
+         */
+        const val QUANTIZER_SPATIAL_MIN_DELIVERY_RATIO = 0.75
+        const val QUANTIZER_SPATIAL_SETTLE_MS = 1_000L
         const val BWE_RECOVERY_HEADROOM_RATIO = 1.20
         const val RECOVERY_CONTENT_PROJECTION_MARGIN = 1.15
 
