@@ -38,7 +38,10 @@ data class VideoHealthSnapshot(
     val keyFrameCount: Long? = null,
     val recent: VideoHealthWindow? = null,
     val availableOutgoingBitrateBps: Double? = null,
-    /** Cumulative codec quantizer sum from WebRTC stats; diagnostic only. */
+    /**
+     * Cumulative codec quantizer sum from WebRTC stats. The window tracker
+     * converts this to a per-window mean; only codec-aware policy may use it.
+     */
     val qpSum: Long? = null
 ) {
     fun compact(): String {

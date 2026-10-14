@@ -1525,13 +1525,19 @@ class HostWebRtcSession(
             /*
              * Pressure-class actuator routing.
              *
-             * Network/jitter/BWE pressure stays cadence-first because preserving
-             * pixels keeps text and forms readable. Proven local encoder,
-             * decoder or MediaProjection pressure on a clean path is different:
-             * on a 60 Hz source the phase-stable temporal fallback is often
-             * straight to 30 fps. Let MotionVideoBudget spend ONE explicit
-             * >540px spatial rung first when that can reduce per-frame work and
-             * preserve gaming-style motion cadence.
+             * Network/jitter/BWE pressure normally stays cadence-first because
+             * preserving pixels keeps text and forms readable. Two measured
+             * exceptions may spend ONE explicit >540px rung first:
+             *
+             * 1) proven local encoder/decoder/MediaProjection pressure, where
+             *    fewer pixels directly reduce per-frame work; and
+             * 2) codec-specific high QP on an otherwise clean path, where the
+             *    current pixels are already visibly starved for bits.
+             *
+             * On a 60 Hz source the next phase-stable temporal fallback can be
+             * straight to 30 fps. A single 720 -> 540 step may therefore preserve
+             * both gaming-style cadence and cleaner encoded detail. The protected
+             * 540px floor remains temporal-first.
              */
             val preferSpatialReliefBeforeCadence =
                 motionVideoBudget.prefersSpatialReliefBeforeCadence(
@@ -1554,10 +1560,12 @@ class HostWebRtcSession(
              * One health window may move ONE expensive media actuator.
              *
              * BWE/network/render pressure keeps the established temporal-first
-             * path. Local pixel-processing pressure may invert only this one
-             * decision while source detail is still above 540px: an explicit
-             * geometry step can remove encoder/decode/capture work without
-             * creating the visible 60 -> 30 cadence cliff.
+             * path unless codec-specific QP directly proves that the current
+             * pixels are over-quantized on an otherwise clean transport. Local
+             * pixel-processing pressure and that narrow compression-quality
+             * signal may invert only this one decision while source detail is
+             * still above 540px. This avoids a visible 60 -> 30 cadence cliff
+             * without letting generic congestion blur the text-detail floor.
              *
              * The BWE clarity guard remains the earliest cadence-only lane, and
              * all unresolved/ambiguous pressure keeps the conservative existing
@@ -1671,7 +1679,7 @@ class HostWebRtcSession(
                         " • max=${motionVideoBudget.bitrateCeiling(profile, motionActive, effective.fps) / 1000}kbps" +
                         " • source=${sourceFps?.toInt()}fps" +
                         if (preferSpatialReliefBeforeCadence) {
-                            " • local-compute spatial-first"
+                            " • detail/compute spatial-first"
                         } else {
                             ""
                         }
