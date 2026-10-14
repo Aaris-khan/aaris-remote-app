@@ -36,6 +36,17 @@ import java.nio.ByteBuffer;
  * encoder is added.</p>
  */
 public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFactory {
+  /*
+   * Android recommends cyclic intra refresh for streaming because it repairs
+   * reference damage gradually instead of concentrating recovery into a large
+   * sync-frame burst. Sixty frames keeps the steady overhead small while
+   * completing a full refresh in ~1 s at 60 fps / ~2 s at 30 fps.
+   *
+   * This is capability-gated below and H.264-only. Unsupported encoders, VP8,
+   * software fallback and every other codec keep WebRTC's stock format.
+   */
+  private static final int H264_INTRA_REFRESH_PERIOD_FRAMES = 60;
+
   private final VideoEncoderFactory delegate;
 
   public AarisRealtimeVideoEncoderFactory(
@@ -68,16 +79,6 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
   private static final class RealtimeHardwareVideoEncoderFactory
       implements VideoEncoderFactory {
     private static final int PERIODIC_KEY_FRAME_INTERVAL_S = 3600;
-    /*
-     * Android recommends cyclic intra refresh for streaming because it repairs
-     * reference damage gradually instead of concentrating recovery into a large
-     * sync-frame burst. Sixty frames keeps the steady overhead small while
-     * completing a full refresh in ~1 s at 60 fps / ~2 s at 30 fps.
-     *
-     * This is capability-gated below and H.264-only. Unsupported encoders,
-     * VP8, software fallback and every other codec keep WebRTC's stock format.
-     */
-    private static final int H264_INTRA_REFRESH_PERIOD_FRAMES = 60;
     private static final int QCOM_VP8_KEY_FRAME_INTERVAL_ANDROID_L_MS = 15_000;
     private static final int QCOM_VP8_KEY_FRAME_INTERVAL_ANDROID_M_MS = 20_000;
     private static final int QCOM_VP8_KEY_FRAME_INTERVAL_ANDROID_N_MS = 15_000;
@@ -212,14 +213,6 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
       }
     }
 
-    static int intraRefreshPeriodFrames(
-        VideoCodecMimeType type,
-        boolean featureSupported) {
-      return type == VideoCodecMimeType.H264 && featureSupported
-          ? H264_INTRA_REFRESH_PERIOD_FRAMES
-          : 0;
-    }
-
     private static BitrateAdjuster bitrateAdjuster(
         VideoCodecMimeType type,
         String codecName) {
@@ -230,6 +223,14 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
       }
       return new BaseBitrateAdjuster();
     }
+  }
+
+  static int intraRefreshPeriodFrames(
+      VideoCodecMimeType type,
+      boolean featureSupported) {
+    return type == VideoCodecMimeType.H264 && featureSupported
+        ? H264_INTRA_REFRESH_PERIOD_FRAMES
+        : 0;
   }
 
   static void applyRealtimeHints(MediaFormat format, int flags) {
