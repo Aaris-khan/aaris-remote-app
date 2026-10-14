@@ -63,7 +63,7 @@ class MotionVideoBudgetTest {
         assertEquals(current.captureHeightPx, candidate.captureHeightPx)
     }
 
-    @Test fun guaranteedLowDetailBootstrapFitsExistingLowBitrateEnvelope() {
+    @Test fun guaranteedLowDetailBootstrapKeepsReadableDetailHeadroomDuringMotion() {
         val profile =
             CaptureProfile(
                 displayWidthPx = 720,
@@ -71,18 +71,42 @@ class MotionVideoBudgetTest {
                 captureWidthPx = 540,
                 captureHeightPx = 1200,
                 fps = 15,
-                maxVideoBitrateBps = 1_200_000,
+                maxVideoBitrateBps = 2_400_000,
                 tier = CaptureTier.LOW,
                 motionFps = 20
             )
         val budget = MotionVideoBudget()
 
         assertEquals(
-            1_200_000,
+            2_400_000,
             budget.bitrateCeiling(
                 profile = profile,
                 motionActive = true,
                 targetFps = 20
+            )
+        )
+    }
+
+    @Test fun balancedFiveFortyKeepsDetailHeadroomAtThirtyFps() {
+        val balancedProfile =
+            CaptureProfile(
+                displayWidthPx = 720,
+                displayHeightPx = 1600,
+                captureWidthPx = 540,
+                captureHeightPx = 1200,
+                fps = 24,
+                maxVideoBitrateBps = 3_000_000,
+                tier = CaptureTier.BALANCED,
+                motionFps = 30
+            )
+        val budget = MotionVideoBudget()
+
+        assertEquals(
+            2_400_000,
+            budget.bitrateCeiling(
+                profile = balancedProfile,
+                motionActive = true,
+                targetFps = 30
             )
         )
     }

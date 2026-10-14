@@ -148,7 +148,7 @@ class CaptureProfileTest {
     }
 
     @Test
-    fun guaranteedLowDetailBootstrapChangesOnlyPixels() {
+    fun guaranteedLowDetailBootstrapKeepsLowCadenceAndAddsDetailCeiling() {
         val low =
             CaptureProfile.forDisplay(
                 displayWidthPx = 720,
@@ -175,7 +175,7 @@ class CaptureProfileTest {
         assertEquals(CaptureTier.LOW, boosted.tier)
         assertEquals(low.fps, boosted.fps)
         assertEquals(low.motionFps, boosted.motionFps)
-        assertEquals(low.maxVideoBitrateBps, boosted.maxVideoBitrateBps)
+        assertEquals(2_400_000, boosted.maxVideoBitrateBps)
     }
 
     @Test
