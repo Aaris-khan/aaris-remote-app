@@ -10,21 +10,24 @@ package com.aaris.remoteassist.webrtc
  * decode, and EGL are healthy. A 50/60 cadence repeats every six refreshes,
  * 48/60 every five, 45/60 every four, and 40/60 every three.
  *
- * We therefore FILTER the already-proven high-cadence (>30 fps) adaptation
- * ladder by the clock that physically PRODUCES unique frames. Once the host
- * source clock is known, source harmonics are authoritative: the controller
- * clock is only a presentation-capacity ceiling, never a phase-lock requirement.
- * Source and controller displays are independent clocks across a network; forcing
- * an exact common divisor can discard half the source motion (for example,
- * 60 Hz source -> 90 Hz controller collapsing to 30 fps). When the source clock
- * is unknown, retain the legacy controller short-repeat rule as a safe fallback.
+ * We therefore align every normal capture rung to the clock that physically
+ * PRODUCES unique frames whenever that clock is known. Source harmonics are
+ * authoritative: the controller clock is only a presentation-capacity ceiling,
+ * never a phase-lock requirement. Source and controller displays are independent
+ * clocks across a network; forcing an exact common divisor can discard half the
+ * source motion (for example, 60 Hz source -> 90 Hz controller collapsing to
+ * 30 fps).
+ *
+ * This invariant matters below 30 fps too. A nominal 24 fps target on a 60 Hz
+ * MediaProjection source alternates producer-frame gaps and creates deterministic
+ * micro-judder before encoder, RTP or EGL have any chance to help. Low-bandwidth
+ * operation therefore synthesizes exact producer divisors in the 15..30 fps
+ * safety band. 15 fps remains an emergency escape rung when a rare source clock
+ * has no exact divisor that low. When the source clock is unknown, retain the
+ * legacy low ladder exactly.
  *
  * 60 fps remains the product ceiling even on unusual high-refresh panels.
- *
- * <=30 fps is the pressure/recovery safety ladder, where freshness and encoder
- * headroom matter more than perfect phase matching.
- *
- * Missing/invalid display capability preserves the previous ladder exactly.
+ * Missing/invalid display capability preserves legacy behaviour.
  */
 internal object DisplayCadencePolicy {
     private val legacyDescending =
@@ -71,8 +74,9 @@ internal object DisplayCadencePolicy {
          * (fresh 16.7 ms motion), not collapse to 30 fps (33.3 ms motion).
          *
          * The older short-repeat controller filter is retained only while source
-         * clock evidence is unavailable. <=30 fps remains the pressure/recovery
-         * safety ladder and is intentionally left untouched.
+         * clock evidence is unavailable. The low pressure/recovery ladder is
+         * source-aligned separately below so constrained operation cannot
+         * manufacture periodic producer gaps either.
          */
         fun admitHigh(fps: Int): Boolean =
             fps in firstHigh..ceiling &&
@@ -108,8 +112,12 @@ internal object DisplayCadencePolicy {
                 }
         }
 
-        lowCadenceDescending
-            .filterTo(rates) { it in floor..ceiling }
+        appendLowCadenceRates(
+            rates = rates,
+            floor = floor,
+            ceiling = ceiling,
+            sourceRefreshHz = sourceRefresh
+        )
 
         if (rates.isEmpty()) {
             rates += ceiling
@@ -128,17 +136,16 @@ internal object DisplayCadencePolicy {
      * creates a deterministic 33 ms long interval every six source ticks even
      * when encode, RTP, decode and EGL are otherwise healthy.
      *
-     * Once the source clock is known, admit only exact source harmonics above
-     * 30 fps and use the controller clock only as a presentation-capacity
-     * ceiling. This makes every high-cadence actuator phase-stable at the
-     * producer instead of replacing occasional jitter with periodic judder.
-     * Real sustained overload may therefore take a larger step (for example
-     * 60 -> 30 on a 60 Hz source); that is preferable to manufacturing an
-     * uneven high-cadence stream.
+     * Once the source clock is known, admit only exact source harmonics for
+     * normal operating rungs and use the controller clock only as a presentation-
+     * capacity ceiling. This keeps both high-cadence and constrained operation
+     * phase-stable at the producer instead of replacing random jitter with
+     * deterministic judder. Real sustained overload may therefore take a larger
+     * step (for example 30 -> 20 rather than 30 -> 24 on a 60 Hz source).
      *
      * If source-clock evidence is unavailable, retain the controller's
-     * historical short-repeat ladder as a compatibility fallback. <=30 fps
-     * remains the existing emergency/recovery ladder.
+     * historical short-repeat high ladder and the historical 30/24/20/15 low
+     * ladder as compatibility fallbacks.
      */
     fun pressureReliefDescending(
         refreshRateHz: Double?,
@@ -209,8 +216,12 @@ internal object DisplayCadencePolicy {
             }
         }
 
-        lowCadenceDescending
-            .filterTo(rates) { it in floor..ceiling }
+        appendLowCadenceRates(
+            rates = rates,
+            floor = floor,
+            ceiling = ceiling,
+            sourceRefreshHz = sourceRefresh
+        )
 
         if (rates.isEmpty()) {
             rates += ceiling
@@ -383,9 +394,61 @@ internal object DisplayCadencePolicy {
         sourceRefreshHz: Int?,
         fps: Int
     ): Boolean {
-        if (sourceRefreshHz == null || fps <= LOW_CADENCE_MAX_FPS) return true
+        if (sourceRefreshHz == null) return true
         if (fps <= 0 || fps > sourceRefreshHz) return false
         return sourceRefreshHz % fps == 0
+    }
+
+    /**
+     * Build the constrained cadence ladder from the producer clock, not from a
+     * hard-coded 24-fps midpoint. MediaProjection emits on the host display
+     * clock, so exact integer divisors are the only low rates with uniform
+     * source-frame spacing.
+     *
+     * The 15-fps emergency rung is retained even when it is not an exact divisor.
+     * At that point transport/device survival is more important than perfect
+     * pacing, and removing the final escape would make severe congestion worse.
+     */
+    private fun appendLowCadenceRates(
+        rates: MutableSet<Int>,
+        floor: Int,
+        ceiling: Int,
+        sourceRefreshHz: Int?
+    ) {
+        val lowFloor =
+            maxOf(
+                floor,
+                MIN_PHASE_STABLE_LOW_CADENCE_FPS
+            )
+        val lowCeiling =
+            minOf(
+                ceiling,
+                LOW_CADENCE_MAX_FPS
+            )
+        if (lowFloor > lowCeiling) return
+
+        if (sourceRefreshHz == null) {
+            lowCadenceDescending
+                .filterTo(rates) { it in lowFloor..lowCeiling }
+            return
+        }
+
+        (lowCeiling downTo lowFloor)
+            .asSequence()
+            .filter { candidate ->
+                sourceClockCompatible(
+                    sourceRefreshHz,
+                    candidate
+                )
+            }
+            .forEach(rates::add)
+
+        if (
+            EMERGENCY_LOW_CADENCE_FPS in
+                floor..ceiling
+        ) {
+            rates += EMERGENCY_LOW_CADENCE_FPS
+        }
     }
 
     /**
@@ -432,6 +495,8 @@ internal object DisplayCadencePolicy {
 
     private const val PRODUCT_MAX_FPS = 60
     private const val LOW_CADENCE_MAX_FPS = 30
+    private const val MIN_PHASE_STABLE_LOW_CADENCE_FPS = 15
+    private const val EMERGENCY_LOW_CADENCE_FPS = 15
     private const val HIGH_CADENCE_MIN_FPS = LOW_CADENCE_MAX_FPS + 1
     private const val MAX_HIGH_CADENCE_REPEAT_VSYNCS = 6
     private const val MIN_REFRESH_HZ = 30.0
