@@ -2393,4 +2393,332 @@ class MotionVideoBudgetTest {
     }
 
 
+
+    @Test
+    fun highH264QuantizerOnCleanHighCadencePathPrefersOneSpatialRung() {
+        val budget = nativeWarmBudget()
+        val compressed =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            ).let { snapshot ->
+                snapshot.copy(
+                    codec = "video/H264",
+                    qualityLimitationReason = "bandwidth",
+                    roundTripTimeMs = 35,
+                    packetLossRatio = 0.0,
+                    availableOutgoingBitrateBps = 5_000_000.0,
+                    recent =
+                        snapshot.recent!!.copy(
+                            qpAverage = 45.0
+                        )
+                )
+            }
+        val glass =
+            receiver(
+                fps = 60,
+                decode = 5.0,
+                presented = 60
+            )
+
+        assertTrue(
+            budget.prefersSpatialReliefBeforeCadence(
+                profile = profile,
+                outbound = compressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                sourceMaxGapMs = 17.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+
+        // Without the QP arbitration, the 5 Mbps estimate would ask the
+        // clarity cadence lane to trim this 720-short-edge stream. High QP says
+        // the pixels themselves are already under-encoded, so the single
+        // 720 -> 540 spatial step gets first refusal instead.
+        assertNull(
+            budget.clarityPreservingCadenceCeiling(
+                profile = profile,
+                outbound = compressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+    }
+
+    @Test
+    fun quantizerPressureNeverSpendsTheProtectedFiveFortyDetailFloor() {
+        val budget = MotionVideoBudget()
+        val fiveFortyProfile =
+            profile.copy(
+                displayWidthPx = 540,
+                displayHeightPx = 1200,
+                captureWidthPx = 540,
+                captureHeightPx = 1200,
+                maxVideoBitrateBps = 4_000_000
+            )
+        val compressed =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            ).let { snapshot ->
+                snapshot.copy(
+                    codec = "video/H264",
+                    qualityLimitationReason = "bandwidth",
+                    roundTripTimeMs = 35,
+                    packetLossRatio = 0.0,
+                    availableOutgoingBitrateBps = 3_000_000.0,
+                    recent =
+                        snapshot.recent!!.copy(
+                            qpAverage = 45.0
+                        )
+                )
+            }
+        val glass = receiver(fps = 60, presented = 60)
+
+        assertFalse(
+            budget.prefersSpatialReliefBeforeCadence(
+                profile = fiveFortyProfile,
+                outbound = compressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                sourceMaxGapMs = 17.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+
+        // At the text-detail floor, high QP must leave pixels alone and allow
+        // the temporal clarity lane to create more bits per frame instead.
+        assertNotNull(
+            budget.clarityPreservingCadenceCeiling(
+                profile = fiveFortyProfile,
+                outbound = compressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+    }
+
+    @Test
+    fun dirtyNetworkCannotMasqueradeAsQuantizerSpatialOpportunity() {
+        val budget = nativeWarmBudget()
+        val congested =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 80.0,
+                implementation = "c2.qti.avc.encoder"
+            ).let { snapshot ->
+                snapshot.copy(
+                    codec = "video/H264",
+                    qualityLimitationReason = "bandwidth",
+                    roundTripTimeMs = 300,
+                    packetLossRatio = 0.02,
+                    availableOutgoingBitrateBps = 3_500_000.0,
+                    recent =
+                        snapshot.recent!!.copy(
+                            qpAverage = 45.0
+                        )
+                )
+            }
+
+        assertFalse(
+            budget.prefersSpatialReliefBeforeCadence(
+                profile = profile,
+                outbound = congested,
+                receiver =
+                    receiver(
+                        fps = 60,
+                        decode = 5.0,
+                        presented = 60
+                    ).copy(
+                        jitterMs = 80.0
+                    ),
+                sourceFps = 60.0,
+                sourceMaxGapMs = 17.0,
+                motionActive = true,
+                targetFps = 60,
+                interactionActive = true
+            )
+        )
+        assertEquals(720, budget.shortEdge)
+    }
+
+    @Test
+    fun sustainedHighQuantizerCommitsOnlySevenTwentyToFiveForty() {
+        val budget = nativeWarmBudget()
+        val compressed =
+            sender(
+                fps = 60,
+                encode = 5.0,
+                queue = 5.0,
+                implementation = "c2.qti.avc.encoder"
+            ).let { snapshot ->
+                snapshot.copy(
+                    codec = "video/H264",
+                    qualityLimitationReason = "bandwidth",
+                    roundTripTimeMs = 35,
+                    packetLossRatio = 0.0,
+                    availableOutgoingBitrateBps = 5_000_000.0,
+                    recent =
+                        snapshot.recent!!.copy(
+                            qpAverage = 45.0
+                        )
+                )
+            }
+        val glass = receiver(fps = 60, presented = 60)
+
+        assertFalse(
+            budget.observe(
+                outbound = compressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 1_000L,
+                interactionActive = true,
+                profile = profile,
+                allowSpatialRelief = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                outbound = compressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 2_000L,
+                interactionActive = true,
+                profile = profile,
+                allowSpatialRelief = true
+            )
+        )
+        assertEquals(
+            540,
+            budget.apply(profile, true).captureWidthPx
+        )
+
+        // QP alone is forbidden from selecting the 360 survival rung.
+        repeat(6) { index ->
+            assertFalse(
+                budget.observe(
+                    outbound = compressed,
+                    receiver = glass,
+                    sourceFps = 60.0,
+                    motionActive = true,
+                    targetFps = 60,
+                    nowMs = 3_000L + index * 1_000L,
+                    interactionActive = true,
+                    profile = profile,
+                    allowSpatialRelief = true
+                )
+            )
+        }
+        assertEquals(
+            540,
+            budget.apply(profile, true).captureWidthPx
+        )
+    }
+
+    @Test
+    fun highQuantizerBlocksPixelRecoveryUntilCompressionIsClean() {
+        val budget = nativeWarmBudget()
+        fun h264(qp: Double): VideoHealthSnapshot {
+            val base =
+                sender(
+                    fps = 60,
+                    encode = 5.0,
+                    queue = 5.0,
+                    implementation = "c2.qti.avc.encoder"
+                )
+            return base.copy(
+                codec = "video/H264",
+                qualityLimitationReason = "none",
+                roundTripTimeMs = 35,
+                packetLossRatio = 0.0,
+                availableOutgoingBitrateBps = 10_000_000.0,
+                recent =
+                    base.recent!!.copy(
+                        qpAverage = qp
+                    )
+            )
+        }
+        val glass = receiver(fps = 60, presented = 60)
+        val compressed = h264(45.0)
+
+        assertFalse(
+            budget.observe(
+                compressed,
+                glass,
+                60.0,
+                true,
+                60,
+                1_000L,
+                interactionActive = true,
+                profile = profile,
+                allowSpatialRelief = true
+            )
+        )
+        assertTrue(
+            budget.observe(
+                compressed,
+                glass,
+                60.0,
+                true,
+                60,
+                2_000L,
+                interactionActive = true,
+                profile = profile,
+                allowSpatialRelief = true
+            )
+        )
+        assertEquals(540, budget.apply(profile, true).captureWidthPx)
+
+        repeat(15) { index ->
+            budget.observe(
+                outbound = compressed,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 4_000L + index * 1_000L,
+                interactionActive = false,
+                profile = profile,
+                allowSpatialRelief = true
+            )
+        }
+        assertEquals(540, budget.apply(profile, true).captureWidthPx)
+
+        val clean = h264(20.0)
+        repeat(5) { index ->
+            budget.observe(
+                outbound = clean,
+                receiver = glass,
+                sourceFps = 60.0,
+                motionActive = true,
+                targetFps = 60,
+                nowMs = 25_000L + index * 1_000L,
+                interactionActive = false,
+                profile = profile,
+                allowSpatialRelief = true
+            )
+        }
+        assertEquals(720, budget.apply(profile, true).captureWidthPx)
+    }
+
 }
