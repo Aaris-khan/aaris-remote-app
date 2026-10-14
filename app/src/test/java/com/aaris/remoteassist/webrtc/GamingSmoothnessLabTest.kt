@@ -531,10 +531,10 @@ class GamingSmoothnessLabTest {
 
             /*
              * Mirror HostWebRtcSession's one-expensive-actuator routing:
-             * BWE/network pressure remains cadence-first, while proven local
-             * codec pressure may spend one >540px spatial rung before a
-             * high-cadence cliff. Ambiguous pressure keeps the conservative
-             * temporal-first path.
+             * bandwidth/quantizer pressure remains cadence-first to preserve
+             * readable pixels, while proven local pixel-processing pressure may
+             * spend one >540px spatial rung. A clarity suggestion owns the
+             * actuator only while its two-window cadence vote is actionable.
              */
             val clarityCadenceCeiling =
                 budget.clarityPreservingCadenceCeiling(
@@ -554,6 +554,8 @@ class GamingSmoothnessLabTest {
                     displayRefreshRateHz = 60.0,
                     sourceRefreshRateHz = scenario.sourceRefreshRateHz
                 )
+            val clarityCadenceVotePending =
+                cadence.hasPendingClarityBandwidthRelief()
 
             val preferSpatialReliefBeforeCadence =
                 budget.prefersSpatialReliefBeforeCadence(
@@ -570,7 +572,7 @@ class GamingSmoothnessLabTest {
             val cadencePressureChanged =
                 if (
                     clarityCadenceChanged ||
-                    clarityCadenceCeiling != null ||
+                    clarityCadenceVotePending ||
                     preferSpatialReliefBeforeCadence
                 ) {
                     false
@@ -597,7 +599,8 @@ class GamingSmoothnessLabTest {
 
             val resolutionChanged =
                 if (
-                    clarityCadenceCeiling != null ||
+                    clarityCadenceChanged ||
+                    clarityCadenceVotePending ||
                     cadencePressureChanged
                 ) {
                     false
@@ -637,7 +640,7 @@ class GamingSmoothnessLabTest {
                 !resolutionChanged &&
                 !clarityCadenceChanged &&
                 !cadencePressureChanged &&
-                clarityCadenceCeiling == null
+                !clarityCadenceVotePending
             ) {
                 cadence.tryProbeDuringInteraction(
                     outbound = outbound,
