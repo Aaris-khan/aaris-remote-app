@@ -113,6 +113,19 @@ data class CaptureProfile(
         private const val HIGH_BITRATE_BPS =
             CaptureVideoContract.MAX_PRIMARY_VIDEO_BITRATE_BPS
 
+        /*
+         * A 540px short edge carries 2.25x as many pixels as the 360px LOW
+         * geometry. Reusing LOW's 1.2 Mbps ceiling after the evidence-gated
+         * detail bootstrap therefore made the extra source pixels easy to
+         * quantize away. This is still only an encoder MAX: GCC/TWCC remains
+         * authoritative and may send below it on a constrained path.
+         *
+         * 2.4 Mbps keeps the same 4/3 screen-detail reserve already used by
+         * the readable 360 rung (1.2 Mbps over its 900 kbps nominal budget),
+         * while remaining below BALANCED's 3 Mbps device envelope.
+         */
+        internal const val READABLE_540_MAX_BITRATE_FLOOR_BPS = 2_400_000
+
         private const val LOW_MEMORY_BYTES = 3L * 1024L * 1024L * 1024L
         private const val HIGH_MEMORY_BYTES = 6L * 1024L * 1024L * 1024L
 
@@ -207,7 +220,9 @@ data class CaptureProfile(
 
         /**
          * Give LOW a readability-first geometry without changing its conservative
-         * cadence or bitrate contract, but only under strong device-local proof.
+         * cadence, but only under strong device-local proof. Raise only its
+         * encoder maximum enough to preserve the admitted detail; this never
+         * forces a send rate because WebRTC congestion control remains in charge.
          *
          * The caller supplies an Android PerformancePoint-derived floor that was
          * validated across every hardware implementation eligible for the
@@ -236,7 +251,15 @@ data class CaptureProfile(
 
             return low.copy(
                 captureWidthPx = balanced.captureWidthPx,
-                captureHeightPx = balanced.captureHeightPx
+                captureHeightPx = balanced.captureHeightPx,
+                maxVideoBitrateBps =
+                    minOf(
+                        balanced.maxVideoBitrateBps,
+                        maxOf(
+                            low.maxVideoBitrateBps,
+                            READABLE_540_MAX_BITRATE_FLOOR_BPS
+                        )
+                    )
             )
         }
 

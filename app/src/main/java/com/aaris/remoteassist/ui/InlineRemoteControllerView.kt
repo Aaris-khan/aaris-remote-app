@@ -2237,6 +2237,13 @@ class InlineRemoteControllerView(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                /*
+                 * Remote control is a latency-sensitive drawing-style input
+                 * stream. Ask Android not to batch MOVE samples to the local
+                 * display VSync; the existing gesture pacer remains the sole
+                 * network backpressure owner for the rest of this gesture.
+                 */
+                rendererContainer.requestUnbufferedDispatch(event)
                 beginRemoteMotion()
                 resetLiveGestureStream()
                 suppressSingleGestureUntilUp = false

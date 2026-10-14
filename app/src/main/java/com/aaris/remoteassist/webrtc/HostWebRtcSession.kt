@@ -602,7 +602,9 @@ class HostWebRtcSession(
                     profile.captureHeightPx +
                     "@" +
                     profile.fps +
-                    " • cadence/bitrate remain LOW"
+                    " • LOW cadence • detail max=" +
+                    profile.maxVideoBitrateBps / 1000 +
+                    "kbps"
             )
         }
         listener.onDiagnostic(
@@ -664,7 +666,8 @@ class HostWebRtcSession(
     /**
      * Resolve the product tier plus the one evidence-gated startup exception:
      * a non-system-low-RAM LOW device may start with BALANCED pixel geometry
-     * while retaining LOW's 15/20-fps and 1.2-Mbps safety envelope.
+     * while retaining LOW's 15/20-fps cadence and a bounded 2.4-Mbps detail
+     * ceiling. It is a sender maximum, not a forced network rate.
      *
      * Android 10+ PerformancePoint coverage must exist for every preferred-codec
      * hardware implementation. Missing metadata or one weaker candidate fails

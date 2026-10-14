@@ -1571,9 +1571,13 @@ internal class MotionVideoBudget {
                         READABLE_360_MAX_BITRATE_FLOOR_BPS
                     ).roundToInt()
                 admittedShortEdge <= DETAIL_CLARITY_FLOOR_SHORT_EDGE ->
-                    nominalMotionBitrateBps(
-                        admittedShortEdge,
-                        targetFps
+                    maxOf(
+                        nominalMotionBitrateBps(
+                            admittedShortEdge,
+                            targetFps
+                        ),
+                        CaptureProfile.READABLE_540_MAX_BITRATE_FLOOR_BPS
+                            .toDouble()
                     ).roundToInt()
                 else ->
                     profile.maxVideoBitrateBps
