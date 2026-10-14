@@ -2395,7 +2395,7 @@ class MotionVideoBudgetTest {
 
 
     @Test
-    fun highH264QuantizerOnCleanHighCadencePathPrefersOneSpatialRung() {
+    fun highH264QuantizerOnBandwidthLimitedPathKeepsPixelsForCadenceFirst() {
         val budget = nativeWarmBudget()
         val compressed =
             sender(
@@ -2423,7 +2423,7 @@ class MotionVideoBudgetTest {
                 presented = 60
             )
 
-        assertTrue(
+        assertFalse(
             budget.prefersSpatialReliefBeforeCadence(
                 profile = profile,
                 outbound = compressed,
@@ -2436,11 +2436,10 @@ class MotionVideoBudgetTest {
             )
         )
 
-        // Without the QP arbitration, the 5 Mbps estimate would ask the
-        // clarity cadence lane to trim this 720-short-edge stream. High QP says
-        // the pixels themselves are already under-encoded, so the single
-        // 720 -> 540 spatial step gets first refusal instead.
-        assertNull(
+        // High QP confirms visible compression pressure, but a bandwidth-limited
+        // screenshare must preserve glyph pixels while a >=30 fps temporal
+        // operating point can still carry the same geometry.
+        assertNotNull(
             budget.clarityPreservingCadenceCeiling(
                 profile = profile,
                 outbound = compressed,
