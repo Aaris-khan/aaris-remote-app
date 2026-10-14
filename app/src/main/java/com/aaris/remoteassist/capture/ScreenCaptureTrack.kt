@@ -217,24 +217,63 @@ class ScreenCaptureTrack(
 
     fun update(profile: CaptureProfile) {
         if (closed.get() || !started) return
-        adaptOutput(profile)
 
-        val source = sourceGeometry ?: return
+        val source = sourceGeometry
+        if (source == null) {
+            adaptOutput(profile)
+            return
+        }
 
         /*
          * ScreenCapturerAndroid ignores the FPS argument. On Android 12+ its
-         * changeCaptureFormat() path resizes the existing VirtualDisplay;
-         * before Android 12 it recreates the display, which is where vendor
-         * mirroring-scale regressions have historically appeared.
+         * producer geometry can safely follow our already-hysteresis-gated
+         * spatial budget; older Android releases keep the stable bootstrap
+         * producer to avoid historical VirtualDisplay scaling regressions.
          *
-         * Let the producer follow our already-hysteresis-gated spatial budget
-         * only on the safe resize path. This moves pixel relief in front of
-         * SurfaceTexture/GPU production instead of scaling an expensive native
-         * frame only after it has already been captured.
+         * Transition ordering is asymmetric on purpose:
+         *
+         *  - detail upshift / equal-area geometry change: make the producer
+         *    capable first, then admit the larger VideoSource envelope. This
+         *    prevents a recovery decision from briefly asking WebRTC for pixels
+         *    that MediaProjection has not started producing yet.
+         *  - detail downshift: tighten VideoSource first, then shrink the
+         *    producer. The current full-size buffer remains safely admissible
+         *    while capture/GPU work is relieved immediately afterwards.
+         *
+         * No frame queue is added. changeCaptureFormat() is serialized onto the
+         * SurfaceTextureHelper owner thread by ScreenCapturerAndroid, preserving
+         * the existing latest-frame / low-latency pipeline.
          */
         val allowAdaptiveProducerResize =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        if (source.update(profile, allowAdaptiveProducerResize)) {
+        val previousWidth = source.width
+        val previousHeight = source.height
+        val producerChanged =
+            source.update(
+                profile,
+                allowAdaptiveProducerResize
+            )
+
+        if (!producerChanged) {
+            adaptOutput(profile)
+            return
+        }
+
+        val previousPixels =
+            previousWidth.toLong() * previousHeight.toLong()
+        val nextPixels =
+            source.width.toLong() * source.height.toLong()
+        val producerFirst = nextPixels >= previousPixels
+
+        if (producerFirst) {
+            capturer.changeCaptureFormat(
+                source.width,
+                source.height,
+                profile.fps
+            )
+            adaptOutput(profile)
+        } else {
+            adaptOutput(profile)
             capturer.changeCaptureFormat(
                 source.width,
                 source.height,

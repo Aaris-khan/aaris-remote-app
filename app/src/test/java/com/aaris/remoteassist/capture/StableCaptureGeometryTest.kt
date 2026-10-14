@@ -151,21 +151,50 @@ class StableCaptureGeometryTest {
     }
 
     @Test
-    fun adaptiveResizeNeverExceedsTheOriginalProducerBudget() {
+    fun adaptiveResizeCanRecoverRealProducerPixelsAboveBootstrapBudget() {
         val low =
             native.copy(
-                captureWidthPx = 324,
-                captureHeightPx = 720
+                captureWidthPx = 360,
+                captureHeightPx = 800
             )
         val source = StableCaptureGeometry(low)
+        val recovered =
+            native.copy(
+                captureWidthPx = 540,
+                captureHeightPx = 1200
+            )
 
-        assertFalse(
+        assertTrue(
             source.update(
-                native,
+                recovered,
                 allowAdaptiveResize = true
             )
         )
-        assertEquals(324, source.width)
-        assertEquals(720, source.height)
+        assertEquals(540, source.width)
+        assertEquals(1200, source.height)
+    }
+
+    @Test
+    fun adaptiveResizeNeverExceedsThePhysicalDisplay() {
+        val low =
+            native.copy(
+                captureWidthPx = 360,
+                captureHeightPx = 800
+            )
+        val source = StableCaptureGeometry(low)
+        val malformedOversizedRequest =
+            native.copy(
+                captureWidthPx = 2160,
+                captureHeightPx = 4800
+            )
+
+        assertTrue(
+            source.update(
+                malformedOversizedRequest,
+                allowAdaptiveResize = true
+            )
+        )
+        assertEquals(1080, source.width)
+        assertEquals(2400, source.height)
     }
 }
