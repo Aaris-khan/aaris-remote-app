@@ -1670,7 +1670,9 @@ class HostWebRtcSession(
                         producerFps = sourceFps,
                         interactionActive = interactionActive,
                         nowMs = now,
-                        maximumFps = profileMaximumFps
+                        maximumFps = profileMaximumFps,
+                        sourceRefreshRateHz =
+                            sourceRefreshRateHz
                     )
                 }
             val cadenceChanged =
@@ -2121,7 +2123,9 @@ class HostWebRtcSession(
                                 nowMs = now,
                                 interactionActive = true
                             ),
-                        nowMs = now
+                        nowMs = now,
+                        sourceRefreshRateHz =
+                            sourceDisplayRefreshRateHz()
                     )
                 if (interactionCadenceRecovered) {
                     listener.onDiagnostic(
@@ -2217,7 +2221,9 @@ class HostWebRtcSession(
                 minOf(
                     deviceFpsLimit,
                     profile.motionFps
-                ).coerceAtLeast(1)
+                ).coerceAtLeast(1),
+            sourceRefreshRateHz =
+                sourceDisplayRefreshRateHz()
         )
         // Consume the evidence once. A later touch must not repeatedly borrow
         // a quiet sample from before the previous animation.
@@ -2394,18 +2400,30 @@ class HostWebRtcSession(
          * is not sufficient: a 60 Hz MediaProjection would still enter the
          * session at 45 fps and exhibit an uneven 3-of-4 frame pattern.
          *
-         * Quantize every high-cadence source target against the host display
-         * clock before it reaches VideoSource. <=30 fps is the recovery ladder
-         * and stays untouched. Missing clock data preserves the old target.
+         * Quantize every normal source target against the host display clock
+         * before it reaches VideoSource. This includes the constrained 15..30
+         * fps band: on a 60 Hz MediaProjection source, 24 fps otherwise creates
+         * an uneven producer-frame selection pattern even with a perfect path.
+         * Sub-15 emergency caps stay untouched, and missing source-clock data
+         * preserves the historical low-cadence target.
          */
+        val sourceRefreshRateHz =
+            sourceDisplayRefreshRateHz()
         val targetFps =
-            if (unalignedTargetFps > 30) {
+            if (
+                unalignedTargetFps > 30 ||
+                (
+                    sourceRefreshRateHz != null &&
+                        unalignedTargetFps >= 15
+                    )
+            ) {
                 DisplayCadencePolicy.nearestAtOrBelow(
                     limitFps = unalignedTargetFps,
                     refreshRateHz = controllerCapacityHz,
                     ceilingFps = unalignedTargetFps,
                     floorFps = 1,
-                    sourceRefreshRateHz = sourceDisplayRefreshRateHz()
+                    sourceRefreshRateHz =
+                        sourceRefreshRateHz
                 )
             } else {
                 unalignedTargetFps

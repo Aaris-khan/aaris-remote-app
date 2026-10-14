@@ -167,7 +167,7 @@ class DisplayCadencePolicyTest {
             )
 
         assertEquals(
-            listOf(60, 30, 24, 20, 15),
+            listOf(60, 30, 20, 15),
             ladder
         )
         assertFalse(50 in ladder)
@@ -186,7 +186,7 @@ class DisplayCadencePolicyTest {
             )
 
         assertEquals(
-            listOf(48, 36, 30, 24, 20, 15),
+            listOf(48, 36, 24, 18, 16, 15),
             ladder
         )
         assertEquals(
@@ -235,7 +235,7 @@ class DisplayCadencePolicyTest {
         )
 
         assertEquals(
-            listOf(45, 30, 24, 20, 15),
+            listOf(45, 30, 18, 15),
             DisplayCadencePolicy.descending(
                 refreshRateHz = 90.0,
                 ceilingFps = 60,
@@ -258,7 +258,7 @@ class DisplayCadencePolicyTest {
         )
 
         assertEquals(
-            listOf(60, 30, 24, 20, 15),
+            listOf(60, 30, 20, 15),
             DisplayCadencePolicy.descending(
                 refreshRateHz = 90.0,
                 ceilingFps = 60,
@@ -333,7 +333,7 @@ class DisplayCadencePolicyTest {
     @Test
     fun pressureReliefKeepsKnownSixtyHzSourcePhaseStable() {
         assertEquals(
-            listOf(60, 30, 24, 20, 15),
+            listOf(60, 30, 20, 15),
             DisplayCadencePolicy.pressureReliefDescending(
                 refreshRateHz = 60.0,
                 ceilingFps = 60,
@@ -371,7 +371,7 @@ class DisplayCadencePolicyTest {
             )
         )
         assertEquals(
-            listOf(60, 30, 24, 20, 15),
+            listOf(60, 30, 20, 15),
             DisplayCadencePolicy.descending(
                 refreshRateHz = 60.0,
                 ceilingFps = 60,
@@ -383,7 +383,7 @@ class DisplayCadencePolicyTest {
     @Test
     fun mixedRefreshControllerStillKeepsKnownSourcePhaseStable() {
         assertEquals(
-            listOf(60, 30, 24, 20, 15),
+            listOf(60, 30, 20, 15),
             DisplayCadencePolicy.pressureReliefDescending(
                 refreshRateHz = 90.0,
                 ceilingFps = 60,
@@ -413,7 +413,7 @@ class DisplayCadencePolicyTest {
             )
         )
         assertEquals(
-            listOf(60, 30, 24, 20, 15),
+            listOf(60, 30, 20, 15),
             DisplayCadencePolicy.pressureReliefDescending(
                 refreshRateHz = 165.0,
                 ceilingFps = 60,
@@ -463,7 +463,7 @@ class DisplayCadencePolicyTest {
             )
 
         assertEquals(
-            listOf(30, 24, 20, 15),
+            listOf(30, 20, 15),
             DisplayCadencePolicy.descending(
                 refreshRateHz = 90.0,
                 ceilingFps = 60,
@@ -492,7 +492,7 @@ class DisplayCadencePolicyTest {
             )
 
         assertEquals(
-            listOf(45, 30, 24, 20, 15),
+            listOf(45, 30, 18, 15),
             DisplayCadencePolicy.descending(
                 refreshRateHz = 90.0,
                 ceilingFps = 60,
@@ -511,7 +511,7 @@ class DisplayCadencePolicyTest {
             )
 
         assertEquals(
-            listOf(60, 30, 24, 20, 15),
+            listOf(60, 30, 20, 15),
             DisplayCadencePolicy.descending(
                 refreshRateHz = 90.0,
                 ceilingFps = 60,
@@ -524,11 +524,69 @@ class DisplayCadencePolicyTest {
     @Test
     fun sourceClockStillProtectsCadenceBeforeControllerRefreshArrives() {
         assertEquals(
-            listOf(60, 30, 24, 20, 15),
+            listOf(60, 30, 20, 15),
             DisplayCadencePolicy.descending(
                 refreshRateHz = null,
                 ceilingFps = 60,
                 sourceRefreshRateHz = 60.0
+            )
+        )
+    }
+
+    @Test
+    fun knownSixtyHzSourceRemovesNonHarmonicTwentyFourFps() {
+        assertEquals(
+            20,
+            DisplayCadencePolicy.nearestAtOrBelow(
+                limitFps = 24,
+                refreshRateHz = 60.0,
+                ceilingFps = 24,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(
+            20,
+            DisplayCadencePolicy.nextLower(
+                currentFps = 30,
+                refreshRateHz = 60.0,
+                ceilingFps = 30,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(
+            listOf(30, 20, 15),
+            DisplayCadencePolicy.pressureReliefDescending(
+                refreshRateHz = 60.0,
+                ceilingFps = 30,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+    }
+
+    @Test
+    fun lowCadenceSynthesizesExactDivisorsForCommonSourceClocks() {
+        assertEquals(
+            listOf(30, 18, 15),
+            DisplayCadencePolicy.descending(
+                refreshRateHz = 90.0,
+                ceilingFps = 30,
+                sourceRefreshRateHz = 90.0
+            )
+        )
+        assertEquals(
+            listOf(24, 18, 16, 15),
+            DisplayCadencePolicy.descending(
+                refreshRateHz = 60.0,
+                ceilingFps = 30,
+                sourceRefreshRateHz = 144.0
+            )
+        )
+        assertEquals(
+            listOf(30, 24, 20, 15),
+            DisplayCadencePolicy.descending(
+                refreshRateHz = 60.0,
+                ceilingFps = 30,
+                sourceRefreshRateHz = 120.0
             )
         )
     }

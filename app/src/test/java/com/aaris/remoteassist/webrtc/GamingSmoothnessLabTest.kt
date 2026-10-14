@@ -39,6 +39,7 @@ class GamingSmoothnessLabTest {
         val name: String,
         val durationMs: Long,
         val sourceFps: Double,
+        val sourceRefreshRateHz: Double = 60.0,
         val netAt: (Long) -> Net,
         val minFinalCap: Int,
         val minRecoveredCap: Int,
@@ -551,7 +552,7 @@ class GamingSmoothnessLabTest {
                     requestedFps = target,
                     nowMs = nowMs,
                     displayRefreshRateHz = 60.0,
-                    sourceRefreshRateHz = scenario.sourceFps
+                    sourceRefreshRateHz = scenario.sourceRefreshRateHz
                 )
 
             val preferSpatialReliefBeforeCadence =
@@ -590,7 +591,7 @@ class GamingSmoothnessLabTest {
                         maximumFps = 60,
                         allowHighCadenceProbe =
                             photonPolicy.allowCadencePromotion,
-                        sourceRefreshRateHz = scenario.sourceFps
+                        sourceRefreshRateHz = scenario.sourceRefreshRateHz
                     )
                 }
 
@@ -644,7 +645,8 @@ class GamingSmoothnessLabTest {
                     producerFps = scenario.sourceFps,
                     interactionActive = true,
                     nowMs = nowMs,
-                    maximumFps = 60
+                    maximumFps = 60,
+                    sourceRefreshRateHz = scenario.sourceRefreshRateHz
                 )
             }
 
