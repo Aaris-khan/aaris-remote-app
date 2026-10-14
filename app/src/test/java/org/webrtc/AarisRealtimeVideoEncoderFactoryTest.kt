@@ -23,6 +23,55 @@ class AarisRealtimeVideoEncoderFactoryTest {
 
         assertEquals(0, format.getInteger(MediaFormat.KEY_PRIORITY))
         assertEquals(1, format.getInteger(MediaFormat.KEY_LATENCY))
+        assertFalse(format.containsKey(MediaFormat.KEY_INTRA_REFRESH_PERIOD))
+    }
+
+    @Test
+    fun cyclicIntraRefreshIsCapabilityGatedAndH264Only() {
+        assertEquals(
+            60,
+            AarisRealtimeVideoEncoderFactory.intraRefreshPeriodFrames(
+                VideoCodecMimeType.H264,
+                true
+            )
+        )
+        assertEquals(
+            0,
+            AarisRealtimeVideoEncoderFactory.intraRefreshPeriodFrames(
+                VideoCodecMimeType.H264,
+                false
+            )
+        )
+        assertEquals(
+            0,
+            AarisRealtimeVideoEncoderFactory.intraRefreshPeriodFrames(
+                VideoCodecMimeType.VP8,
+                true
+            )
+        )
+    }
+
+    @Test
+    fun supportedH264EncoderGetsBoundedCyclicIntraRefresh() {
+        val format =
+            MediaFormat.createVideoFormat(
+                MediaFormat.MIMETYPE_VIDEO_AVC,
+                720,
+                1280
+            )
+
+        AarisRealtimeVideoEncoderFactory.applyRealtimeHints(
+            format,
+            MediaCodec.CONFIGURE_FLAG_ENCODE,
+            60
+        )
+
+        assertEquals(
+            60,
+            format.getInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD)
+        )
+        assertEquals(0, format.getInteger(MediaFormat.KEY_PRIORITY))
+        assertEquals(1, format.getInteger(MediaFormat.KEY_LATENCY))
     }
 
     @Test
@@ -148,9 +197,14 @@ class AarisRealtimeVideoEncoderFactoryTest {
     fun decoderConfigurationIsNeverModified() {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 720, 1280)
 
-        AarisRealtimeVideoEncoderFactory.applyRealtimeHints(format, 0)
+        AarisRealtimeVideoEncoderFactory.applyRealtimeHints(
+            format,
+            0,
+            60
+        )
 
         assertFalse(format.containsKey(MediaFormat.KEY_PRIORITY))
         assertFalse(format.containsKey(MediaFormat.KEY_LATENCY))
+        assertFalse(format.containsKey(MediaFormat.KEY_INTRA_REFRESH_PERIOD))
     }
 }

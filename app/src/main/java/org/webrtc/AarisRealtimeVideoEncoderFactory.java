@@ -29,11 +29,24 @@ import java.nio.ByteBuffer;
  * <p>This factory preserves WebRTC's codec allow-list, ordering, H.264 profile
  * checks, vendor bitrate adjusters, Qualcomm key-frame workaround and software
  * fallback. It changes only the MediaFormat passed to the already-selected
- * hardware encoder: realtime priority and a one-frame latency request. Cadence
- * admission remains in WebRTC, before its output bookkeeping. No vendor option,
- * reflection, queue or second encoder is added.</p>
+ * hardware encoder: realtime priority, a one-frame latency request and, only
+ * when the selected H.264 component explicitly advertises Android cyclic intra
+ * refresh, a bounded refresh period. Cadence admission remains in WebRTC,
+ * before its output bookkeeping. No vendor option, reflection, queue or second
+ * encoder is added.</p>
  */
 public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFactory {
+  /*
+   * Android recommends cyclic intra refresh for streaming because it repairs
+   * reference damage gradually instead of concentrating recovery into a large
+   * sync-frame burst. Sixty frames keeps the steady overhead small while
+   * completing a full refresh in ~1 s at 60 fps / ~2 s at 30 fps.
+   *
+   * This is capability-gated below and H.264-only. Unsupported encoders, VP8,
+   * software fallback and every other codec keep WebRTC's stock format.
+   */
+  private static final int H264_INTRA_REFRESH_PERIOD_FRAMES = 60;
+
   private final VideoEncoderFactory delegate;
 
   public AarisRealtimeVideoEncoderFactory(
@@ -134,8 +147,13 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
           return stockEncoder;
         }
 
+        final int intraRefreshPeriodFrames =
+            intraRefreshPeriodFrames(
+                type,
+                runCatchingIntraRefreshSupport(capabilities));
+
         return new HardwareVideoEncoder(
-            new RealtimeMediaCodecWrapperFactory(),
+            new RealtimeMediaCodecWrapperFactory(intraRefreshPeriodFrames),
             codecName,
             type,
             surfaceColorFormat,
@@ -185,6 +203,16 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
       return QCOM_VP8_KEY_FRAME_INTERVAL_ANDROID_N_MS;
     }
 
+    private static boolean runCatchingIntraRefreshSupport(
+        MediaCodecInfo.CodecCapabilities capabilities) {
+      try {
+        return capabilities.isFeatureSupported(
+            MediaCodecInfo.CodecCapabilities.FEATURE_IntraRefresh);
+      } catch (RuntimeException incompleteVendorMetadata) {
+        return false;
+      }
+    }
+
     private static BitrateAdjuster bitrateAdjuster(
         VideoCodecMimeType type,
         String codecName) {
@@ -197,7 +225,22 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
     }
   }
 
+  static int intraRefreshPeriodFrames(
+      VideoCodecMimeType type,
+      boolean featureSupported) {
+    return type == VideoCodecMimeType.H264 && featureSupported
+        ? H264_INTRA_REFRESH_PERIOD_FRAMES
+        : 0;
+  }
+
   static void applyRealtimeHints(MediaFormat format, int flags) {
+    applyRealtimeHints(format, flags, 0);
+  }
+
+  static void applyRealtimeHints(
+      MediaFormat format,
+      int flags,
+      int intraRefreshPeriodFrames) {
     if ((flags & MediaCodec.CONFIGURE_FLAG_ENCODE) == 0) {
       return;
     }
@@ -207,6 +250,19 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
     // Public optional encoder hint: emit after at most one queued frame when
     // supported. Android specifies that unsupported encoders ignore this key.
     format.setInteger(MediaFormat.KEY_LATENCY, 1);
+
+    /*
+     * Only the H.264 hardware factory may pass a positive value, and only after
+     * CodecCapabilities advertised FEATURE_IntraRefresh. Android specifies this
+     * mode for low-delay streaming/error resilience: macroblocks are refreshed
+     * cyclically across frames, avoiding an avoidable full-frame bitrate spike
+     * during ordinary reference repair.
+     */
+    if (intraRefreshPeriodFrames > 0) {
+      format.setInteger(
+          MediaFormat.KEY_INTRA_REFRESH_PERIOD,
+          intraRefreshPeriodFrames);
+    }
 
     // Do not set KEY_MAX_FPS_TO_ENCODER. HardwareVideoEncoder queues an
     // EncodedImage.Builder for every accepted encode() and removes one per
@@ -219,18 +275,30 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
 
   private static final class RealtimeMediaCodecWrapperFactory
       implements MediaCodecWrapperFactory {
+    private final int intraRefreshPeriodFrames;
+
+    RealtimeMediaCodecWrapperFactory(int intraRefreshPeriodFrames) {
+      this.intraRefreshPeriodFrames = intraRefreshPeriodFrames;
+    }
+
     @Override
     public MediaCodecWrapper createByCodecName(String name) throws IOException {
-      return new RealtimeMediaCodecWrapper(MediaCodec.createByCodecName(name));
+      return new RealtimeMediaCodecWrapper(
+          MediaCodec.createByCodecName(name),
+          intraRefreshPeriodFrames);
     }
   }
 
   private static final class RealtimeMediaCodecWrapper
       implements MediaCodecWrapper {
     private final MediaCodec codec;
+    private final int intraRefreshPeriodFrames;
 
-    RealtimeMediaCodecWrapper(MediaCodec codec) {
+    RealtimeMediaCodecWrapper(
+        MediaCodec codec,
+        int intraRefreshPeriodFrames) {
       this.codec = codec;
+      this.intraRefreshPeriodFrames = intraRefreshPeriodFrames;
     }
 
     @Override
@@ -239,7 +307,10 @@ public final class AarisRealtimeVideoEncoderFactory implements VideoEncoderFacto
         Surface surface,
         MediaCrypto crypto,
         int flags) {
-      applyRealtimeHints(format, flags);
+      applyRealtimeHints(
+          format,
+          flags,
+          intraRefreshPeriodFrames);
       codec.configure(format, surface, crypto, flags);
     }
 
