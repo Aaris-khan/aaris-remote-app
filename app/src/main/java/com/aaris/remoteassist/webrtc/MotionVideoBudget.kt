@@ -17,9 +17,11 @@ import kotlin.math.roundToInt
  * admitted pixels still fit at a lower interactive cadence. This avoids
  * turning transient or estimator-only bandwidth pressure into unreadable UI.
  *
- * On Android 12+ the committed spatial envelope is also allowed to resize the
- * MediaProjection VirtualDisplay; older Android versions keep their producer
- * geometry fixed and only adapt the WebRTC output.
+ * VideoSource owns ordinary network/codec spatial adaptation. On Android 12+
+ * the MediaProjection VirtualDisplay follows that envelope only after direct
+ * producer-starvation proof; otherwise keeping the projection surface stable
+ * avoids turning a quality decision into a capture-surface hitch. Older Android
+ * versions keep their producer geometry fixed and only adapt WebRTC output.
  */
 internal class MotionVideoBudget {
     var shortEdge = 720
@@ -35,6 +37,19 @@ internal class MotionVideoBudget {
     private var fastRecoverySamples = 0
     private var lastImplementation: String? = null
     private var lastBandwidthPressureAtMs = Long.MIN_VALUE / 2
+
+    /*
+     * VideoSource/encoder pixels and MediaProjection producer pixels are
+     * deliberately separate actuators. Most pressure classes can be repaired by
+     * adaptOutputFormat() alone, without touching the VirtualDisplay. Only
+     * direct producer-starvation evidence arms the producer to follow the
+     * committed spatial ladder; once armed, recovery follows the same ladder
+     * back upward until the motion episode fully settles.
+     */
+    private var producerSurfaceReliefActive = false
+
+    fun shouldResizeProducerSurface(): Boolean =
+        producerSurfaceReliefActive
 
     /*
      * Entering motion may choose a conservative bitrate/pixel budget before a
@@ -60,12 +75,11 @@ internal class MotionVideoBudget {
      * point until measured evidence commits the spatial change.
      *
      * committedSourceShortEdge is the geometry that measured evidence has
-     * actually authorized the producer/VideoSource to use. On a native
-     * 1080-short-edge phone the historical 720 budget must NOT silently resize
-     * the running MediaProjection surface on touch-down. WebRTC hardware
-     * encoders reset their codec when the input size changes, so doing that at
-     * the first interactive frame creates exactly the hitch this governor is
-     * meant to avoid.
+     * actually authorized VideoSource/MediaCodec to use. The MediaProjection
+     * producer normally remains at the tier/display geometry and follows this
+     * ladder only while producerSurfaceReliefActive is armed by direct capture
+     * starvation. On a native 1080-short-edge phone the historical 720 budget
+     * must NOT silently resize the running projection surface on touch-down.
      *
      * Int.MAX_VALUE means "no app spatial clamp"; apply() still bounds against
      * the current CaptureProfile.
@@ -591,6 +605,7 @@ internal class MotionVideoBudget {
                 holdingResolution = false
                 shortEdge = 720
                 committedSourceShortEdge = Int.MAX_VALUE
+                producerSurfaceReliefActive = false
             }
             return before != Triple(
             shortEdge,
@@ -1272,6 +1287,9 @@ internal class MotionVideoBudget {
                     shortEdge = confirmed
                 }
                 committedSourceShortEdge = shortEdge
+                if (producerStarvationPressure) {
+                    producerSurfaceReliefActive = true
+                }
                 changedAtMs = nowMs
                 pressureSamples = 0
                 resetResidenceGrowth()
@@ -1332,6 +1350,9 @@ internal class MotionVideoBudget {
                 if (next != shortEdge || sourceCommitNeeded) {
                     shortEdge = next
                     committedSourceShortEdge = shortEdge
+                    if (producerStarvationPressure) {
+                        producerSurfaceReliefActive = true
+                    }
                     changedAtMs = nowMs
                     resetResidenceGrowth()
                     pressureSamples = 0

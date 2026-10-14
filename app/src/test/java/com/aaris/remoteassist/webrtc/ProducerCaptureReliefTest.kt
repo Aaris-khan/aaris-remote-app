@@ -99,6 +99,7 @@ class ProducerCaptureReliefTest {
                 budget.apply(profile, motionActive = true).captureHeightPx
             )
         )
+        assertTrue(budget.shouldResizeProducerSurface())
     }
 
     @Test
@@ -135,6 +136,7 @@ class ProducerCaptureReliefTest {
                 budget.apply(profile, motionActive = true).captureHeightPx
             )
         )
+        assertFalse(budget.shouldResizeProducerSurface())
     }
 
     @Test
@@ -172,6 +174,39 @@ class ProducerCaptureReliefTest {
                 budget.apply(profile, motionActive = true).captureHeightPx
             )
         )
+        assertFalse(budget.shouldResizeProducerSurface())
+    }
+
+    @Test
+    fun codecReliefDoesNotResizeHealthyProjectionProducer() {
+        val budget = MotionVideoBudget()
+        budget.primeForMotion(
+            profile = profile,
+            nowMs = 0L,
+            warmStartEvidence = null,
+            targetFps = 30
+        )
+
+        assertTrue(
+            budget.observe(
+                outbound = outbound().copy(
+                    codecImplementation = "libvpx"
+                ),
+                receiver = null,
+                sourceFps = 30.0,
+                motionActive = true,
+                targetFps = 30,
+                nowMs = 1_000L,
+                interactionActive = true,
+                sourceMotionActive = true,
+                canResizeProducerSurface = true,
+                profile = profile
+            )
+        )
+
+        // Software/codec pressure may lower VideoSource/encoder pixels, but a
+        // healthy MediaProjection producer must remain stable.
+        assertFalse(budget.shouldResizeProducerSurface())
     }
 
     @Test
@@ -233,6 +268,7 @@ class ProducerCaptureReliefTest {
                 budget.apply(profile, motionActive = true).captureHeightPx
             )
         )
+        assertTrue(budget.shouldResizeProducerSurface())
     }
 
     @Test
@@ -267,5 +303,20 @@ class ProducerCaptureReliefTest {
                 budget.apply(profile, motionActive = true).captureHeightPx
             )
         )
+        assertTrue(budget.shouldResizeProducerSurface())
+
+        // Once the motion episode fully settles, the producer is allowed to
+        // return to the stable tier/display geometry.
+        assertTrue(
+            budget.observe(
+                outbound = outbound(),
+                receiver = null,
+                sourceFps = 0.0,
+                motionActive = false,
+                targetFps = 30,
+                nowMs = 10_000L
+            )
+        )
+        assertFalse(budget.shouldResizeProducerSurface())
     }
 }

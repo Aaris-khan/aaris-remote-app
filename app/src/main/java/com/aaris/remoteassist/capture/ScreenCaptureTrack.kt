@@ -215,7 +215,10 @@ class ScreenCaptureTrack(
         surfaceTextureHelper.handler.postDelayed(idleRefresh, CaptureRefreshPolicy.INTERVAL_MS)
     }
 
-    fun update(profile: CaptureProfile) {
+    fun update(
+        profile: CaptureProfile,
+        producerProfile: CaptureProfile = profile
+    ) {
         if (closed.get() || !started) return
 
         val source = sourceGeometry
@@ -225,10 +228,12 @@ class ScreenCaptureTrack(
         }
 
         /*
-         * ScreenCapturerAndroid ignores the FPS argument. On Android 12+ its
-         * producer geometry can safely follow our already-hysteresis-gated
-         * spatial budget; older Android releases keep the stable bootstrap
-         * producer to avoid historical VirtualDisplay scaling regressions.
+         * ScreenCapturerAndroid ignores the FPS argument. Keep ordinary
+         * network/codec spatial adaptation in VideoSource; producerProfile is a
+         * separately gated MediaProjection target. On Android 12+ only direct
+         * producer starvation (or a real tier/display geometry change) needs to
+         * move VirtualDisplay geometry. Older Android releases keep the stable
+         * bootstrap producer to avoid historical scaling regressions.
          *
          * Transition ordering is asymmetric on purpose:
          *
@@ -250,7 +255,7 @@ class ScreenCaptureTrack(
         val previousHeight = source.height
         val producerChanged =
             source.update(
-                profile,
+                producerProfile,
                 allowAdaptiveProducerResize
             )
 

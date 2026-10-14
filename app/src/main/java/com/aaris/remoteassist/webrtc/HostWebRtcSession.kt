@@ -2441,6 +2441,22 @@ class HostWebRtcSession(
                 interactionActive = freshnessActive
             )
         val effective = effectiveCaptureProfile(target)
+
+        /*
+         * Keep MediaProjection geometry stable across ordinary bandwidth,
+         * quantizer, encoder and receiver-detail decisions. VideoSource can
+         * scale those frames without paying VirtualDisplay.resize()/setSurface().
+         * Only direct producer-starvation proof arms MotionVideoBudget to let
+         * the projection surface follow the committed output ladder. Real tier
+         * or display-geometry changes still flow through target normally.
+         */
+        val producerTarget =
+            if (motionVideoBudget.shouldResizeProducerSurface()) {
+                effective
+            } else {
+                target
+            }
+
         val senderFpsCeiling =
             senderFrameRateCeiling(
                 target = target,
@@ -2508,9 +2524,15 @@ class HostWebRtcSession(
                 preserveResolution = policy.preserveResolution,
                 motionPriority = policy.motionPriority
             )
-            capture.update(effective)
+            capture.update(
+                profile = effective,
+                producerProfile = producerTarget
+            )
         } else {
-            capture.update(effective)
+            capture.update(
+                profile = effective,
+                producerProfile = producerTarget
+            )
             peer.updateInteractiveVideoPolicy(
                 maxBitrateBps = maxBitrateBps,
                 maxFramerate = senderFpsCeiling,
