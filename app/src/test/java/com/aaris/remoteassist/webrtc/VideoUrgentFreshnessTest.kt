@@ -130,6 +130,35 @@ class VideoUrgentFreshnessTest {
     }
 
     @Test
+    fun knownSixtyHzSourceRelievesThirtyDirectlyToTwenty() {
+        val governor =
+            VideoCadenceGovernor(
+                maxFps = 30,
+                initialCap = 30
+            )
+
+        assertFalse(
+            governor.observe(
+                outbound = outbound(queueMs = 80.0),
+                receiver = receiver(),
+                requestedFps = 30,
+                nowMs = 1_000L,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertTrue(
+            governor.observe(
+                outbound = outbound(queueMs = 80.0),
+                receiver = receiver(),
+                requestedFps = 30,
+                nowMs = 2_000L,
+                sourceRefreshRateHz = 60.0
+            )
+        )
+        assertEquals(20, governor.cap)
+    }
+
+    @Test
     fun oneModerateHalfSecondGlassHitchIsTolerated() {
         val governor = measuredHighCadence()
 
