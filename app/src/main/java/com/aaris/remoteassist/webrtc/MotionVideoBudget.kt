@@ -1412,9 +1412,17 @@ internal class MotionVideoBudget {
              * nominal next-rung demand receives the same 15% content margin,
              * then the existing 20%/30% BWE recovery headroom gates apply.
              */
+            val profileCanSupplyRecoveryRung =
+                profile?.let {
+                    minOf(
+                        it.captureWidthPx,
+                        it.captureHeightPx
+                    ) >= nextRecoveryRung
+                } == true
             val interactiveReadabilityCandidate =
                 allowInteractionReadabilityRecovery &&
                     interactionActive &&
+                    profileCanSupplyRecoveryRung &&
                     shortEdge < DETAIL_CLARITY_FLOOR_SHORT_EDGE &&
                     nextRecoveryRung <= DETAIL_CLARITY_FLOOR_SHORT_EDGE
             val nextRecoveryBitrateBps =
