@@ -474,11 +474,9 @@ internal class MotionVideoBudget {
          * clean even when libwebrtc labels the limiting reason as bandwidth.
          *
          * For ordinary CPU/producer pressure, preserve the historical rule that
-         * a bandwidth-limited path stays cadence-first.
-         */
-         * Require the measured transport path to be quiet enough that changing
-         * pixels is actually aimed at codec/capture work rather than masking a
-         * network problem.
+         * a bandwidth-limited path stays cadence-first. Require the measured
+         * transport path to be quiet enough that changing pixels is actually
+         * aimed at codec/capture work rather than masking a network problem.
          */
         val transportClean =
             !outbound.qualityLimitationReason
