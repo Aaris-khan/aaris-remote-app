@@ -570,19 +570,22 @@ internal class MotionVideoBudget {
         nowMs: Long,
         interactionActive: Boolean = false,
         allowResolutionRecovery: Boolean = true,
-        /**
-         * Narrow active-control exception: after independent photon/glass proof,
-         * permit only the survival/readability ladder to recover toward 540px.
-         * This never authorizes 540 -> 720/native while a gesture is active.
-         */
-        allowInteractionReadabilityRecovery: Boolean = false,
         sourceMaxGapMs: Double? = null,
         sourceMotionActive: Boolean = false,
         interactionCaptureStarved: Boolean = false,
         canResizeProducerSurface: Boolean = false,
         profile: CaptureProfile? = null,
         allowSpatialRelief: Boolean = true,
-        minimumSpatialShortEdge: Int = CLARITY_FLOOR_SHORT_EDGE
+        minimumSpatialShortEdge: Int = CLARITY_FLOOR_SHORT_EDGE,
+        /**
+         * Narrow active-control exception: after independent photon/glass proof,
+         * permit only the survival/readability ladder to recover toward 540px.
+         * This never authorizes 540 -> 720/native while a gesture is active.
+         *
+         * Kept last to preserve the source compatibility of historical
+         * positional observe() calls.
+         */
+        allowInteractionReadabilityRecovery: Boolean = false
     ): Boolean {
         val before = Triple(
             shortEdge,
