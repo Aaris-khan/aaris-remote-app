@@ -199,29 +199,17 @@ internal class MotionVideoBudget {
         if (!movingDemandProven) return null
 
         /*
-         * A high codec-specific QP is direct evidence that the current screen
-         * pixels are being quantized hard enough to lose edge/detail quality.
-         * When the rest of the path is clean and a >540px rung remains, prefer
-         * one bounded spatial step before spending cadence: 540@60 is often both
-         * sharper per encoded pixel and smoother than a mushy 720@30/45.
+         * Codec QP is evidence that the encoded picture is losing detail, not
+         * permission to discard source pixels while the transport can still
+         * preserve those pixels by spending temporal excess. This method is the
+         * bandwidth-only clarity lane, so keep screen geometry authoritative and
+         * let the calculation below propose a lower >=30 fps ceiling first.
          *
-         * The helper is codec-aware (H264/VP8 only), requires completed sender
-         * and receiver windows, and can never cross the protected 540px detail
-         * floor. If it declines, the existing bandwidth clarity lane below
-         * remains authoritative.
+         * Quantizer pressure remains available to observe() after cadence has
+         * actually reached the temporal-relief class. Local encoder/decoder/
+         * producer compute pressure is routed separately by
+         * prefersSpatialReliefBeforeCadence().
          */
-        if (
-            quantizerSpatialReliefPreferred(
-                profile = profile,
-                outbound = outbound,
-                sender = sender,
-                receiver = receiver,
-                motionActive = motionActive,
-                targetFps = target
-            )
-        ) {
-            return null
-        }
 
         /*
          * availableOutgoingBitrate is path capacity, while the completed RTP
@@ -456,27 +444,18 @@ internal class MotionVideoBudget {
         val decodeMs = received.processingMs.valid()
         val queueMs = sender.sendQueueMs.valid()
         val jitterMs = received.playoutDelayMs.valid()
-        val quantizerSpatialPressure =
-            quantizerSpatialReliefPreferred(
-                profile = profile,
-                outbound = outbound,
-                sender = sender,
-                receiver = received,
-                motionActive = motionActive,
-                targetFps = goal
-            )
 
         /*
-         * Spatial-first is normally a LOCAL-compute lane, not a congestion
-         * heuristic. Codec quantizer pressure is the narrow exception: QP is
-         * direct evidence that the current frame has too few bits per pixel.
-         * It may spend exactly one >540px rung while queue/jitter/loss remain
-         * clean even when libwebrtc labels the limiting reason as bandwidth.
+         * Spatial-first is a LOCAL-compute lane, never a compression/bandwidth
+         * heuristic. WebRTC's screenshare adaptation preserves resolution under
+         * bandwidth pressure; mirror that contract here so a high QP sample
+         * cannot turn readable 720px text into geometrically upscaled 540px
+         * video while encoder, decoder and producer deadlines are otherwise
+         * healthy.
          *
-         * For ordinary CPU/producer pressure, preserve the historical rule that
-         * a bandwidth-limited path stays cadence-first. Require the measured
-         * transport path to be quiet enough that changing pixels is actually
-         * aimed at codec/capture work rather than masking a network problem.
+         * Require a quiet transport before spending pixels. High QP is still
+         * consumed by observe() once temporal relief has been exhausted, but it
+         * no longer bypasses the cadence owner at 45/60 fps.
          */
         val transportClean =
             !outbound.qualityLimitationReason
@@ -493,7 +472,7 @@ internal class MotionVideoBudget {
                 (outbound.packetLossRatio ?: 0.0) <
                 CLARITY_PRESERVING_MAX_LOSS_RATIO
 
-        if (!transportClean && !quantizerSpatialPressure) return false
+        if (!transportClean) return false
 
         /*
          * Match observe()'s measured codec-pressure contract exactly. A generic
@@ -555,8 +534,7 @@ internal class MotionVideoBudget {
                         } == true
                     )
 
-        return quantizerSpatialPressure ||
-            encoderComputePressure ||
+        return encoderComputePressure ||
             decoderComputePressure ||
             producerPressure
     }
