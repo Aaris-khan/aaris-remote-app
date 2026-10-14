@@ -55,8 +55,9 @@ data class VideoHealthWindow(
     val photonSampleFresh: Boolean = true,
     /**
      * Mean codec quantizer for frames completed in this exact stats window.
-     * Codec scales differ (for example H.264 vs VP8), so this is telemetry and
-     * A/B evidence only; it must not become a cross-codec adaptation threshold.
+     * Codec scales differ (for example H.264 vs VP8), so raw values must never
+     * be compared across codecs. ScreenQuantizerPolicy is the only adaptation
+     * consumer and interprets this value with codec-specific thresholds.
      */
     val qpAverage: Double? = null
 ) {
