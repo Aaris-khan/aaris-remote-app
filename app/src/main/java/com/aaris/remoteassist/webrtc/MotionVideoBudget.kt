@@ -570,6 +570,12 @@ internal class MotionVideoBudget {
         nowMs: Long,
         interactionActive: Boolean = false,
         allowResolutionRecovery: Boolean = true,
+        /**
+         * Narrow active-control exception: after independent photon/glass proof,
+         * permit only the survival/readability ladder to recover toward 540px.
+         * This never authorizes 540 -> 720/native while a gesture is active.
+         */
+        allowInteractionReadabilityRecovery: Boolean = false,
         sourceMaxGapMs: Double? = null,
         sourceMotionActive: Boolean = false,
         interactionCaptureStarved: Boolean = false,
@@ -1374,7 +1380,12 @@ internal class MotionVideoBudget {
                 }
             val currentRecoveryShortEdge =
                 admittedSourceShortEdge(profile)
-            val nextRecoveryBitrateBps =
+            val nominalNextRecoveryBitrateBps =
+                nominalMotionBitrateBps(
+                    nextRecoveryRung,
+                    goal
+                )
+            val projectedNextRecoveryBitrateBps =
                 projectedRecoveryBitrateBps(
                     sender = sender,
                     currentShortEdge = currentRecoveryShortEdge,
@@ -1383,10 +1394,40 @@ internal class MotionVideoBudget {
                     maxBitrateBps =
                         profile?.maxVideoBitrateBps
                             ?: Int.MAX_VALUE
-                ) ?: nominalMotionBitrateBps(
-                    nextRecoveryRung,
-                    goal
                 )
+            /*
+             * A committed 360 stream can consume nearly its whole nominal
+             * bitrate on high-motion content. Pure area scaling (360 -> 540 is
+             * 2.25x pixels) plus another safety margin can then estimate more
+             * demand than the established 540 screen-content envelope itself,
+             * making readability recovery impossible even after the path is
+             * demonstrably healthy.
+             *
+             * Only the active-control 360 -> 540 exception gets this bounded
+             * projection cap. Full idle/native recovery keeps the historical
+             * measured-content estimate. The cap is still conservative:
+             * nominal next-rung demand receives the same 15% content margin,
+             * then the existing 20%/30% BWE recovery headroom gates apply.
+             */
+            val interactiveReadabilityCandidate =
+                allowInteractionReadabilityRecovery &&
+                    interactionActive &&
+                    shortEdge < DETAIL_CLARITY_FLOOR_SHORT_EDGE &&
+                    nextRecoveryRung <= DETAIL_CLARITY_FLOOR_SHORT_EDGE
+            val nextRecoveryBitrateBps =
+                if (interactiveReadabilityCandidate) {
+                    minOf(
+                        projectedNextRecoveryBitrateBps
+                            ?: Double.POSITIVE_INFINITY,
+                        nominalNextRecoveryBitrateBps *
+                            RECOVERY_CONTENT_PROJECTION_MARGIN,
+                        (profile?.maxVideoBitrateBps
+                            ?: Int.MAX_VALUE).toDouble()
+                    )
+                } else {
+                    projectedNextRecoveryBitrateBps
+                        ?: nominalNextRecoveryBitrateBps
+                }
             val recoveryBandwidthHealthy =
                 bandwidthEstimateBps?.let { estimate ->
                     estimate >=
@@ -1441,9 +1482,15 @@ internal class MotionVideoBudget {
             val resolutionRecoveryAllowed =
                 allowResolutionRecovery &&
                     !warmStartResizePending
+            val interactiveReadabilityRecoveryAllowed =
+                interactiveReadabilityCandidate &&
+                    !warmStartResizePending
+            val fastResolutionRecoveryAllowed =
+                resolutionRecoveryAllowed ||
+                    interactiveReadabilityRecoveryAllowed
             val fastRecoveryEvidence =
                 healthy &&
-                    resolutionRecoveryAllowed &&
+                    fastResolutionRecoveryAllowed &&
                     ScreenQuantizerPolicy.isFastRecoveryClean(
                         codec = outbound.codec,
                         qpAverage = sender.qpAverage
@@ -1481,6 +1528,13 @@ internal class MotionVideoBudget {
 
             // A cadence trial must measure one variable at a time. Pressure
             // relief stays enabled, but do not also enlarge trial frames.
+            /*
+             * Conservative recovery remains idle/full-detail only. Active
+             * readability recovery is deliberately restricted to the stricter
+             * fast path below (real BWE + codec + queue + decode + jitter +
+             * controller presentation), so an interaction can never climb on
+             * long-lived but incomplete "healthy enough" evidence.
+             */
             healthySamples =
                 if (healthy && resolutionRecoveryAllowed) {
                     healthySamples + 1
@@ -1517,13 +1571,36 @@ internal class MotionVideoBudget {
 
             if (
                 shortEdge < NATIVE_WARM_START_SHORT_EDGE &&
-                (fastRecoveryReady || conservativeRecoveryReady)
+                (
+                    (
+                        fastRecoveryReady &&
+                            fastResolutionRecoveryAllowed
+                        ) ||
+                        (
+                            conservativeRecoveryReady &&
+                                resolutionRecoveryAllowed
+                            )
+                    )
             ) {
-                shortEdge =
+                val recoveredRung =
                     when {
                         shortEdge < 360 -> 360
                         shortEdge < 540 -> 540
                         else -> NATIVE_WARM_START_SHORT_EDGE
+                    }
+                /*
+                 * Belt-and-suspenders boundary at the actuator itself: even if
+                 * a caller misroutes the special permission, active readability
+                 * recovery cannot cross the protected 540px rung.
+                 */
+                shortEdge =
+                    if (interactiveReadabilityRecoveryAllowed) {
+                        minOf(
+                            recoveredRung,
+                            DETAIL_CLARITY_FLOOR_SHORT_EDGE
+                        )
+                    } else {
+                        recoveredRung
                     }
                 committedSourceShortEdge = shortEdge
                 changedAtMs = nowMs
